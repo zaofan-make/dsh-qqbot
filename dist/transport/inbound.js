@@ -297,7 +297,9 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
             catch { /* 算不出 → 不偏移 */ }
         }
         const lmOn = (ovRaw.enabled ?? lmCfg?.enabled) !== false;
-        if (scope === 'group' && lmOn && gate !== 'off') {
+        // ★ c2c(私聊)修复: 原来整块价值评分只在群聊生效(私聊从不评分/不写日志/不拦截, 直落 followup)。
+        //   override key 本来就是 `${scope}:${peerId}`(私聊查 c2c:<openid>); 默认档 gate=log ⇒ 只记分不拦。
+        if ((scope === 'group' || scope === 'c2c') && lmOn && gate !== 'off') {
             const mentioned = mwState.mention?.wasMentioned === true;
             // ★ 2026-10-12：**forceWake 是入站扩展的显式覆盖**（`{dataRoot}/.qqbot-extensions/inbound/*.mjs`
             //   里 `ctx.forceWake()` 写的 `ctx.state.qqInboundForceWake`）。
@@ -632,7 +634,7 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
                     catch { /* ignore */ }
                     // ① 相关度(观察期, **只记录不参与判定**): 当前消息 ↔ 她上一条发言 / 群里最近 5 条(2026-09-13 主人定)
                     const rel = await computeRelevance({
-                        gid: msg.groupOpenid ?? '',
+                        gid: scope === 'group' ? (msg.groupOpenid ?? '') : 'c2c',
                         currentText: scText || plain,
                         history: mwState.history,
                         modelDir: typeof lmCfg?.modelDir === 'string' ? lmCfg.modelDir : undefined,
@@ -668,7 +670,7 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
                     }
                     catch { /* ignore */ }
                     appendScoreLog(dataRootOf(config), {
-                        gid: msg.groupOpenid ?? '',
+                        gid: scope === 'group' ? (msg.groupOpenid ?? '') : 'c2c',
                         sender: srcSenderName || srcSenderId,
                         // ★ 记下"sender 是从聚合窗口里挑出来的"（不是窗口最后那个人）—— 排查归因问题必需
                         senderFromWindow: srcFromWindow || undefined,

@@ -101,6 +101,8 @@ interface PendingGroup {
     agent?: unknown;
     turnActive?: boolean;
     lastInboundAt?: number;
+    /** 发起提问时的回复目标(带 msgId) —— 抢答补发卡片必须用它走被动回复通道 */
+    replyTarget?: { scope: string; targetId: string; msgId?: string };
   };
   /** true = 后台档(async): 不 resolve 宿主, 答案改了投递回会话 */
   isAsync?: boolean;
@@ -122,7 +124,12 @@ export interface WebPendingQuestion {
  *  permission: 群聊限定"发起对话者本人"可点(specify_user_ids=ownerId), 防群里其他人替你选 */
 function optionsKeyboard(item: PendingItem, token: string, ownerId?: string): { content: { rows: unknown[] } } {
   const shown = item.opts.slice(0, CARD_MAX_OPTIONS);
-  const permission: Record<string, unknown> = ownerId
+  // ★ c2c(私聊)修复: QQ **私聊不下发 permission.type=0(指定用户)按钮** —— 客户端直接拦,
+  //   点击连 INTERACTION_CREATE 都不产生(2026-10-16 实测: 私聊里选项按钮点不动, 同一张卡上
+  //   硬编码 type=2 的抢答按钮却能点)。私聊本来只有对方一个人, 一律放成全员可点,
+  //   点击人校验由 handleInteraction 的 item.ownerId 兜底(见 "这个问题不是问你的哦~")。
+  const isC2C = String(item.peerKey ?? '').startsWith('c2c:');
+  const permission: Record<string, unknown> = (ownerId && !isC2C)
     ? { type: 0, specify_user_ids: [ownerId] }
     : { type: 2 };
   const rows = shown.map((opt, idx) => {
@@ -654,14 +661,23 @@ export class QqUserQuestionsController {
       } catch { /* ignore */ }
       // 选项按钮的 permission 是"发送时烘焙"的、已发的卡片改不了 →
       // 必须补发一张绑新 owner 的卡片，抢到的人才能点选项。
+      // ★ 2026-10-16 修复(私聊兜底结构性失效): 这里原来用交互事件推出的 replyTarget
+      //   (只有 scope/targetId, **没有 msgId**) → 等于走"主动消息"通道, c2c 下受主动消息
+      //   限制/被拒; 而 sendMarkdownWithKeyboard 失败是直接抛、没有 sendMarkdown 那套降级链,
+      //   外层又是空 catch → 表现就是"点抢答只回一句抢到了, 永远不发新卡"。
+      //   改用发起提问时记录的 record.replyTarget(带 msgId, 被动回复通道)。
+      const reCardTarget = item.group.record?.replyTarget ?? replyTarget;
       try {
         const left = Math.max(5000, item.deadlineAt - Date.now());
         await this.sender.sendMarkdownWithKeyboard(
-          replyTarget,
+          reCardTarget,
           promptOf(item, left, true),
           optionsKeyboard(item, cm[2]!, item.ownerId),
         );
-      } catch { /* 补发失败不影响 /答 文字通道 */ }
+      } catch (err) {
+        // 不再静默: 补发失败必须留痕(私聊主动消息受限时这里会响)
+        this.logger.warn(`QQ question re-card failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return true;
     }
 

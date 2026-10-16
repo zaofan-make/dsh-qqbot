@@ -473,7 +473,10 @@ export class BotplayController {
             extFile,
             extState,
         });
-        const kb = botplayKeyboard(cardId, buttons, perm, ownerIds, triggererId, perRow);
+        // ★ c2c(私聊)修复: 私聊不认 type=0 指定人按钮 → 键盘用 all(全员可点);
+        //   card.perm 仍存原 perm, 点击回来由 checkPerm 按快照校验。
+        const kbPerm = target.scope === 'c2c' ? { type: 'all' } : perm;
+        const kb = botplayKeyboard(cardId, buttons, kbPerm, ownerIds, triggererId, perRow);
         // 卡片正文: 自定义模块给的(若模块没给就走事件模板) > 事件自定义模板 > 默认模板
         const tpl = String(cardContent ?? ev.contentText ?? '').trim();
         const prompt = tpl
@@ -721,7 +724,8 @@ export class BotplayController {
     /** 点击后按钮变了 ⇒ 重发卡片刷新(QQ 没有现成的"改卡片"接口, 重发是可靠做法) */
     async refreshCard(card, content) {
         try {
-            const kb = botplayKeyboard(card.cardId, card.buttons, card.perm, this.ownersGetter(), card.triggererId, card.buttonsPerRow);
+            const kbPerm = card.target && card.target.scope === 'c2c' ? { type: 'all' } : card.perm;
+            const kb = botplayKeyboard(card.cardId, card.buttons, kbPerm, this.ownersGetter(), card.triggererId, card.buttonsPerRow);
             const body = content.trim() || `## 🎮 ${card.eventName}`;
             await this.sender.sendMarkdownWithKeyboard(card.target, body.replace(/\{name\}/g, card.eventName), kb);
             this.logger.info(`[botplay] 卡片刷新 card=${card.cardId} event=${card.eventId}`);
