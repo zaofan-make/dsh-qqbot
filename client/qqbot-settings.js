@@ -6726,6 +6726,14 @@ var QQS_THEME_CSS = [
           + 'background:#7c6cf0;color:#fff!important;cursor:pointer;flex:0 0 auto;}',
         '.qqs-mk-btn:hover{background:#6b5ae6;}',
         '.qqs-mk-btn:disabled{opacity:.55;cursor:default;}',
+
+        /* ── 卡片底部「作者说明」链接（2026-10-25）──
+           一键跳到 GitHub 上这个包的目录，看作者自己写的 README。
+           用 <a target=_blank>，DSH 的 Electron 壳会交给系统浏览器打开。 */
+        '.qqs-mk-link{display:inline-block;margin-top:10px;font-size:11.5px;line-height:1.4;'
+          + 'color:#7c6cf0!important;text-decoration:none;border-bottom:1px dashed rgba(124,108,240,.4);'
+          + 'padding-bottom:1px;width:fit-content;cursor:pointer;}',
+        '.qqs-mk-link:hover{color:#5b4fd6!important;border-bottom-color:#5b4fd6;border-bottom-style:solid;}',
         '.qqs-mk-ghost{padding:4px 14px;font-size:12px;border-radius:5px;border:1px solid #d0d5dd;'
           + 'background:#ffffff;color:#1f2329!important;cursor:pointer;flex:0 0 auto;}',
         '.qqs-mk-ghost:hover{border-color:#7c6cf0;color:#6b5ae6!important;}',
@@ -6872,7 +6880,30 @@ var QQS_THEME_CSS = [
                   (p.tags && p.tags.length)
                     ? h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
                         p.tags.map(function (t, i) { return h('span', { key: i, className: 'qqs-mk-tag' }, String(t)) }))
-                    : null)
+                    : null,
+                  // 2026-10-25：卡片底部加「作者说明 · README ↗」
+                  //   点开直接到 GitHub 上这个包的目录，能看到作者自己写的 README（安装说明/配置项/截图）。
+                  //   优先用 manifest 里的 homepage；没填或指向市场仓库自己 → 就用 packs/<id>/ 的固定地址。
+                  h('a', {
+                    className: 'qqs-mk-link',
+                    href: (function () {
+                      var home = String(p.homepage || p.repo || '');
+                      if (home && home.indexOf('dsh-qqbot-plugins') < 0) return home;
+                      return 'https://github.com/zaofan-make/dsh-qqbot-plugins/tree/main/packs/' + encodeURIComponent(String(id));
+                    })(),
+                    target: '_blank',
+                    rel: 'noreferrer noopener',
+                    title: '在 GitHub 上打开这个包的目录（含作者 README）',
+                    onClick: function (e) {
+                      // DSH 的 Electron 壳里 target=_blank 有时被拦，兜底手动开新窗口
+                      try {
+                        if (e && e.preventDefault) {
+                          e.preventDefault();
+                          window.open(e.currentTarget.href, '_blank', 'noopener');
+                        }
+                      } catch (x) { /* 让它走默认行为 */ }
+                    },
+                  }, '作者说明 · README ↗'))
               })))
     }
 
