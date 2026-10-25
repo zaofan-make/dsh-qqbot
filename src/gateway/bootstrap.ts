@@ -742,6 +742,9 @@ export async function bootstrapGateway(
       message: { kind: target.scope === 'group' ? 'group' : 'c2c', senderId: String(actorOpenid ?? ''), groupOpenid: target.scope === 'group' ? target.targetId : undefined },
       replyTarget: target,
       command: { name: cmdName, args: [], raw: '' },
+      // 2026-10-25 兼容别名：与 middleware-setup 保持一致（按钮触发的命令没有参数）
+      args: '',
+      rawArgs: '',
       // 部分命令(如 /bot-help)直接经 cmdCtx.bot.sendMarkdown 分段发消息 → 桥到真实 sender
       bot: { sendMarkdown: async (t: unknown, c: string) => sender.sendMarkdown((t as Parameters<typeof sender.sendMarkdown>[0]) || target, c) },
     } as never;

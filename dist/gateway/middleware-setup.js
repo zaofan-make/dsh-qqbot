@@ -452,7 +452,19 @@ pluginCtx) {
                 return undefined;
             }
         })();
-        const handlerArg = { ...ctx, command: parsed };
+        const handlerArg = {
+            ...ctx,
+            command: parsed,
+            // ── 2026-10-25 兼容别名：`ctx.args` / `ctx.rawArgs` ──────────────────
+            //   起因：proactive-companion 这类扩展命令按 `ctx.args || ctx.rawArgs` 取参数
+            //   （它们以为框架给的是字符串），实测都拿到 undefined → 子命令全部失效、
+            //   永远走默认的 status 分支。
+            //   与其让每个作者都改成 ctx.command.raw，不如我们把别名补上：
+            //   值统一是「命令名之后、未切分的原始字符串」，与 ctx.command.raw 同源。
+            //   （我们自己的命令一律走 ctx.command.args / .raw，不受影响）
+            args: parsed.raw,
+            rawArgs: parsed.raw,
+        };
         // ★ 2026-10-24：把「该扩展自己的设置」塞进来（面板里填的值），扩展用 ctx.config 读
         try {
             const cmdFile = cmd.__file;
