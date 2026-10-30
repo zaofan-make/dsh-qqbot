@@ -21,9 +21,11 @@ export function buildCommandList(deps) {
         //   /bot-new、/new、/preset、/bot-model、/model 都会改会话/人格/模型，
         //   等于改「AI 的人格与开销」，不能让群里任何人都能按。
         //   ⚠️ /presets 刻意**不限制**：它只是列出有哪些人格，无害（主人原话）。
-        withOwnerOnly(newCommand(deps), deps.config, deps.logger),
+        // /bot-new 与 /new（无参）都只是**开新会话**，群友用也不会有风险 ⇒ 不校验（主人 2026-10-30 定）
+        newCommand(deps),
         // 人格(preset): /preset <id> 热切换不丢历史, /new <id> 开新档, /presets 查看可用(2026-09-08/10)
-        withOwnerOnly(newPresetCommand(deps), deps.config, deps.logger),
+        // ⚠️ /new 的**带参**（指定人设开新档）属于管理动作，校验在 handler 里做（见 session.ts newPresetCommand）
+        newPresetCommand(deps),
         withOwnerOnly(presetSwitchCommand(deps), deps.config, deps.logger),
         presetsCommand(deps), // 查看当前有哪些人格 —— 无害，放行
         // 模型

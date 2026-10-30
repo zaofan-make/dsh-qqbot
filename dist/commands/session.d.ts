@@ -10,7 +10,7 @@ export declare function resetCommand({ manager }: CommandDeps): SlashCommand;
  *  而是轮换 sessionId 直接另起新档 —— 主人可在 QQ 上弃掉炸掉的档重开。 */
 export declare function newCommand({ manager }: CommandDeps): SlashCommand;
 /** /new <preset> — 按会话切换 agent preset(2026-09-08, 学 DLive 社区版; fork 开新档用指定人格) */
-export declare function newPresetCommand({ manager }: CommandDeps): SlashCommand;
+export declare function newPresetCommand({ manager, config, logger }: CommandDeps): SlashCommand;
 /** /preset <id> — 热切换当前会话的人格(preset), 不丢对话历史(2026-09-10) */
 export declare function presetSwitchCommand({ manager, config }: CommandDeps): SlashCommand;
 /** /presets — 列出全部可用 agent preset(2026-09-08, 配合 /new 切人格) */

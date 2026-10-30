@@ -6,6 +6,7 @@ import type { CommandDeps } from './types.js';
 import { getScopePeer } from '../shared/index.js';
 import { resolveCommandTarget } from '../features/botplay.js';
 import { sendPresetCard } from '../features/preset-switcher.js';
+import { ownerOnlyAuth } from './auth.js';
 
 /** /bot-reset /bot-clear — 重置当前会话 */
 export function resetCommand({ manager }: CommandDeps): SlashCommand {
@@ -39,7 +40,7 @@ export function newCommand({ manager }: CommandDeps): SlashCommand {
 }
 
 /** /new <preset> — 按会话切换 agent preset(2026-09-08, 学 DLive 社区版; fork 开新档用指定人格) */
-export function newPresetCommand({ manager }: CommandDeps): SlashCommand {
+export function newPresetCommand({ manager, config, logger }: CommandDeps): SlashCommand {
   return {
     name: 'new',
     description: '以指定人格开新会话: /new <preset>(如 /new code); 不带参=/bot-new; /presets 查看可选人格',
@@ -54,6 +55,15 @@ export function newPresetCommand({ manager }: CommandDeps): SlashCommand {
         if (r === 'rotated') return '已开启新会话 ✓(原会话档无法加载或不存在, 已直接另起新档)';
         return '开新会话失败: ' + (manager.lastCreateError || '请稍后再试');
       }
+      // ★ 2026-10-30（主人定）：/new **不带参**=开新会话，群友用没问题；
+      //   **带参**=指定人设开新档 ⇒ 属于管理动作，只认主人白名单。
+      {
+        const verdict = ownerOnlyAuth(config, logger)(cmdCtx as never);
+        if (verdict !== true) {
+          return typeof verdict === 'string' ? verdict : '⚠️ 指定人设开新会话只有主人能用。';
+        }
+      }
+
       // 精确匹配 preset id(先验存在, 避免未知 id 建错会话)
       const list = await manager.listPresets();
       const hit = list.find((p) => p.id === args && !p.broken);
