@@ -1,4 +1,6 @@
 import { getScopePeer, sendMarkdownChunked } from '../shared/index.js';
+import { sendModelCard } from '../features/model-switcher.js';
+import { resolveCommandTarget } from '../features/botplay.js';
 export function modelCommand({ manager, config }) {
     return {
         name: 'bot-model',
@@ -6,7 +8,17 @@ export function modelCommand({ manager, config }) {
         handler: async (cmdCtx) => {
             const { scope, peerId } = getScopePeer(cmdCtx);
             const args = (cmdCtx.command?.raw ?? '').trim();
-            // 无参数：显示当前模型 + 可用模型列表（可点击）
+            // ── 无参数：先发**模型选择卡片**（2026-10-30 主人要求：点按钮选，比甩一坨列表清楚）
+            if (!args) {
+                const ns = String(config.settingsNs ?? '').trim() || 'im-qqbot';
+                try {
+                    const { target } = resolveCommandTarget(cmdCtx);
+                    if (target && target.targetId)
+                        return sendModelCard(ns, target, scope, peerId, 0);
+                }
+                catch { /* 拿不到 target 就退回下面的文本列表 */ }
+            }
+            // 无参数（卡片发不出去时）兜底：显示当前模型 + 可用模型列表
             if (!args) {
                 const current = manager.getEffectiveModel(scope, peerId);
                 const all = await manager.listAvailableModels();
@@ -53,7 +65,28 @@ export function modelCommand({ manager, config }) {
             if (!provider || !model) {
                 return '用法: /bot-model provider/model\n示例: /bot-model deepseek-official/deepseek-flash';
             }
-            await manager.setModelOverride(scope, peerId, { provider, model });
+            // ★ 2026-10-30 修（主人原话：「参数不对，指的是没有对应的模型，以前没输入错误参数也能换模型，
+            //   但实际上 api 报错」）—— 现在**先校验模型是否存在**，对不上就发选择卡片，别再假装切换成功。
+            const available = await manager.listAvailableModels();
+            const hit = available.find((m) => m.provider === provider && (m.id === model || m.name === model));
+            if (!hit) {
+                const ns = String(config.settingsNs ?? '').trim() || 'im-qqbot';
+                const near = available
+                    .filter((m) => m.provider === provider || m.id === model)
+                    .slice(0, 3)
+                    .map((m) => `${m.provider}/${m.id}`)
+                    .join('、');
+                let cardMsg = '';
+                try {
+                    const { target } = resolveCommandTarget(cmdCtx);
+                    if (target && target.targetId)
+                        cardMsg = await sendModelCard(ns, target, scope, peerId, 0);
+                }
+                catch { /* ignore */ }
+                const tip = near ? `\n你是不是想用: ${near}` : '';
+                return `⚠️ 没有这个模型: ${provider}/${model}${tip}\n${cardMsg || '可用 /bot-model 不带参数查看全部可选模型'}`;
+            }
+            await manager.setModelOverride(scope, peerId, { provider, model: hit.id });
             return `✅ 模型已切换: ${provider}/${model}\n立即生效，对话上下文保留。`;
         },
     };

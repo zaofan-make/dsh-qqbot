@@ -17,6 +17,7 @@ import { permissionCommand } from './permission.js';
 import { botplayCommand } from './botplay.js';
 import { injectCommand } from './inject.js';
 import { botRestartCommand, botExitCommand } from './exit.js';
+import { withOwnerOnly } from './auth.js';
 
 /**
  * 构建标准命令列表
@@ -25,14 +26,18 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
   const commands: SlashCommand[] = [
     // 会话
     resetCommand(deps),
-    newCommand(deps),
+    // ── 管理类命令：仅主人白名单（2026-10-30，对齐上游 0f050ec9）──────────
+    //   /bot-new、/new、/preset、/bot-model、/model 都会改会话/人格/模型，
+    //   等于改「AI 的人格与开销」，不能让群里任何人都能按。
+    //   ⚠️ /presets 刻意**不限制**：它只是列出有哪些人格，无害（主人原话）。
+    withOwnerOnly(newCommand(deps), deps.config, deps.logger),
     // 人格(preset): /preset <id> 热切换不丢历史, /new <id> 开新档, /presets 查看可用(2026-09-08/10)
-    newPresetCommand(deps),
-    presetSwitchCommand(deps),
-    presetsCommand(deps),
+    withOwnerOnly(newPresetCommand(deps), deps.config, deps.logger),
+    withOwnerOnly(presetSwitchCommand(deps), deps.config, deps.logger),
+    presetsCommand(deps), // 查看当前有哪些人格 —— 无害，放行
     // 模型
-    modelCommand(deps),
-    modelAliasCommand(deps), // /model 简写
+    withOwnerOnly(modelCommand(deps), deps.config, deps.logger),
+    withOwnerOnly(modelAliasCommand(deps), deps.config, deps.logger), // /model 简写
     // 状态
     statusCommand(deps),
     // 出站模式(逃生通道: SDK 直通不经 LLM, nothink 也能唤醒)

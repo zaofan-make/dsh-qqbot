@@ -29,6 +29,7 @@ import { createExtToolInteractionController } from '../features/ext-tool-interac
 import { makeExtCaps } from '../features/ext-capabilities.js';
 import { readBotplayEvents } from '../features/botplay-store.js';
 import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
+import { ModelSwitcherController, setModelCardImpl } from '../features/model-switcher.js';
 import { buildCommandList } from '../commands/index.js';
 import { SettingsReader } from '../model/settings-reader.js';
 /** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
@@ -754,6 +755,9 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     // 预设切换卡片(2026-09-10): /preset 无参发按钮卡, 点击热切人格(仿 botplay 翻页)
     const presetSwitcher = new PresetSwitcherController(manager, sender, logger);
     setPresetCardImpl(myNs, (target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
+    // 2026-10-30：模型切换卡片（/model、/bot-model 无参或参数不是已存在的模型时发）
+    const modelSwitcher = new ModelSwitcherController(manager, sender, logger);
+    setModelCardImpl(myNs, (target, scope, peerId, page) => modelSwitcher.sendCard(target, scope, peerId, page ?? 0));
     // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
     // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
     // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
@@ -860,6 +864,10 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                 if (presetSwitcher) {
                     const scope = target.scope === 'group' ? 'group' : 'c2c';
                     consumed = await presetSwitcher.handleInteraction(ev, target, scope, target.targetId);
+                }
+                if (!consumed && modelSwitcher) {
+                    const scope = target.scope === 'group' ? 'group' : 'c2c';
+                    consumed = await modelSwitcher.handleInteraction(ev, target, scope, target.targetId);
                 }
                 if (!consumed && approvalController)
                     consumed = await approvalController.handleInteraction(ev, target);
