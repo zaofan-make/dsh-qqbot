@@ -93,7 +93,7 @@ export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean,
 }, reminderText?: string): void;
 /** 按当前会话的「已领取集合」重设一次剪枝（幂等：deny 名单没变就不动） */
 export declare function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): void;
-export declare function ensureExtToolsGlobal(globalCtx: unknown, agentCtxForApply?: unknown, selfTagOfThisInstance?: string): void;
+export declare function ensureExtToolsGlobal(globalCtx: unknown): void;
 export declare function ensureContextToolsGlobal(globalCtx: unknown): void;
 /**
  * 按会话同步「上下文压缩三件套 + QQ 群管理」的**注册状态**（幂等）。
