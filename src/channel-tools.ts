@@ -133,6 +133,17 @@ let channelBridges: QQChannel[] = [];
 let lastExtGlobAt = 0;
 
 /**
+ * **插件 apply 时的 ctx** —— 普通扩展工具（apply 里的 `ctx.tools.register`）就注册在它上面，
+ * 所以只有 QQ 会话（插件的子 agent）继承得到，非 QQ 会话看不见。
+ *
+ * ★★ 2026-10-31（主人第三次纠正，要求"详查到底怎么注册的"）：
+ *   `expose:'all'` 以前注册到的是 **session-manager 传进来的 this.ctx**（中途还试过 `ctx.root`
+ *   和 `ctx.get('tools')`），跟"普通工具那个 ctx"根本不是同一个作用域对象 ⇒ 怎么改都还是全局可见。
+ *   现在统一用这个记下来的 apply ctx，与普通工具**同一个对象**。
+ */
+let pluginApplyCtx: unknown = undefined;
+
+/**
  * expose:'all' 全局注册的**专用诊断**（2026-10-10 排查用）。
  * ⚠️ 无条件写：不走 diagWrite/diagLog 那套（那套默认关，害我以为"没跑"，其实是"没记"）。
  * 行程：~/.dsh/qqbot-extglob.log —— 定位完可整段删。
@@ -492,6 +503,10 @@ function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getSticker
 
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
 export async function apply(ctx: Context): Promise<void> {
+
+  // ★★★ 2026-10-31：记住本插件的 apply ctx —— expose:'all' 的工具必须注册到**这个** ctx 上，
+  //   才能和普通扩展工具（下面的 `ctx.tools.register`）处在同一个作用域。
+  pluginApplyCtx = ctx;
 
   const toolsAny = (ctx as { tools?: unknown }).tools as { register?: (t: unknown) => unknown } | undefined;
   diag(`apply 调用: tools=${typeof toolsAny} register=${typeof toolsAny?.register} ctxKeys=${Object.keys(ctx as object).slice(0, 12).join(',')}`);
@@ -3864,14 +3879,13 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
   void (async () => {
     try {
       if (!globalCtx || typeof globalCtx !== 'object') return;
-      // ★★ 2026-10-31（主人最终口径，第 2 次明确）：
-  //   **expose:'all' 的工具就按「普通扩展工具」的注册方式来注册** ——
-  //   用**插件 ctx（globalCtx）** + `ctx.tools`（属性访问，绑定本作用域），
-  //   注册结果只有 QQ 会话（插件的子 agent）继承得到，非 QQ 会话天然看不见。
-  //   ⚠️ 之前两个错：① 取 `ctx.root` 挂全局层；② 用 `ctx.get('tools')` 拿到的也是根层服务实例
-  //      （服务查找会向上冒泡），两者都等于注册到全局。
-  const rootCtx = globalCtx as object;
-  extGlobDiag('scope=plugin-ctx（同普通扩展工具）');
+      // ★★ 2026-10-31（主人第三次纠正，要求"详查到底怎么注册的"）：
+      //   普通扩展工具注册在 **`apply(ctx)` 的参数 ctx** 上（见本文件 apply 里的 `ctx.tools.register`），
+      //   而 expose:'all' 这条一直用的是 **session-manager 传来的 this.ctx** —— 两者**不是同一个作用域对象**！
+      //   （中途还试过 `ctx.root`（根层）、`ctx.get('tools')`（向上查找到的根层服务），都会落到全局层。）
+      //   ⇒ 统一用 `pluginApplyCtx`（apply 时记下的那个），与普通工具**完全同一个对象**。
+      const rootCtx = (pluginApplyCtx ?? globalCtx) as object;
+      extGlobDiag('scope=apply-ctx（同普通扩展工具）' + (pluginApplyCtx ? '' : '（未记录，退回传入 ctx）'));
   const gctx = rootCtx as {
         get?: (n: string) => unknown;
         logger?: { info?: (m: string) => void; warn?: (m: string) => void };
