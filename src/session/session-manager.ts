@@ -1090,17 +1090,22 @@ export class SessionManager {
       // 兜底（主路径已挪到 agent/inbox/claimed；这里只防 claimed 未触发的极端情况）
       try { ensureExtToolsGlobal(this.ctx); } catch { /* ignore */ }
       try {
-        // ⚠️ tag 必须取**该会话所属 manager** 的（`config.preset` 只是 patch 快照，自有存储里的
-        //   preset 不一定合进来 ⇒ 取到空串 ⇒ 把自己实例那 4 个也 deny 了）。
-        //   ★ 2026-10-31 修：**不许兜底成本实例 preset** —— 那样"不属于本实例的 agent"（非 QQ 会话）
-        //     也会被当成自己人，把 whale-girl 的工具注册进去（主人实测到的泄漏）。
-        //     拿不到就是空，applyExtToolVisibility 见到空 tag 直接不注册。
+        // ★★ 2026-10-31（主人实测：关掉三号后，连二号自己的工具也没了）——
+        //   判断"这个 agent 归不归本实例"不能只看 `findByAgent` 是否命中（对象引用/时序不同就可能失手，
+        //   于是 tag 成空 ⇒ 本应注册的也被跳过 ⇒ 自己的工具消失）。
+        //   统一用 `nsForCwd(session.header.cwd)` 做 cwd 分流（与 syncScopedToolsOnClaim 同一口径）：
+        //     · cwd 落在本实例 cwd 下 → 本实例的 QQ 会话 ⇒ 用本实例 tag 注册自己的工具
+        //     · 否则（web 普通会话等）  → tag 留空 ⇒ applyExtToolVisibility 不注册（零泄漏）
+        const a0 = agent0 as { session?: { header?: { cwd?: string } } } | undefined;
+        const cwd0 = String(a0?.session?.header?.cwd ?? '');
         let selfTag0 = '';
-        try {
-          const rec0 = this.findByAgent(agent0 as never) as { ch?: { manager?: unknown } } | undefined;
-          const mgr0 = rec0?.ch?.manager;
-          selfTag0 = mgr0 ? instanceTagOfManager(mgr0) : '';
-        } catch { /* ignore */ }
+        if (this.nsForCwd(cwd0)) {
+          try {
+            const rec0 = this.findByAgent(agent0 as never) as { ch?: { manager?: unknown } } | undefined;
+            const mgr0 = rec0?.ch?.manager;
+            selfTag0 = mgr0 ? instanceTagOfManager(mgr0) : String(this.config.preset ?? '').trim();
+          } catch { selfTag0 = String(this.config.preset ?? '').trim(); }
+        }
         applyExtToolVisibility((agent0 as { ctx?: unknown } | undefined)?.ctx, selfTag0);
       } catch { /* ignore */ }
       try { this.syncScopedToolsOnClaim(agent0); } catch { /* ignore */ }
@@ -1119,12 +1124,17 @@ export class SessionManager {
       //      注册了 whale-girl 的工具 ⇒ 泄漏。现在：拿不到 tag 就传空，applyExtToolVisibility
       //      见到空 tag 直接不注册（非 QQ 会话零扩展工具）。
       try {
+        // 与 claimed 同一口径：用 cwd 分流判断"归不归本实例"，拿不到就传空（不注册）。
         const agentP = (payload as { agent?: unknown } | undefined)?.agent;
+        const aP = agentP as { session?: { header?: { cwd?: string } } } | undefined;
+        const cwdP = String(aP?.session?.header?.cwd ?? '');
         let selfTagP = '';
-        try {
-          const recP = agentP ? (this.findByAgent(agentP as never) as { ch?: { manager?: unknown } } | undefined) : undefined;
-          selfTagP = recP?.ch?.manager ? instanceTagOfManager(recP.ch.manager) : '';
-        } catch { /* ignore */ }
+        if (this.nsForCwd(cwdP)) {
+          try {
+            const recP = agentP ? (this.findByAgent(agentP as never) as { ch?: { manager?: unknown } } | undefined) : undefined;
+            selfTagP = recP?.ch?.manager ? instanceTagOfManager(recP.ch.manager) : String(this.config.preset ?? '').trim();
+          } catch { selfTagP = String(this.config.preset ?? '').trim(); }
+        }
         applyExtToolVisibility((agentP as { ctx?: unknown } | undefined)?.ctx, selfTagP);
       } catch { /* ignore */ }
       // ★ 2026-10-28：原来这里对**每个会话**无条件 `restrictContextTools(ctx, false)` 兜底 deny
