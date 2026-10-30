@@ -417,7 +417,7 @@ window.__ModuleLoader__.load({
           { k: 'groupAdmin.manageGroup', kw: '群管理 默认群 group_openid 目标群', t: 'str', label: '对话内默认管理群 group_openid(web 对话时群工具用它; QQ 群会话自动用当前群)', wide: true, def: '' },
           { k: 'groupAdmin.watchJoinRequests', kw: '入群申请 事件 提醒 订阅', t: 'bool', label: '实时接收"入群申请"事件并自动提醒(勾选后需重启才生效)', def: false },
           { k: 'groupAdmin.notifyInGroup', kw: '入群申请 提醒 群内 通知', t: 'bool', label: '收到入群申请时在该群内发提醒消息', def: true },
-          { k: 'extMetaTool', kw: '扩展工具 元工具 gain 按需 领取 token 省', t: 'bool', label: '扩展工具按需取用(默认开: 全局只挂 gain_qq_tools 元工具, 非 QQ 会话需要时自己领取; 关掉=全部扩展工具全量暴露)', def: true },
+          { k: 'extMetaTool', kw: '扩展工具 元工具 gain 按需 领取 token 省', t: 'bool', label: '扩展工具按需取用（默认开）：expose:all 的工具注册在 QQ 会话侧，非 QQ 会话要先用 gain_qq_tools 领取；别的实例的工具同理（本实例自己的工具始终可见）。关掉 = 禁止领取，别的实例的工具一律不可见', def: true },
           { t: 'custom', render: function (ctx) { return h(GroupAdminPanel, { key: 'ga-' + (ctx.ns || 'main'), ns: ctx.ns || undefined }) } },
         ],
       },
