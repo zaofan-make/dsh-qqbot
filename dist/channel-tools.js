@@ -4286,6 +4286,39 @@ export function ensureExtToolsGlobal(globalCtx) {
                     });
                 }
             }
+            // ★★ 2026-10-31（主人要求）：**每个实例各自落一份清单**到自己的 dataRoot：
+            //   `{dataRoot}/.qqbot/ext-tools-index.json`，只列**自己 tag** 的 expose:'all' 工具。
+            //   用途：① 非 QQ 会话的 gain_qq_tools 读它来"看见能领什么"并现场注册；
+            //         ② 重启后即使扫描还没跑，也能从文件读出名单。
+            //   注意：注册行为与它无关（注册早已改成 per-agent，见 applyExtToolVisibility）。
+            for (const inst of insts) {
+                if (!inst || !inst.dataRoot)
+                    continue;
+                try {
+                    const f = join(inst.dataRoot, '.qqbot', 'ext-tools-index.json');
+                    const mine = [...extToolIndex.values()].filter((e) => e.tag === inst.tag);
+                    const payload = {
+                        updatedAt: new Date().toISOString(),
+                        instance: inst.tag,
+                        dataRoot: inst.dataRoot,
+                        note: "expose:'all' 扩展工具清单（本实例；供 gain_qq_tools 查询与现场注册）",
+                        tools: mine.map((e) => ({
+                            full: e.full,
+                            tag: e.tag,
+                            baseName: e.baseName,
+                            description: String(e.description || '').slice(0, 200),
+                            dataRoot: e.inst?.dataRoot,
+                            cwd: e.inst?.cwd,
+                        })),
+                    };
+                    mkdirSync(dirname(f), { recursive: true });
+                    writeFileSync(f, JSON.stringify(payload, null, 2), 'utf8');
+                    extGlobDiag('清单已落盘: ' + f + ' (' + payload.tools.length + ' 件, ' + inst.tag + ')');
+                }
+                catch (e) {
+                    extGlobDiag('清单落盘失败(' + inst.tag + '): ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 120));
+                }
+            }
             // ── 阶段 2：**先剪枝**（此时索引已完整）──────────────────────────
             //   ★ 2026-10-28（主人抓到抖动："新增 7 个 → 下个 step 又移除 7 个"）：
             //   以前是「循环里边扫描边注册」⇒ 注册发生时 deny 名单还不完整 ⇒ 模型先看到一步、下一步才被剪掉。
