@@ -3978,7 +3978,20 @@ function makeGainTool(globalCtx, logger) {
             const wantTag = String(args?.tag ?? '').trim();
             const limRaw = Number(args?.limit);
             const lim = Math.max(1, Math.min(50, Number.isFinite(limRaw) && limRaw > 0 ? Math.trunc(limRaw) : 20));
-            const rows = [...extToolIndex.values()].filter((e) => (!wantTag || e.tag === wantTag));
+            // ★★ 2026-10-31（主人定）：**不该看到自己的工具** —— 本实例那批 expose:'all' 的工具
+            //   已经在 agent ctx 自动注册、随时可用，列进"可领取"里纯属噪音（还容易重复 enable）。
+            //   非 QQ 会话拿不到 selfTag ⇒ 不过滤（能领所有已勾选实例的）。
+            let selfTagOfCaller = '';
+            try {
+                const sess0 = findSessionRec(channelOf(exec), exec);
+                const mgr0 = sess0?.ch?.manager;
+                if (mgr0)
+                    selfTagOfCaller = instanceTagOfManager(mgr0);
+            }
+            catch { /* ignore */ }
+            const rows = [...extToolIndex.values()]
+                .filter((e) => !selfTagOfCaller || e.tag !== selfTagOfCaller)
+                .filter((e) => (!wantTag || e.tag === wantTag));
             try {
                 if (action === 'list' || action === 'search') {
                     const hit = action === 'search'
