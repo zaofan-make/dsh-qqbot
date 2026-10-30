@@ -12,8 +12,8 @@ window.__ModuleLoader__.load({
     var useState = React.useState
     var useEffect = React.useEffect
 
-    var READ = '/api/qqbot-settings/read'
-    var UPDATE = '/api/qqbot-settings/update'
+    var READ = 'api/qqbot-settings/read'
+    var UPDATE = 'api/qqbot-settings/update'
 
     var labelStyle = { display: 'block', margin: '6px 0', fontSize: 13 }
     var inputStyle = { marginLeft: 8, padding: '2px 6px', border: '1px solid #8884', borderRadius: 4, background: 'transparent', color: 'inherit', width: 110 }
@@ -671,7 +671,7 @@ window.__ModuleLoader__.load({
     }
     function extUiLoad(extId, f, slot) {
       // slot 用于区分「同一个扩展 id 在 profile 级 / 数据根各有一张卡」的情况（见 ext-ui.ts 注释）
-      var u = '/api/qqbot-settings/ext-ui/file?f=' + encodeURIComponent(f) + '&id=' + encodeURIComponent(extId)
+      var u = 'api/qqbot-settings/ext-ui/file?f=' + encodeURIComponent(f) + '&id=' + encodeURIComponent(extId)
       if (slot) u += '&slot=' + encodeURIComponent(slot)
       return fetch(u)
         .then(function (r) { return r.json() })
@@ -726,7 +726,7 @@ window.__ModuleLoader__.load({
         getConfig: function (s, acctOverride) {
           var sc = s === 'profile' || s === 'data' ? s : scope
           var a = acctOverride || acctCtx
-          var u = '/api/qqbot-settings/ext-config?id=' + encodeURIComponent(extId) + '&scope=' + sc
+          var u = 'api/qqbot-settings/ext-config?id=' + encodeURIComponent(extId) + '&scope=' + sc
           var cw = acctCwdOf(a)
           if (sc === 'data' && cw) u += '&cwd=' + encodeURIComponent(cw)
           return fetch(u)
@@ -738,7 +738,7 @@ window.__ModuleLoader__.load({
           var sc = s === 'profile' || s === 'data' ? s : scope
           var a = acctOverride || acctCtx
           var cw = acctCwdOf(a)
-          return fetch('/api/qqbot-settings/ext-config', {
+          return fetch('api/qqbot-settings/ext-config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: extId, scope: sc, patch: patch || {}, cwd: sc === 'data' ? cw : '' }),
@@ -750,7 +750,7 @@ window.__ModuleLoader__.load({
           // ★ 2026-10-27：dock 卡片额外带 dataRoot —— hooks 是「插件启动时跑一次」，
           //   其 env.dataRoot 是**插件级**的（主实例那份），不是当前机器人实例的。
           //   所以数据根必须随请求传，让 handler 用 query.dataRoot 自己算路径。
-          var u = '/api/ext/dispatch?id=' + encodeURIComponent(extId) + '&p=' + encodeURIComponent(String(p || '/'))
+          var u = 'api/ext/dispatch?id=' + encodeURIComponent(extId) + '&p=' + encodeURIComponent(String(p || '/'))
           if (dockCtx && dockCtx.dataRoot) u += '&dataRoot=' + encodeURIComponent(dockCtx.dataRoot)
           return fetch(u, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}))
             .then(function (r) { return r.json() })
@@ -798,7 +798,7 @@ window.__ModuleLoader__.load({
          */
         cap: function (fn) {
           var args = Array.prototype.slice.call(arguments, 1);
-          var u = '/api/ext/dispatch?id=' + encodeURIComponent(extId)
+          var u = 'api/ext/dispatch?id=' + encodeURIComponent(extId)
             + '&p=' + encodeURIComponent('/__cap')
             + '&fn=' + encodeURIComponent(String(fn || ''))
             + '&args=' + encodeURIComponent(JSON.stringify(args))
@@ -850,7 +850,7 @@ window.__ModuleLoader__.load({
         var q = function (what) {
           // ★ 2026-10-27：必须带上 dataRoot / cwd —— 否则后端推不出当前实例的数据根，
           //   会落到宿主默认（表现为"切到 3 号机读到的还是 2 号机的路径"）。
-          var u = '/api/qqbot-settings/dock-data?what=' + encodeURIComponent(what)
+          var u = 'api/qqbot-settings/dock-data?what=' + encodeURIComponent(what)
           if (dockCtx.ns) u += '&ns=' + encodeURIComponent(dockCtx.ns)
           if (dockCtx.dataRoot) u += '&dataRoot=' + encodeURIComponent(dockCtx.dataRoot)
           if (dockCtx.cwd) u += '&cwd=' + encodeURIComponent(dockCtx.cwd)
@@ -991,7 +991,7 @@ window.__ModuleLoader__.load({
       if (_dockTabsLoaded && !force && root === _dockTabsRoot) return
       _dockTabsLoaded = true
       _dockTabsRoot = root
-      var u = '/api/qqbot-settings/ext-ui/list'
+      var u = 'api/qqbot-settings/ext-ui/list'
       if (root) u += '?dataRoot=' + encodeURIComponent(root)
       fetch(u)
         .then(function (r) { return r.json() })
@@ -1062,7 +1062,7 @@ window.__ModuleLoader__.load({
         cwd: (ac && ac.cwd) || '',
         peer: peer,
       }
-      var u = '/api/qqbot-settings/dock-data?what=context'
+      var u = 'api/qqbot-settings/dock-data?what=context'
       if (base.ns) u += '&ns=' + encodeURIComponent(base.ns)
       if (base.dataRoot) u += '&dataRoot=' + encodeURIComponent(base.dataRoot)
       if (base.cwd) u += '&cwd=' + encodeURIComponent(base.cwd)
@@ -1223,15 +1223,15 @@ window.__ModuleLoader__.load({
       //   用 Shadow DOM 的两个理由：
       //     ① 扩展写的 CSS 不会污染这个 535KB 单文件里的任何样式（一条全局 button{} 就能改全站）
       //     ② 扩展脚本报错只白自己那张卡，不整页崩
-      var EXT_UI_LIST = '/api/qqbot-settings/ext-ui/list'
-      var EXT_UI_FILE = '/api/qqbot-settings/ext-ui/file?f='
+      var EXT_UI_LIST = 'api/qqbot-settings/ext-ui/list'
+      var EXT_UI_FILE = 'api/qqbot-settings/ext-ui/file?f='
       // ★ 2026-10-27 删：extUiText 只被 mountExtUiCards 用过（已删），成死代码。
       function extUiApi(extId) {
         return {
           extId: extId,
           // 扩展自己的只读/只写接口走 /api/ext/<id>/…（由扩展自己注册，本插件不代管）
           api: function (p, opts) {
-            return fetch('/api/ext/' + encodeURIComponent(extId) + String(p || ''),
+            return fetch('api/ext/' + encodeURIComponent(extId) + String(p || ''),
               Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}))
               .then(function (r) { return r.json() })
               .catch(function () { return null })
@@ -1307,13 +1307,13 @@ window.__ModuleLoader__.load({
 
       function loadMembers() {
         if (!gid) return
-        fetch('/api/qqbot-settings/group/members_local' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
+        fetch('api/qqbot-settings/group/members_local' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
           setMembers(d && d.ok ? (d.members || []) : [])
         }).catch(function () { setMembers([]) })
       }
 
       function loadAccounts() {
-        fetch('/api/qqbot-settings/group/accounts' + nsq).then(function (r) { return r.json() }).then(function (d) {
+        fetch('api/qqbot-settings/group/accounts' + nsq).then(function (r) { return r.json() }).then(function (d) {
           if (d && d.error) { setMsg('群面板: ' + d.error); setAccts([]); return }
           var list = (d && Array.isArray(d.groups) ? d.groups : []).map(function (g) { return { gid: g.gid, name: g.name || '', from: g.from || '' } })
           setAccts(list)
@@ -1324,11 +1324,11 @@ window.__ModuleLoader__.load({
       function refresh() {
         if (!gid) return
         if (tab === 'join') {
-          fetch('/api/qqbot-settings/group/join_requests' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
+          fetch('api/qqbot-settings/group/join_requests' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
             if (d && d.ok) setJoins(d); else setMsg((d && d.err && d.err.human) || '申请列表加载失败')
           }).catch(function (e) { setMsg('申请列表加载异常: ' + e.message) })
         } else if (tab === 'mute') {
-          fetch('/api/qqbot-settings/group/mute_state' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
+          fetch('api/qqbot-settings/group/mute_state' + nsq + (nsq ? '&' : '?') + 'gid=' + encodeURIComponent(gid)).then(function (r) { return r.json() }).then(function (d) {
             if (d && d.ok) setMute(d); else setMsg((d && d.err && d.err.human) || '禁言状态加载失败')
           }).catch(function (e) { setMsg('禁言状态加载异常: ' + e.message) })
         }
@@ -1340,7 +1340,7 @@ window.__ModuleLoader__.load({
         var reason = op === 'decline' ? window.prompt('拒绝理由(可留空)') : '-'
         if (op === 'decline' && reason === null) return
         setBusy('approve-' + mid)
-        fetch('/api/qqbot-settings/group/approve', {
+        fetch('api/qqbot-settings/group/approve', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify(Object.assign({ gid: gid, member_openid: mid, op: op, reason: reason || '' }, props.ns ? { ns: props.ns } : {})),
         }).then(function (r) { return r.json() }).then(function (d) {
@@ -1352,7 +1352,7 @@ window.__ModuleLoader__.load({
       function doMute(mid, action, seconds) {
         var secs = action === 'mute' ? Math.round(Number(seconds || 600)) : 0
         setBusy('mute-' + mid)
-        fetch('/api/qqbot-settings/group/mute', {
+        fetch('api/qqbot-settings/group/mute', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify(Object.assign({ gid: gid, member_openid: mid, action: action, seconds: secs }, props.ns ? { ns: props.ns } : {})),
         }).then(function (r) { return r.json() }).then(function (d) {
@@ -1364,7 +1364,7 @@ window.__ModuleLoader__.load({
       function doBind() {
         var g = bindGid.trim()
         if (!g) { setMsg('先粘贴 group_openid'); return }
-        fetch('/api/qqbot-settings/group/bind', {
+        fetch('api/qqbot-settings/group/bind', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify(Object.assign({ gid: g, name: bindName.trim() }, props.ns ? { ns: props.ns } : {})),
         }).then(function (r) { return r.json() }).then(function (d) {
@@ -1376,7 +1376,7 @@ window.__ModuleLoader__.load({
         var t = sendText.trim()
         if (!t) { setMsg('先输入要发送的内容'); return }
         setBusy('send')
-        fetch('/api/qqbot-settings/group/send', {
+        fetch('api/qqbot-settings/group/send', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify(Object.assign({ gid: gid, text: t }, props.ns ? { ns: props.ns } : {})),
         }).then(function (r) { return r.json() }).then(function (d) {
@@ -1506,10 +1506,10 @@ window.__ModuleLoader__.load({
           msg ? h('span', { style: { fontSize: T.fsSm, color: T.success } }, msg) : null))
     }
 
-    var API_LIST = '/api/qqbot-settings/stickers'
-    var API_IMG = '/api/qqbot-settings/sticker-img?id='
-    var API_BATCH = '/api/qqbot-settings/stickers/batch'
-    var API_IMPORT = '/api/qqbot-settings/stickers/import'
+    var API_LIST = 'api/qqbot-settings/stickers'
+    var API_IMG = 'api/qqbot-settings/sticker-img?id='
+    var API_BATCH = 'api/qqbot-settings/stickers/batch'
+    var API_IMPORT = 'api/qqbot-settings/stickers/import'
     var LAYER_LABEL = { candidate: '待整理', library: '收藏', trash: '回收站' }
 
     function Lightbox(props) {
@@ -1712,7 +1712,7 @@ window.__ModuleLoader__.load({
     }
 
     // ── 定时任务页(管理 AI 在 QQ 会话里建的定时任务: 一次性/每天) ──
-    var API_TIMERS = '/api/qqbot-settings/timers'
+    var API_TIMERS = 'api/qqbot-settings/timers'
     function fmtWhen(job) {
       if (job.kind === 'daily') return '每天 ' + (job.atTime || '??:??')
       if (job.kind === 'once' && job.dueAt) {
@@ -1733,9 +1733,9 @@ window.__ModuleLoader__.load({
       var qDD = dd ? '?dataDir=' + encodeURIComponent(dd) : ''
       var qM = ns ? ('?ns=' + encodeURIComponent(ns)) : '' // members_local 不带 gid = 全部成员
       return Promise.all([
-        fetch('/api/qqbot-settings/group/accounts' + qNs).then(function (r) { return r.json() }).catch(function () { return {} }),
-        fetch('/api/qqbot-settings/known-chats' + qDD).then(function (r) { return r.json() }).catch(function () { return {} }),
-        fetch('/api/qqbot-settings/group/members_local' + qM).then(function (r) { return r.json() }).catch(function () { return {} }),
+        fetch('api/qqbot-settings/group/accounts' + qNs).then(function (r) { return r.json() }).catch(function () { return {} }),
+        fetch('api/qqbot-settings/known-chats' + qDD).then(function (r) { return r.json() }).catch(function () { return {} }),
+        fetch('api/qqbot-settings/group/members_local' + qM).then(function (r) { return r.json() }).catch(function () { return {} }),
       ]).then(function (rs) {
         var groups = ((rs[0] && rs[0].groups) || []).map(function (g) {
           return { scope: 'group', id: g.gid, name: g.name || '', lastSeen: g.lastAt || 0, count: 0 }
@@ -2065,7 +2065,7 @@ window.__ModuleLoader__.load({
         var saved = ''
         try { saved = localStorage.getItem(TAB_KEY) || '' } catch (e) {}
         setTab(saved === 'gallery' || saved === 'timers' || saved === 'accounts' ? saved : 'settings')
-        fetch('/api/qqbot-settings/accounts').then(function (r) { return r.json() }).then(function (d) {
+        fetch('api/qqbot-settings/accounts').then(function (r) { return r.json() }).then(function (d) {
           if (d && Array.isArray(d.instances)) {
             setAccts(d.instances)
             var want = ''
@@ -2083,7 +2083,7 @@ window.__ModuleLoader__.load({
         var ddq = ac && ac.dataDir ? '&dataDir=' + encodeURIComponent(ac.dataDir) : ''
         var sdq = ac && ac.schedDir ? '?schedDir=' + encodeURIComponent(ac.schedDir) : ''
         Promise.all([
-          fetch('/api/qqbot-settings/stickers?untagged=1&layer=candidate' + ddq).then(function (r) { return r.json() }).catch(function () { return {} }),
+          fetch('api/qqbot-settings/stickers?untagged=1&layer=candidate' + ddq).then(function (r) { return r.json() }).catch(function () { return {} }),
           fetch(API_TIMERS + sdq).then(function (r) { return r.json() }).catch(function () { return {} }),
         ]).then(function (rs) {
           if (!alive) return
@@ -2100,7 +2100,7 @@ window.__ModuleLoader__.load({
       var [extTabs, setExtTabs] = useState([])
       useEffect(function () {
         var alive = true
-        fetch('/api/qqbot-settings/ext-ui/list')
+        fetch('api/qqbot-settings/ext-ui/list')
           .then(function (r) { return r.json() })
           .then(function (j) {
             if (!alive || !j || !j.ok) return
@@ -2229,10 +2229,10 @@ window.__ModuleLoader__.load({
     }
 
     // ── 账号与预设(第4 tab): 多机器人账号(appId/secret/预设/cwd) + agent 预设复制管理 ──
-    var API_ACCOUNTS = '/api/qqbot-settings/accounts'
-    var API_PRESETS = '/api/qqbot-settings/presets'
-    var API_BIND = '/api/qqbot-settings/bind'
-    var API_WORKSPACES = '/api/qqbot-settings/workspaces'
+    var API_ACCOUNTS = 'api/qqbot-settings/accounts'
+    var API_PRESETS = 'api/qqbot-settings/presets'
+    var API_BIND = 'api/qqbot-settings/bind'
+    var API_WORKSPACES = 'api/qqbot-settings/workspaces'
     // appSecret 掩码(借鉴 dsh-qqbot-panel): host 只回显掩码, 留空/掩码保存=保留原值
     var SECRET_MASK = '********'
     var PRESET_HINT = '想改人设：点预设卡片「打开文件夹」，编辑里面 agent.cordis.yml —— persona 插件 config.text 那段就是人设正文(改完保存并重启 dsh 生效)；preset.yml 的 name 是预设显示名。做新人格：选一个预设点「复制」，填「预设 id」(=文件夹名,字母/数字开头,可含 - _) 和「人设名」(中文随意)，保存后自动生成新预设文件夹。'
@@ -2663,7 +2663,7 @@ var QQS_THEME_CSS = [
             busy = true
             var act = btn.getAttribute('data-act')
             btn.disabled = true
-            fetch('/api/qqbot-settings/approval/decide', {
+            fetch('api/qqbot-settings/approval/decide', {
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ code: ap.code, act: act }),
             }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
@@ -2703,7 +2703,7 @@ var QQS_THEME_CSS = [
             busy = true
             var i = Number(btn.getAttribute('data-i'))
             btn.disabled = true
-            fetch('/api/qqbot-settings/questions/decide', {
+            fetch('api/qqbot-settings/questions/decide', {
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ key: q.key, optIdx: i }),
             }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
@@ -2717,11 +2717,11 @@ var QQS_THEME_CSS = [
       function poll() {
         if (busy) return
         try {
-          fetch('/api/qqbot-settings/approval/pending').then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
+          fetch('api/qqbot-settings/approval/pending').then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
             if (d && Array.isArray(d.pending)) renderAp(d.pending)
             else if (itemType === 'ap' && d && !d.ok) { if (root) root.style.display = 'none'; itemType = '' }
           }).catch(function () {})
-          fetch('/api/qqbot-settings/questions/pending').then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
+          fetch('api/qqbot-settings/questions/pending').then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
             if (d && Array.isArray(d.pending)) renderQs(d.pending)
             else if (itemType === 'qs' && d && !d.ok) { if (root) root.style.display = 'none'; itemType = '' }
           }).catch(function () {})
@@ -2974,11 +2974,11 @@ var QQS_THEME_CSS = [
       })
       function esc(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') }
       function api(path, q) {
-        var url = '/api/qqbot-settings/' + path + (q ? '?' + q : '')
+        var url = 'api/qqbot-settings/' + path + (q ? '?' + q : '')
         return fetch(url).then(function (r) { return r.json().catch(function () { return null }) }).catch(function () { return null })
       }
       function apiPost(path, body) {
-        return fetch('/api/qqbot-settings/' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+        return fetch('api/qqbot-settings/' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
           .then(function (r) { return r.json().catch(function () { return null }) }).catch(function () { return null })
       }
       // ── 红点: 入群申请待审汇总(各实例 pending 数之和, 不弹窗) ──
@@ -3325,10 +3325,10 @@ var QQS_THEME_CSS = [
         var box = panel ? panel.querySelector('#dk-aff-box') : null
         var q = state.ns ? '?' + outNsQ() : ''
         Promise.all([
-          fetch('/api/qqbot-settings/affinity' + q).then(function (r) { return r.json() }).catch(function () { return {} }),
+          fetch('api/qqbot-settings/affinity' + q).then(function (r) { return r.json() }).catch(function () { return {} }),
           // all=1&limit=50: 这张表是"按 key 左连接好感度", 只要 top N 的话排在 N 后面的人永远显示 "—"
           // (2026-09-15 主人问"小明不是有好感度吗, 怎么显示 0" —— 他 a=0.064 排第 9, 被 top8 截掉)。
-          fetch('/api/qqbot-settings/attitude' + q + (q ? '&' : '?') + 'all=1&limit=50').then(function (r) { return r.json() }).catch(function () { return {} })
+          fetch('api/qqbot-settings/attitude' + q + (q ? '&' : '?') + 'all=1&limit=50').then(function (r) { return r.json() }).catch(function () { return {} })
         ]).then(function (rs) {
           var aff = (rs[0] && rs[0].items) || []
           var att = (rs[1] && rs[1].items) || []
@@ -3345,7 +3345,7 @@ var QQS_THEME_CSS = [
       }
       function refreshScoreList() {
         if (state.tab !== 'session') return
-        fetch('/api/qqbot-settings/value-scores' + scoreQuery())
+        fetch('api/qqbot-settings/value-scores' + scoreQuery())
           .then(function (r) { return r.json() })
           .then(function (d) {
             var next = d && d.ok ? d : { items: [], total: 0 }
@@ -3385,7 +3385,7 @@ var QQS_THEME_CSS = [
       }
       // ✍️ 样例库编辑: 读现有内容(展开时才拉)
       function loadValueSamplesEditor() {
-        fetch('/api/qqbot-settings/value-samples' + (state.ns ? '?' + outNsQ() : ''))
+        fetch('api/qqbot-settings/value-samples' + (state.ns ? '?' + outNsQ() : ''))
           .then(function (r) { return r.json() })
           .then(function (d) {
             var stat = panel ? panel.querySelector('#dk-vs-stat') : null
@@ -3402,7 +3402,7 @@ var QQS_THEME_CSS = [
         var hint = panel ? panel.querySelector('#dk-vs-hint') : null
         if (!ta) return
         if (hint) hint.textContent = '保存中…'
-        fetch('/api/qqbot-settings/value-samples', {
+        fetch('api/qqbot-settings/value-samples', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ ns: state.ns, text: ta.value }),
         }).then(function (r) { return r.json() }).then(function (d) {
@@ -3421,9 +3421,9 @@ var QQS_THEME_CSS = [
         var nsq = state.ns ? '?' + outNsQ() : ''
         state.valueScores = null
         // 先让宿主重置本地模型状态，再查状态
-        fetch('/api/qqbot-settings/local-model/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+        fetch('api/qqbot-settings/local-model/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
           .catch(function () { /* reset 失败也继续查 */ })
-          .then(function () { return fetch('/api/qqbot-settings/local-model/status' + nsq) }).then(function (r) { return r.json() }).then(function (d) {
+          .then(function () { return fetch('api/qqbot-settings/local-model/status' + nsq) }).then(function (r) { return r.json() }).then(function (d) {
           state.localModel = d && d.ok ? d : null
           paintBody()
         }).catch(function () { state.localModel = null; paintBody() })
@@ -3433,7 +3433,7 @@ var QQS_THEME_CSS = [
           state.lmCfg = (d && d.value && d.value.localModel) || null
           paintBody()
         }).catch(function () { state.lmCfg = null; paintBody() })
-        fetch('/api/qqbot-settings/value-scores' + scoreQuery())
+        fetch('api/qqbot-settings/value-scores' + scoreQuery())
           .then(function (r) { return r.json() })
           .then(function (d) { state.valueScores = d && d.ok ? d : { items: [], total: 0 }; paintBody() })
           .catch(function () { state.valueScores = { items: [], total: 0 }; paintBody() })
@@ -3588,7 +3588,7 @@ var QQS_THEME_CSS = [
         // 📊 导出 Excel（2026-09-14 主人要"一键导出分享"）—— 直接走 GET，让浏览器下载
         var affExport = panel.querySelector('#dk-aff-export')
         if (affExport) affExport.onclick = function () {
-          var url = '/api/qqbot-settings/export.xlsx' + (state.ns ? '?' + outNsQ() : '')
+          var url = 'api/qqbot-settings/export.xlsx' + (state.ns ? '?' + outNsQ() : '')
           var a = document.createElement('a')
           a.href = url
           a.download = ''
@@ -3611,7 +3611,7 @@ var QQS_THEME_CSS = [
             return
           }
           if (h) h.textContent = '发给 AI 中…(' + (hit.scope === 'group' ? '群' : '私聊') + '「' + (hit.name || '') + '」)'
-          fetch('/api/qqbot-settings/value-samples/let-ai-write', {
+          fetch('api/qqbot-settings/value-samples/let-ai-write', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ ns: hit.ns || state.ns, scope: hit.scope, peerId: hit.peerId }),
           }).then(function (r) { return r.json() }).then(function (d) {
@@ -3632,7 +3632,7 @@ var QQS_THEME_CSS = [
         if (dlBtn) dlBtn.onclick = function () {
           dlBtn.disabled = true
           hint('下载中…(约 23MB, 1~2 分钟, 面板别关)')
-          fetch('/api/qqbot-settings/local-model/download', {
+          fetch('api/qqbot-settings/local-model/download', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ ns: state.ns }),
           }).then(function (r) { return r.json() }).then(function (d) {
@@ -5238,7 +5238,7 @@ var QQS_THEME_CSS = [
             + '</div>'
           if (state.qunQr) {
             h += '<div class="dk-row" style="justify-content:center;margin:8px 0">'
-              + '<img src="/api/qqbot-settings/qun-qr?t=' + Date.now() + '" alt="二维码" '
+              + '<img src="api/qqbot-settings/qun-qr?t=' + Date.now() + '" alt="二维码" '
               + 'style="width:230px;height:230px;border:1px solid #e2d9ff;border-radius:8px;background:#fff;object-fit:contain">'
               + '</div>'
               + '<div class="dk-msg" style="text-align:center">用手机 QQ「扫一扫」，摄像头对着<b>这块屏幕</b>扫'
@@ -6002,7 +6002,7 @@ var QQS_THEME_CSS = [
         if (!s) return s
         if (/^(https?:|\/\/|\/api\/|data:|blob:)/i.test(s)) return s
         if (/^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s) || s.charAt(0) === '/') {
-          return '/api/qqbot-settings/chat/raw-media?p=' + encodeURIComponent(s)
+          return 'api/qqbot-settings/chat/raw-media?p=' + encodeURIComponent(s)
         }
         return s
       }
@@ -6018,7 +6018,7 @@ var QQS_THEME_CSS = [
         if (!idm) return ''
         var dd = ''
         try { dd = curDataDir() || '' } catch (e) { dd = '' }
-        return '/api/qqbot-settings/sticker-img?id=' + encodeURIComponent(idm[1]) + (dd ? '&dataDir=' + encodeURIComponent(dd) : '')
+        return 'api/qqbot-settings/sticker-img?id=' + encodeURIComponent(idm[1]) + (dd ? '&dataDir=' + encodeURIComponent(dd) : '')
       }
       // 2026-10-01: 状态行单独成函数 —— 增量追加新消息后只更新这行, 不重绘整个列表
       function updateChatStatus() {
@@ -6577,7 +6577,7 @@ var QQS_THEME_CSS = [
           var ext = chatFileExt(f)
           setChatStatus('正在上传 ' + (f.name || '文件') + '…')
           var q = 'ns=' + encodeURIComponent(state.ns || '') + '&ext=' + encodeURIComponent(ext)
-          fetch('/api/qqbot-settings/chat/upload-raw?' + q, {
+          fetch('api/qqbot-settings/chat/upload-raw?' + q, {
             method: 'POST',
             headers: { 'content-type': 'application/octet-stream' },
             body: f,
@@ -6765,7 +6765,7 @@ var QQS_THEME_CSS = [
       var e = c[sid]
       if (e && Date.now() - e.at < (e.hit ? 10000 : 2000)) { try { cb(e.hit) } catch (e1) {} ; return }
       try {
-        fetch('/api/qqbot-settings/session-lookup?sessionId=' + encodeURIComponent(sid))
+        fetch('api/qqbot-settings/session-lookup?sessionId=' + encodeURIComponent(sid))
           .then(function (r) { return r.json() })
           .then(function (d) {
             var hit = !!(d && d.hits && d.hits.length)
@@ -6825,7 +6825,7 @@ var QQS_THEME_CSS = [
         var body = { kind: info.kind, file: info.file, enabled: info.enabled }
         var cw = curWorkspaceCwd()
         if (cw) body.cwd = cw
-        fetch('/api/qqbot-settings/ext-toggle', {
+        fetch('api/qqbot-settings/ext-toggle', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -6860,7 +6860,7 @@ var QQS_THEME_CSS = [
         setLoadingMarket(true)
         var cw = curWorkspaceCwd()
         var qs = cw ? ('?cwd=' + encodeURIComponent(cw)) : ''
-        fetch('/api/qqbot-settings/market' + qs, { credentials: 'same-origin' })
+        fetch('api/qqbot-settings/market' + qs, { credentials: 'same-origin' })
           .then(function (r) { return r.json() })
           .then(function (d) { if (d && d.ok) setMarket(d); else console.warn('[market] 读取失败', d) })
           .catch(function (e) { console.warn('[market] 异常', e) })
@@ -6878,7 +6878,7 @@ var QQS_THEME_CSS = [
       }
       function onInstall(info) {
         setBusyId(info.id)
-        marketPost('/api/qqbot-settings/market/install', { id: info.id })
+        marketPost('api/qqbot-settings/market/install', { id: info.id })
           .then(function (r) {
             return r.text().then(function (txt) {
               var d = null
@@ -6908,7 +6908,7 @@ var QQS_THEME_CSS = [
         var cw = curWorkspaceCwd()
         var body = { proxy: String(proxyInput || '').trim() }
         if (cw) body.cwd = cw
-        fetch('/api/qqbot-settings/market/config', {
+        fetch('api/qqbot-settings/market/config', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -6931,7 +6931,7 @@ var QQS_THEME_CSS = [
 
       function onRemove(info) {
         setBusyId(info.id)
-        marketPost('/api/qqbot-settings/market/remove', { id: info.id })
+        marketPost('api/qqbot-settings/market/remove', { id: info.id })
           .then(function (r) {
             return r.text().then(function (txt) {
               var d = null
@@ -6966,7 +6966,7 @@ var QQS_THEME_CSS = [
         var _qs = []
         if (_cwd) _qs.push('cwd=' + encodeURIComponent(_cwd))
         if (_sid) _qs.push('sid=' + encodeURIComponent(_sid))
-        var _url = '/api/qqbot-settings/extensions' + (_qs.length ? ('?' + _qs.join('&')) : '')
+        var _url = 'api/qqbot-settings/extensions' + (_qs.length ? ('?' + _qs.join('&')) : '')
         fetch(_url, { credentials: 'same-origin' })
           .then(function (r) { return r.json() })
           .then(function (d) { if (!dead) { setData(d); setErr(d && d.ok === false ? (d.error || '未知错误') : ''); } })
@@ -7121,7 +7121,7 @@ var QQS_THEME_CSS = [
         setLoading(true); setErr('')
         var qs = '?kind=' + encodeURIComponent(kind) + '&file=' + encodeURIComponent(file)
         if (cwd) qs += '&cwd=' + encodeURIComponent(cwd)
-        fetch('/api/qqbot-settings/ext-panel' + qs, { credentials: 'same-origin' })
+        fetch('api/qqbot-settings/ext-panel' + qs, { credentials: 'same-origin' })
           .then(function (r) { return r.json() })
           .then(function (d) {
             if (dead) return
@@ -7136,7 +7136,7 @@ var QQS_THEME_CSS = [
 
       function save() {
         setMsg(''); setErr('')
-        fetch('/api/qqbot-settings/ext-panel', {
+        fetch('api/qqbot-settings/ext-panel', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -8141,7 +8141,7 @@ var QQS_THEME_CSS = [
     var now = Date.now();
     if (sid === lastSid && now - lastAt < 5000) return;
     lastSid = sid; lastAt = now;
-    fetch("/api/qqbot-settings/workspace/sessions", { credentials: "same-origin" })
+    fetch("api/qqbot-settings/workspace/sessions", { credentials: "same-origin" })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (!d || d.ok !== true) { console.warn("[qqbot] /workspace/sessions 不可用:", d && d.error); return; }
@@ -8156,7 +8156,7 @@ var QQS_THEME_CSS = [
   function connect() {
     if (typeof EventSource === "undefined") return;
     var es;
-    try { es = new EventSource("/api/qqbot-settings/workspace/watch"); } catch (e) { console.warn("[qqbot] EventSource 构造失败:", e); return; }
+    try { es = new EventSource("api/qqbot-settings/workspace/watch"); } catch (e) { console.warn("[qqbot] EventSource 构造失败:", e); return; }
     es.onopen = function () { console.log("[qqbot] workspace/watch 已连接（SSE）"); };
     es.onmessage = function (ev) {
       try {
