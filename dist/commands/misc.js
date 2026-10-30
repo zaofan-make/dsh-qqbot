@@ -74,16 +74,21 @@ export function meCommand({ config }) {
             const senderId = String(msg?.senderId ?? '').trim() || 'unknown';
             const appId = String(config.appId ?? '').trim() || '?';
             const isGroup = String(msg?.kind ?? '') === 'group';
+            // 2026-10-30 主人：「用户无法便捷的复制粘贴」⇒ openid 单独占一行、不加反引号/加粗，
+            //   长按就能整行选中（QQ 里代码块反而不好选）。
             const lines = [
-                '### 🆔 你在本机器人视角下的身份',
+                '🆔 你在本机器人视角下的身份',
                 '',
-                '**OpenID:** `' + senderId + '`',
-                '**机器人 AppID:** `' + appId + '`',
+                '你的 OpenID（长按这行复制）：',
+                senderId,
+                '',
+                '机器人 AppID：',
+                appId,
             ];
             if (isGroup && msg?.groupOpenid) {
-                lines.push('**本群 OpenID:** `' + String(msg.groupOpenid) + '`');
+                lines.push('', '本群 OpenID（长按这行复制）：', String(msg.groupOpenid));
             }
-            lines.push('', '**怎么用：** 把这串 OpenID 发给机器人主人，让他加到', '「设置 → QQ 机器人 → 设置 → 群管理基础设置 → 允许操作的主人 openid」里，就能用管理命令了。', '', '💡 同一个 QQ 号对**不同的机器人**（不同 AppID）openid 是不一样的，所以要按 AppID 对应填。');
+            lines.push('', '怎么用：把这串 OpenID 发给机器人主人，让他加到「允许操作的主人 openid」里', '（设置 → QQ 机器人 → 设置 → 群管理基础设置），保存后就能用管理命令了。', '', '💡 同一个 QQ 号对不同的机器人（不同 AppID）openid 是不一样的，按 AppID 对应填。');
             return lines.join('\n');
         },
     };

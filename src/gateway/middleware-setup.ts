@@ -430,6 +430,26 @@ export async function setupMiddlewares(
     }
     const cmd = cmdMap.get(name);
     if (!cmd) return next(); // 未知命令放行
+
+    // ★ 2026-10-30 修（主人报「别人用 /preset、/model 照样把卡片发出来」）：
+    //   本插件有**两条命令通道** —— ① SDK 的 slashCommand 中间件（会检查 cmd.authorized）
+    //   ② 下面这套自建分发（直接 cmd.handler）。② 以前完全不看 authorized，
+    //   于是白名单外的用户照样触发了 handler（卡片就发出去了）。
+    //   这里补上同一口径的检查，与 slash-command.js 的 `if (auth !== true) { 发提示 + stop }` 一致。
+    {
+      const authFn = (cmd as { authorized?: (c: unknown) => boolean | string }).authorized;
+      if (typeof authFn === 'function') {
+        let auth: boolean | string = true;
+        try { auth = authFn(ctx); } catch { auth = false; }
+        if (auth !== true) {
+          const authMsg = typeof auth === 'string' ? auth : '⚠️ 无权限执行此命令';
+          try { await ctx.bot?.sendText(ctx.replyTarget, authMsg); } catch { /* ignore */ }
+          if (typeof ctx.stop === 'function') { ctx.stop('command:unauthorized:' + name); return; }
+          return next();
+        }
+      }
+    }
+
     const parsed = { name, args: m[2] ? String(m[2]).split(/\s+/) : [], raw: m[2] ?? '' };
     if (ctx.state) ctx.state.command = parsed;
     // ★ 2026-10-06 统一能力包（见 features/ext-capabilities.ts）：
