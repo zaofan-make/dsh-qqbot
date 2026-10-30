@@ -91,7 +91,6 @@ export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean,
     dataRoot?: string;
     sessionKey?: string;
 }, reminderText?: string): void;
-/** 按当前会话的「已领取集合」重设一次剪枝（幂等：deny 名单没变就不动） */
 export declare function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): void;
 export declare function ensureExtToolsGlobal(globalCtx: unknown): void;
 export declare function ensureContextToolsGlobal(globalCtx: unknown): void;
