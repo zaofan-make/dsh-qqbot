@@ -97,10 +97,22 @@ export class ModelSwitcherController {
     manager;
     sender;
     logger;
-    constructor(manager, sender, logger) {
+    owners;
+    constructor(manager, sender, logger, 
+    /** 主人白名单（config.groupAdmin.owners）。按钮点击也要校验 —— 卡片可能被转发给别人 */
+    owners = () => []) {
         this.manager = manager;
         this.sender = sender;
         this.logger = logger;
+        this.owners = owners;
+    }
+    /** 点击者是否有权（白名单为空 ⇒ 放行到"提示去配置"那一步，与命令侧一致） */
+    clickerAllowed(ev) {
+        const who = String(ev?.group_member_openid ?? ev?.user_openid ?? '').trim();
+        const list = this.owners().map((x) => String(x ?? '').trim()).filter(Boolean);
+        if (list.length === 0)
+            return { ok: true, who }; // 没配名单：交给命令侧那套提示
+        return { ok: !!who && list.includes(who), who };
     }
     /** 发模型选择卡片（某页）。返回给人看的摘要文本。 */
     async sendCard(target, scope, peerId, page = 0) {
@@ -151,6 +163,16 @@ export class ModelSwitcherController {
         const parsed = parseModelButton(e.data.resolved?.button_data);
         if (parsed === null)
             return false;
+        // ★ 2026-10-30 主人要求「选择模型同样只能白名单」：卡片可能被转发，不能只看"谁发的卡"
+        const gate = this.clickerAllowed(e);
+        if (!gate.ok) {
+            this.logger.warn?.(`[model-switcher] 按钮被拒（非白名单点击者）: ${gate.who.slice(0, 8)}…`);
+            try {
+                await this.sender.sendMarkdown(target, '⚠️ 切模型只有主人能点哦。');
+            }
+            catch { /* ignore */ }
+            return true;
+        }
         try {
             const current = this.manager.getEffectiveModel(scope, peerId);
             const all = await this.manager.listAvailableModels();

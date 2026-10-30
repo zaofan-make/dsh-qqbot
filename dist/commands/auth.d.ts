@@ -13,10 +13,13 @@
  * 群聊里 sender 是 `member_openid`、私聊里是 `user_openid`，两边**不是同一个 id**，
  * 所以 owners 里通常要同时配两个（设置页「主人 openid」那一栏可以填多个）。
  *
- * ⚠️ 名单为空时的取舍：**放行**（fail-open）。
- *   理由：空名单意味着「主人从没配过」，此时若一律拒绝，主人自己也会被锁在外面，
- *   等于把插件做成砖头。真正的安全边界由「谁能让机器人进群 + @ 它」提供。
- *   想严格封闭就在设置里把主人 openid 填上（填了之后立即 fail-closed）。
+ * ⚠️ 名单为空时：**拒绝并引导去配置**（2026-10-30 主人明确要求）。
+ *   原话：「如果没有配置白名单，则那些命令会提醒用户去设置里配置」
+ *   —— 不能默默放行（那样等于谁都能改模型/人格），也不能只回"无权限"（用户不知道去哪配）。
+ *
+ * ⚠️ **名单是 per 实例的**（同一 QQ 号对不同机器人 openid 不同）：
+ *   `config` 就是本实例自己的配置（bootstrap 里 buildCommandList 传的是该实例的 config），
+ *   所以每个机器人实例各有各的 owners —— 多实例部署时必须分别填，这是设计使然。
  */
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';

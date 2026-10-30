@@ -412,7 +412,7 @@ window.__ModuleLoader__.load({
         desc: '开启后 QQ 会话里可用群管理工具; 踢人/成员列表等官方未开放能力会在下方 Tab 里提示等待公测。',
         fields: [
           { k: 'groupAdmin.enabled', kw: '群管理 踢人 禁言 成员 入群 管理员', t: 'bool', label: '开启 QQ 群管理(不勾=群管理工具不可用)', def: false },
-          { k: 'groupAdmin.owners', kw: '群管理 主人 权限 openid 名单', t: 'list', label: '允许操作的主人 openid(逗号分隔,可留空=不校验)', wide: true, def: [] },
+          { k: 'groupAdmin.owners', kw: '群管理 主人 权限 openid 名单', t: 'list', label: '允许操作的主人 openid（逗号分隔；留空时 /preset /new /model 等管理命令会提示去配置）· 每个机器人实例的 openid 不同，需分别配置', wide: true, def: [] },
           { k: 'groupAdmin.manageGroup', kw: '群管理 默认群 group_openid 目标群', t: 'str', label: '对话内默认管理群 group_openid(web 对话时群工具用它; QQ 群会话自动用当前群)', wide: true, def: '' },
           { k: 'groupAdmin.watchJoinRequests', kw: '入群申请 事件 提醒 订阅', t: 'bool', label: '实时接收"入群申请"事件并自动提醒(勾选后需重启才生效)', def: false },
           { k: 'groupAdmin.notifyInGroup', kw: '入群申请 提醒 群内 通知', t: 'bool', label: '收到入群申请时在该群内发提醒消息', def: true },

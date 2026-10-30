@@ -10,7 +10,7 @@ import { resetCommand, newCommand, newPresetCommand, presetSwitchCommand, preset
 import { modelCommand, modelAliasCommand } from './model.js';
 import { statusCommand } from './status.js';
 import { helpCommand } from './help.js';
-import { pingCommand, versionCommand, stopCommand, toolsReloadCommand } from './misc.js';
+import { pingCommand, versionCommand, stopCommand, toolsReloadCommand, meCommand } from './misc.js';
 import { outModeCommand } from './outmode.js';
 import { answerCommand, answerAliasCommand } from './answer.js';
 import { permissionCommand } from './permission.js';
@@ -40,6 +40,8 @@ export function buildCommandList(deps: CommandDeps): SlashCommand[] {
     withOwnerOnly(modelAliasCommand(deps), deps.config, deps.logger), // /model 简写
     // 状态
     statusCommand(deps),
+    // 查自己的 openid（配白名单用）—— 不限制，谁都能查自己的
+    meCommand(deps),
     // 出站模式(逃生通道: SDK 直通不经 LLM, nothink 也能唤醒)
     outModeCommand(deps),
     // 权限档位切换(宿主 permissionPresets)

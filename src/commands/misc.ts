@@ -60,6 +60,48 @@ export function versionCommand({ manager }: CommandDeps): SlashCommand {
   };
 }
 
+/**
+ * /bot-me — 查看**你自己在「这个机器人」视角下的 openid**（2026-10-30，对齐上游 96ad70a9）
+ *
+ * 为什么有用（主人原话）：
+ *   「群友可以获取自己对于那个机器人的 openid，并在群聊里显示，以便告诉机器人的主人添加白名单」
+ *
+ * ⚠️ 关键认知：openid 是**按 appId 隔离**的 —— 同一个 QQ 号，对不同机器人实例的 openid **不同**。
+ *   所以这里特意带上「机器人 AppID」，主人配白名单时就知道该填到哪个实例上。
+ *
+ * 不限制白名单：它只是查自己的 id，无害（和 /presets 同理）。
+ */
+export function meCommand({ config }: CommandDeps): SlashCommand {
+  return {
+    name: 'bot-me',
+    description: '查看你在这个机器人视角下的 OpenID（配白名单要用）',
+    handler: async (cmdCtx) => {
+      const msg = (cmdCtx as { message?: { senderId?: string; senderName?: string; groupOpenid?: string; kind?: string } }).message;
+      const senderId = String(msg?.senderId ?? '').trim() || 'unknown';
+      const appId = String((config as { appId?: string }).appId ?? '').trim() || '?';
+      const isGroup = String(msg?.kind ?? '') === 'group';
+
+      const lines = [
+        '### 🆔 你在本机器人视角下的身份',
+        '',
+        '**OpenID:** `' + senderId + '`',
+        '**机器人 AppID:** `' + appId + '`',
+      ];
+      if (isGroup && msg?.groupOpenid) {
+        lines.push('**本群 OpenID:** `' + String(msg.groupOpenid) + '`');
+      }
+      lines.push(
+        '',
+        '**怎么用：** 把这串 OpenID 发给机器人主人，让他加到',
+        '「设置 → QQ 机器人 → 设置 → 群管理基础设置 → 允许操作的主人 openid」里，就能用管理命令了。',
+        '',
+        '💡 同一个 QQ 号对**不同的机器人**（不同 AppID）openid 是不一样的，所以要按 AppID 对应填。',
+      );
+      return lines.join('\n');
+    },
+  };
+}
+
 /** /bot-stop — 中止当前生成（隐藏） */
 export function stopCommand(): SlashCommand {
   return {

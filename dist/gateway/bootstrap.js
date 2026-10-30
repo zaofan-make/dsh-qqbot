@@ -756,7 +756,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     const presetSwitcher = new PresetSwitcherController(manager, sender, logger);
     setPresetCardImpl(myNs, (target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
     // 2026-10-30：模型切换卡片（/model、/bot-model 无参或参数不是已存在的模型时发）
-    const modelSwitcher = new ModelSwitcherController(manager, sender, logger);
+    const modelSwitcher = new ModelSwitcherController(manager, sender, logger, () => (Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin.owners.map(String) : []));
     setModelCardImpl(myNs, (target, scope, peerId, page) => modelSwitcher.sendCard(target, scope, peerId, page ?? 0));
     // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
     // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。

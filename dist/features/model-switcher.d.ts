@@ -27,10 +27,16 @@ export declare class ModelSwitcherController {
     private readonly manager;
     private readonly sender;
     private readonly logger;
+    /** 主人白名单（config.groupAdmin.owners）。按钮点击也要校验 —— 卡片可能被转发给别人 */
+    private readonly owners;
     constructor(manager: SessionManager, sender: QQBotSender, logger: {
         info?: (m: string) => void;
         warn?: (m: string) => void;
-    });
+    }, 
+    /** 主人白名单（config.groupAdmin.owners）。按钮点击也要校验 —— 卡片可能被转发给别人 */
+    owners?: () => string[]);
+    /** 点击者是否有权（白名单为空 ⇒ 放行到"提示去配置"那一步，与命令侧一致） */
+    private clickerAllowed;
     /** 发模型选择卡片（某页）。返回给人看的摘要文本。 */
     sendCard(target: Parameters<QQBotSender['sendMarkdownWithKeyboard']>[0], scope: 'group' | 'c2c', peerId: string, page?: number): Promise<string>;
     /** interaction 回调：`mdl:<page>:<idx|prev|next>`。@returns true=已消费 */

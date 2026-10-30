@@ -1,4 +1,10 @@
 const DENIED = '⚠️ 这个命令只有主人能用。';
+/** 没配置白名单时的引导文案（要求用户去哪填） */
+const NOT_CONFIGURED = '⚠️ 还没配置「允许操作的主人 openid」，所以这条管理命令暂时不能用。\n'
+    + '请到 **设置 → QQ 机器人 → 设置 → 群管理基础设置 →「允许操作的主人 openid」** 里填上你的 openid'
+    + '（多个用逗号分隔），保存后重试。\n'
+    + '💡 每个机器人实例的 openid 不一样（同一个 QQ 号对不同 appId 的 openid 不同），'
+    + '多实例要分别配置。';
 /** 取主人白名单（去空、字符串化） */
 export function ownerListOf(config) {
     const raw = config?.groupAdmin?.owners;
@@ -14,9 +20,11 @@ export function ownerListOf(config) {
 export function ownerOnlyAuth(config, logger) {
     return (ctx) => {
         const owners = ownerListOf(config);
-        // 名单为空 ⇒ 没配过，放行（见文件头注释里的取舍）
-        if (owners.length === 0)
-            return true;
+        // 名单为空 ⇒ 没配过：拒绝 + 告诉用户去哪儿配（不默默放行，也不只丢一句"无权限"）
+        if (owners.length === 0) {
+            logger?.warn?.('[cmd-auth] 拒绝：主人白名单为空（groupAdmin.owners 未配置）');
+            return NOT_CONFIGURED;
+        }
         const sender = String(ctx?.message?.senderId ?? '').trim();
         if (!sender) {
             logger?.warn?.('[cmd-auth] 拒绝：拿不到 senderId（身份缺失，fail-closed）');
