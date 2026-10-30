@@ -98,6 +98,17 @@ export class ModelSwitcherController {
     sender;
     logger;
     owners;
+    /**
+     * 取**全部**服务商的模型，按 provider 分组排序（照 `/子会话` 的做法）。
+     *
+     * 2026-10-30 主人要求：「其余服务商的也要显示出来啊，包括翻页功能」
+     *   —— 以前这里 `filter(m => m.provider === current.provider)`，只能看到当前那一家。
+     */
+    async allModels() {
+        const all = await this.manager.listAvailableModels();
+        // 先按 provider 聚在一起（同名模型跨 provider 时，靠分组标题区分）
+        return [...all].sort((a, b) => String(a.provider).localeCompare(String(b.provider)));
+    }
     constructor(manager, sender, logger, 
     /** 主人白名单（config.groupAdmin.owners）。按钮点击也要校验 —— 卡片可能被转发给别人 */
     owners = () => []) {
@@ -117,9 +128,7 @@ export class ModelSwitcherController {
     /** 发模型选择卡片（某页）。返回给人看的摘要文本。 */
     async sendCard(target, scope, peerId, page = 0) {
         const current = this.manager.getEffectiveModel(scope, peerId);
-        const all = await this.manager.listAvailableModels();
-        // 与 /model 原逻辑一致：只列当前 provider 的模型（点按钮只传模型名，provider 继承当前路由）
-        const models = current?.provider ? all.filter((m) => m.provider === current.provider) : all;
+        const models = await this.allModels();
         if (models.length === 0)
             return '宿主没提供可用模型列表，请用 /bot-model provider/model 手动指定';
         const pages = Math.max(1, Math.ceil(models.length / PER_PAGE));
@@ -129,18 +138,29 @@ export class ModelSwitcherController {
         const curLabel = (() => {
             if (!current)
                 return '宿主默认配置';
-            const hit = models.find((m) => m.provider === current.provider && m.id === current.model);
-            return hit?.name ?? `${current.provider}/${current.model}`;
+            return `${current.provider}/${current.model}`;
         })();
         const lines = [
             '### 🤖 切换模型',
             '',
             `**当前:** ${curLabel}`,
             '',
-            ...shown.map((m, i) => {
-                const isCur = !!current && current.provider === m.provider && current.model === m.id;
-                return `**${LETTERS[i] ?? i + 1}**. ${m.name || `${m.provider}/${m.id}`}${isCur ? ' ⭐' : ''}`;
-            }),
+            // 按 provider 分段显示（同 /子会话）：provider 不进按钮文字，只在正文做小标题
+            ...(() => {
+                const out = [];
+                let lastGroup = '';
+                shown.forEach((m, i) => {
+                    if (m.provider !== lastGroup) {
+                        out.push('', `**── ${m.provider} ──**`);
+                        lastGroup = m.provider;
+                    }
+                    const isCur = !!current && current.provider === m.provider && current.model === m.id;
+                    // 2026-10-30 主人补充：「服务商也要显示出来」—— 每条都带上 provider，
+                    //   翻页把分组切断时也能一眼看出是哪家（前面还有 ── provider ── 小标题）
+                    out.push(`**${LETTERS[i] ?? i + 1}**. ${m.name || m.id} · \`${m.provider}\`${isCur ? ' ⭐' : ''}`);
+                });
+                return out;
+            })(),
             '',
             pages > 1 ? `第 ${safePage + 1}/${pages} 页 · 点按钮立即切换（共 ${models.length} 个）` : `点按钮立即切换（共 ${models.length} 个）`,
             '',
@@ -174,9 +194,7 @@ export class ModelSwitcherController {
             return true;
         }
         try {
-            const current = this.manager.getEffectiveModel(scope, peerId);
-            const all = await this.manager.listAvailableModels();
-            const models = current?.provider ? all.filter((m) => m.provider === current.provider) : all;
+            const models = await this.allModels();
             const pages = Math.max(1, Math.ceil(models.length / PER_PAGE));
             if (parsed === 'prev') {
                 await this.sendCard(target, scope, peerId, Math.max(0, pageOfData(e.data.resolved?.button_data) - 1));

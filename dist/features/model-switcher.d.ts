@@ -29,6 +29,13 @@ export declare class ModelSwitcherController {
     private readonly logger;
     /** 主人白名单（config.groupAdmin.owners）。按钮点击也要校验 —— 卡片可能被转发给别人 */
     private readonly owners;
+    /**
+     * 取**全部**服务商的模型，按 provider 分组排序（照 `/子会话` 的做法）。
+     *
+     * 2026-10-30 主人要求：「其余服务商的也要显示出来啊，包括翻页功能」
+     *   —— 以前这里 `filter(m => m.provider === current.provider)`，只能看到当前那一家。
+     */
+    private allModels;
     constructor(manager: SessionManager, sender: QQBotSender, logger: {
         info?: (m: string) => void;
         warn?: (m: string) => void;
