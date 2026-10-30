@@ -4116,12 +4116,15 @@ export function ensureExtToolsGlobal(globalCtx) {
         try {
             if (!globalCtx || typeof globalCtx !== 'object')
                 return;
-            // ★ 2026-10-10 关键修复：必须拿**插件根 ctx**。
-            //   证据：主人日志里 context_* + qq_group_admin + 人家的两个工具被**一起移除** ——
-            //   说明它们其实都挂在**会话作用域**上（会话一换就没了），也就是说 this.ctx 不是根。
-            //   cordis 的 ctx.root 才是根作用域；拿不到就退回原值（行为不变）。
-            const rootCtx = ((globalCtx?.root) ?? globalCtx);
-            extGlobDiag('root=' + (rootCtx === globalCtx ? 'same-as-passed' : 'DIFFERS'));
+            // ★★ 2026-10-30（主人定）：**注册到插件 ctx，不挂 `ctx.root`**。
+            //   为什么改：`ctx.root` = 全局层 ⇒ 注册进去后**所有会话**（含非 QQ 工作区的普通会话）
+            //   都能看见 `xxx__<tag>`，只能靠逐会话 deny 遮，而 deny 只在 QQ agent 上跑 ⇒ 泄漏（issue #34）。
+            //   而**普通扩展工具**（没写 expose）从来就是注册在插件 ctx 上：QQ 会话的 agent 是插件的
+            //   子作用域，能继承下来；非 QQ 会话不是 ⇒ 天然看不见。
+            //   ⇒ `expose:'all'` 就该和"没有这个字段"一样处理（插件 ctx），唯一差别是**多落一份清单**
+            //   给非 QQ 会话按需读取/注册（gain_qq_tools）。
+            const rootCtx = globalCtx;
+            extGlobDiag('scope=plugin-ctx（不再挂 root）');
             const gctx = rootCtx;
             let toolsObj;
             try {
