@@ -1053,7 +1053,10 @@ export class SessionManager {
             catch { /* ignore */ }
             try {
                 // ⚠️ tag 必须取**该会话所属 manager** 的（`config.preset` 只是 patch 快照，自有存储里的
-                //   preset 不一定合进来 ⇒ 取到空串 ⇒ ownSuffix 为空 ⇒ 把自己实例那 4 个也 deny 了）。
+                //   preset 不一定合进来 ⇒ 取到空串 ⇒ 把自己实例那 4 个也 deny 了）。
+                //   ★ 2026-10-31 修：**不许兜底成本实例 preset** —— 那样"不属于本实例的 agent"（非 QQ 会话）
+                //     也会被当成自己人，把 whale-girl 的工具注册进去（主人实测到的泄漏）。
+                //     拿不到就是空，applyExtToolVisibility 见到空 tag 直接不注册。
                 let selfTag0 = '';
                 try {
                     const rec0 = this.findByAgent(agent0);
@@ -1061,8 +1064,6 @@ export class SessionManager {
                     selfTag0 = mgr0 ? instanceTagOfManager(mgr0) : '';
                 }
                 catch { /* ignore */ }
-                if (!selfTag0)
-                    selfTag0 = String(this.config.preset ?? '').trim();
                 applyExtToolVisibility(agent0?.ctx, selfTag0);
             }
             catch { /* ignore */ }
@@ -1081,8 +1082,12 @@ export class SessionManager {
                 ensureExtToolsGlobal(this.ctx);
             }
             catch { /* ignore */ }
-            // ★ 2026-10-28：扩展工具「默认全剪枝」—— 每个会话（含非 QQ）都按已领取集合重设一次 deny；
-            //   没领取 ⇒ 模型清单里连名字都没有（零 token），gain_qq_tools.enable 后才放开。
+            // ★ 2026-10-28：扩展工具按会话注册 —— 每个会话按「自己实例 + 已领取」注册一遍。
+            //   ⚠️ 2026-10-31 修（主人实测：非 QQ 会话又能看到 expose:'all' 工具了）：
+            //      `findByAgent` **没命中**（= 这个 agent 不属于本 QQ 实例，例如 web 里的普通会话）时，
+            //      以前会兜底成 `this.config.preset`（本实例的 tag）⇒ 于是给**非 QQ agent**
+            //      注册了 whale-girl 的工具 ⇒ 泄漏。现在：拿不到 tag 就传空，applyExtToolVisibility
+            //      见到空 tag 直接不注册（非 QQ 会话零扩展工具）。
             try {
                 const agentP = payload?.agent;
                 let selfTagP = '';
@@ -1091,8 +1096,6 @@ export class SessionManager {
                     selfTagP = recP?.ch?.manager ? instanceTagOfManager(recP.ch.manager) : '';
                 }
                 catch { /* ignore */ }
-                if (!selfTagP)
-                    selfTagP = String(this.config.preset ?? '').trim();
                 applyExtToolVisibility(agentP?.ctx, selfTagP);
             }
             catch { /* ignore */ }
