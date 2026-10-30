@@ -795,7 +795,23 @@ export function apply(ctx) {
       for (const b of list) {
         const cfg = b.cfg || {};
         if (cfg.dataRoot) return String(cfg.dataRoot);
-        if (cfg.cwd) return join(String(cfg.cwd), 'dshqqbot');   // 与 DEFAULT_DATA_SUBDIR 一致
+        if (cfg.cwd) return join(absCwd(cfg.cwd) || String(cfg.cwd), 'dshqqbot');   // 与 DEFAULT_DATA_SUBDIR 一致
+      }
+
+      // ★ 2026-10-30 修 issue #33：**实例没写 cwd/dataRoot 时也要能推出来**。
+      //   插件侧 src/gateway/data-root.ts 的默认口径是
+      //       dataRoot = config.dataRoot || {absCwd(config.cwd) || process.cwd()}/dshqqbot
+      //   也就是说 patch 里不写 cwd，插件照样在 {process.cwd()}/dshqqbot 下建数据。
+      //   以前桥这边只认"显式写出"的 cwd ⇒ 返回空 ⇒ qun/* 全部报「推不出数据根」
+      //   （现象：群管理的二维码/踢人/成员列表在简配实例上完全不可用），而 market/* 走
+      //   resolveDataRootForWorkspace() 有完整兜底，所以看起来"市场能用、群管理坏了"。
+      //   这里补上同一套保守兜底：只在**确实存在启用中的实例**时返回默认根，
+      //   一个实例都没有仍然返回空（面板不该替用户凭空造数据根）。
+      const enabled = bots.filter((b) => b && !b.disabled && b.cfg);
+      if (enabled.length) {
+        const first = enabled[0].cfg || {};
+        const base = absCwd(first.cwd) || process.cwd();
+        return join(base, 'dshqqbot');
       }
     } catch { /* 推不出来就交给 ensurePath 兜底 */ }
     return '';
@@ -1184,6 +1200,23 @@ export function apply(ctx) {
       } else {
         i += 1;
       }
+    }
+    // ★ 2026-10-30 修 issue #33（同类问题一次收口）：
+    //   patch 里**没写** cwd/dataRoot 的实例，解析结果里 cwd 一直是空，
+    //   而下游一大票路由都是 `bot.cfg.dataRoot || bot.cwd` ⇒ 全拿到空串
+    //   （qun/* 报「推不出数据根」；导出、图库、群台账、join-pending… 同理）。
+    //   这里按插件 src/gateway/data-root.ts 的口径补默认值：
+    //       dataRoot || {absCwd(cfg.cwd) || process.cwd()}/dshqqbot
+    //   ⚠️ bot.cwd 的历史语义就是【数据根】，不是工作目录（cfg.cwd 才是工作目录）。
+    for (const b of bots) {
+      if (!b) continue;
+      const cfg = b.cfg || {};
+      if (b.cwd) continue;
+      try {
+        b.cwd = cfg.dataRoot
+          ? String(cfg.dataRoot)
+          : join(absCwd(cfg.cwd) || process.cwd(), 'dshqqbot');
+      } catch { b.cwd = ''; }
     }
     return { raw, hasFile, bots };
   }
