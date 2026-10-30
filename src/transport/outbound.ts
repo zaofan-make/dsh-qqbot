@@ -50,6 +50,7 @@ import {
 import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
 import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers } from '../features/md-media-rewrite.js';
+import { botAvatarMarkdown } from '../features/bot-avatar.js';
 
 export type { QQBotSender } from './outbound-buffer.js';
 export type { ToolsRegistryLike } from './tool-presenter.js';
@@ -661,6 +662,18 @@ class OutboundRouter {
       const deduped = stripDeliveredFileMarkers(text, this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
       if (deduped.trim() === '') return; // 整段只剩"已被 present 的同一文件"→ 不再发空消息
       text = deduped;
+
+      // ★ 2026-10-30 主人要求：私聊出站时首行补一张**机器人自己的头像**
+      //   （官方机器人在私聊里没有头像，群里才有）。开关 c2cShowBotAvatar，默认关。
+      //   取不到头像 URL 就原样跳过（不塞占位、不多占 token）。
+      try {
+        const rt = _record.replyTarget as { scope?: string } | undefined;
+        if (this.config.c2cShowBotAvatar === true && String(rt?.scope ?? '') === 'c2c') {
+          const head = botAvatarMarkdown(dataRootOf(this.config), String(this.config.appId ?? ''));
+          if (head && !text.startsWith(head)) text = head + '\n' + text;
+        }
+      } catch { /* 头像失败不影响正文 */ }
+
       // 2026-10-21: 正文里的本地图 markdown 自动传 QQ、转 qqbot-media 引用（失败保留原样）
       // 2026-10-21 修：不再依赖全局 factory（managersOf() 拿不到 groupAdmin），
       //   直接用本 router 自己的 manager —— 它一定就是这个会话实例的那个。

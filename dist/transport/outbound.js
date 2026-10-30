@@ -30,6 +30,7 @@ import { parseEvent, extractTurnError, } from './events.js';
 import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
 import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers } from '../features/md-media-rewrite.js';
+import { botAvatarMarkdown } from '../features/bot-avatar.js';
 /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
 const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
 /** 适配主动: 同一入站消息(msg_id)最多被动回复条数(QQ 回复同一消息上限 ~4-5 条), 超出自动转主动 */
@@ -583,6 +584,18 @@ class OutboundRouter {
             if (deduped.trim() === '')
                 return; // 整段只剩"已被 present 的同一文件"→ 不再发空消息
             text = deduped;
+            // ★ 2026-10-30 主人要求：私聊出站时首行补一张**机器人自己的头像**
+            //   （官方机器人在私聊里没有头像，群里才有）。开关 c2cShowBotAvatar，默认关。
+            //   取不到头像 URL 就原样跳过（不塞占位、不多占 token）。
+            try {
+                const rt = _record.replyTarget;
+                if (this.config.c2cShowBotAvatar === true && String(rt?.scope ?? '') === 'c2c') {
+                    const head = botAvatarMarkdown(dataRootOf(this.config), String(this.config.appId ?? ''));
+                    if (head && !text.startsWith(head))
+                        text = head + '\n' + text;
+                }
+            }
+            catch { /* 头像失败不影响正文 */ }
             // 2026-10-21: 正文里的本地图 markdown 自动传 QQ、转 qqbot-media 引用（失败保留原样）
             // 2026-10-21 修：不再依赖全局 factory（managersOf() 拿不到 groupAdmin），
             //   直接用本 router 自己的 manager —— 它一定就是这个会话实例的那个。

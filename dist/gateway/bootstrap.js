@@ -9,6 +9,7 @@ import { buildUserAgent } from '../shared/index.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
+import { loadBotSelf, saveBotSelf } from '../features/bot-avatar.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
@@ -164,6 +165,28 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     await setupMiddlewares(bot, config, manager, logger, ctx);
     // 2026-10-20: 消息历史台账（落盘、按会话一个文件）
     initMsgHistory(dataRootOf(config));
+    // ★ 2026-10-30：启动后异步拉一次机器人自己的资料（/users/@me → avatar + username），
+    //   缓存到 {dataRoot}/.qqbot/bot-self.json，供「私聊首行显示头像」（c2cShowBotAvatar）使用。
+    //   放在启动后 1.5s（等 token/通道就绪），失败只 log 不重试、不影响启动。
+    void (async () => {
+        try {
+            await new Promise((r) => setTimeout(r, 1500));
+            const dr = dataRootOf(config);
+            const api = manager.mediaApi;
+            if (!api || typeof api.apiCall !== 'function')
+                return;
+            const res = (await api.apiCall('GET', '/users/@me'));
+            const data = (res && 'data' in res && res.data) || res;
+            if (data && data.avatar) {
+                saveBotSelf(dr, { avatar: String(data.avatar), username: String(data.username ?? '') });
+                loadBotSelf(dr);
+                logger.info?.('im-qqbot: 已缓存机器人头像（/users/@me）');
+            }
+        }
+        catch (e) {
+            logger.debug?.('im-qqbot: 拉取 /users/@me 失败（不影响运行）: ' + (e instanceof Error ? e.message : String(e)));
+        }
+    })();
     // ── 入站：经过中间件链后的消息交给 dsh agent ──
     bot.on('message', async (mCtx) => {
         const msg = mCtx.message;

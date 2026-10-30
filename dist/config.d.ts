@@ -349,6 +349,12 @@ export interface ImQQBotConfig {
     directPrompt?: string;
     /** 单条消息最大长度（QQ 限制约 5000 字符） */
     textChunkLimit: number;
+    /**
+     * 私聊（c2c）出站时，在首行插一张**机器人自己的头像**（markdown 图片，50px）。
+     * 2026-10-30 主人要求：官方机器人私聊里没有头像，群里才有，所以私聊里用正文首行补一个。
+     * 默认**关**。
+     */
+    c2cShowBotAvatar?: boolean;
     /** 是否启用流式输出（群聊始终不启用） */
     streaming: boolean;
     /** 每会话最大闲置时长(ms)，超时自动回收 */

@@ -685,6 +685,12 @@ export interface ImQQBotConfig {
   directPrompt?: string;
   /** 单条消息最大长度（QQ 限制约 5000 字符） */
   textChunkLimit: number;
+  /**
+   * 私聊（c2c）出站时，在首行插一张**机器人自己的头像**（markdown 图片，50px）。
+   * 2026-10-30 主人要求：官方机器人私聊里没有头像，群里才有，所以私聊里用正文首行补一个。
+   * 默认**关**。
+   */
+  c2cShowBotAvatar?: boolean;
   /** 是否启用流式输出（群聊始终不启用） */
   streaming: boolean;
   /** 每会话最大闲置时长(ms)，超时自动回收 */
@@ -812,6 +818,7 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认表情包礼仪, 可清空关闭)'),
   directPrompt: Schema.string().description('私聊额外system prompt'),
   textChunkLimit: Schema.number().default(4500).description('单条消息最大字符数'),
+  c2cShowBotAvatar: Schema.boolean().default(false).description('私聊出站首行显示机器人头像（官方私聊没有头像，群里才有；默认关）'),
   streaming: Schema.boolean().default(true).description('是否启用流式输出（群聊始终不启用）'),
   sessionIdleTimeout: Schema.number().default(30 * 60 * 1000).description('会话闲置超时(ms)'),
   maxQueue: Schema.number().default(20).description('并发队列最大长度'),
