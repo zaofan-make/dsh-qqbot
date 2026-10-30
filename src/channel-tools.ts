@@ -3626,6 +3626,15 @@ export function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): voi
     const prevTag = extSeenCtx.get(ctx) ?? '';
     const tag = selfTag !== undefined ? String(selfTag) : prevTag;
     extSeenCtx.set(ctx, tag);
+    // ★★★ 2026-10-31（主人实测：QQ 会话里 bing_search__whale-girl 变成 unknown tool）：
+    //   **拿不到 selfTag 时一律不剪枝**（fail-open）。以前 tag 为空 ⇒ ownSuffix 为空 ⇒
+    //   连自己实例那份也被 deny 掉，服务端直接报 unknown tool（自己把自己锁死）。
+    //   现在注册已经在 apply ctx（插件作用域），非 QQ 会话天然继承不到，
+    //   所以这里"不剪枝"不会造成泄漏。
+    if (!tag) {
+      traceToolReg('[ext-vis] 跳过剪枝（拿不到 selfTag，fail-open）');
+      return;
+    }
     const all = [...extToolIndex.keys()];
     if (!all.length) return;                     // 还没扫到东西：先不动（别把不该剪的剪了）
     // ⚠️ 2026-10-28（主人纠正）：开关**不是**"关=不剪枝、全可见"。
