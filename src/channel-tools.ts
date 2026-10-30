@@ -3782,17 +3782,28 @@ function makeGainTool(globalCtx: unknown, logger?: { info?: (m: string) => void 
           if (actx) {
             const gset = extGrantSet.get(actx);
             if (!gset || !gset.size) return { ok: true, msg: '当前会话没有领取过扩展工具' };
+            // ★ 2026-10-31 修（主人实测：disable 之后工具**仍然能调用**）：
+            //   原来只 `gset.delete` + `applyExtToolVisibility`（deny 剪枝），
+            //   但 enable 时是**真注册**过一份的（extGranted 里存着 disposer），不撤销就还在注册表里，
+            //   模型拿着旧 schema 一调照样跑通。这里把 disposer 一起调掉。
+            const dropOne = (full: string): void => {
+              const dm = extGranted.get(actx);
+              const d = dm?.get(full);
+              if (d) { try { d(); } catch { /* ignore */ } dm!.delete(full); }
+            };
             if (!wantTools.length) {
+              const dm = extGranted.get(actx);
+              if (dm) { for (const [, d] of dm) { try { d(); } catch { /* ignore */ } } dm.clear(); }
               gset.clear();
               applyExtToolVisibility(actx);
-              return { ok: true, msg: '已收回本会话领取的全部扩展工具' };
+              return { ok: true, msg: '已收回本会话领取的全部扩展工具（已注销注册）' };
             }
             const done: string[] = [];
             const miss: string[] = [];
             for (const name of wantTools) {
               const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name) || undefined;
               const full = ent ? ent.full : name;
-              if (gset.delete(full)) done.push(full); else miss.push(name);
+              if (gset.delete(full)) { dropOne(full); done.push(full); } else miss.push(name);
             }
             applyExtToolVisibility(actx);
             return {
