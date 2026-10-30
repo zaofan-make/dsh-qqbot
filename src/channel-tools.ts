@@ -3950,7 +3950,7 @@ function extMetaOnOfInstance(dataRoot: string, mgrConfig?: { extMetaTool?: boole
   return mgrConfig?.extMetaTool === true;
 }
 
-export function ensureExtToolsGlobal(globalCtx: unknown, agentCtxForApply?: unknown): void {
+export function ensureExtToolsGlobal(globalCtx: unknown, agentCtxForApply?: unknown, selfTagOfThisInstance?: string): void {
   // 节流：本函数挂在 agent/pre-step（**每个 step** 都触发）—— 15 秒内不重复扫盘；
   // 幂等保证：即便节流窗口外重复进入，已注册的 name@tag 也会被跳过。
   extGlobDiag('enter ctxType=' + (globalCtx === null ? 'null' : typeof globalCtx));
@@ -4101,7 +4101,14 @@ export function ensureExtToolsGlobal(globalCtx: unknown, agentCtxForApply?: unkn
       //   ⚠️ 2026-10-28 修：原来按需取用模式下跳过注册，结果连"自己实例那份"都调不到
       //   （deny 只能隐藏，不能凭空造出工具）。
       if (true) {
+        // ★★ 2026-10-31（主人纠正）：**每个插件实例只注册自己实例的工具**。
+        //   以前是把 extToolIndex 里**所有实例**的工具都注册到本实例的插件 ctx ⇒
+        //   别的实例的工具也进了自己的会话，只能再靠 deny 遮（正是"先新增又移除"的来源）。
+        //   现在：自己的那份直接注册（插件 ctx，只对自己 QQ 会话可见）；
+        //   别人的只进清单文件，由 gain_qq_tools.enable **现场注册**。这样根本不需要 deny。
+        const selfTagReg = String(selfTagOfThisInstance ?? '').trim();
         for (const ent of extToolIndex.values()) {
+          if (selfTagReg && ent.tag !== selfTagReg) continue;
           if (reg.has(ent.full)) continue;
           const def = ent.def;
           const inst = ent.inst;
