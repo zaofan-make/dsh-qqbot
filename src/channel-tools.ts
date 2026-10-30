@@ -3615,6 +3615,12 @@ const extGrantSet = new WeakMap<object, Set<string>>();
 const extRestrictState2 = new WeakMap<object, { sig: string; dispose?: () => void }>();
 /** 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引**重放一次**剪枝） */
 const extSeenCtx = new Map<object, string>();
+/**
+ * 「用户主动关掉」的工具（per agent）：`gain_qq_tools.disable` 加进来，`enable` 移出去。
+ * applyExtToolVisibility 计算该注册哪些时**排除**它们 —— 否则"自己实例那份"每轮都会被
+ * 无条件算回 want，disable 就形同虚设（主人实测：关了还能调）。
+ */
+const extUserOff = new WeakMap<object, Set<string>>();
 
 /** 按当前会话的「已领取集合」重设一次剪枝（幂等：deny 名单没变就不动） */
 export function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): void {
@@ -3645,8 +3651,15 @@ export function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): voi
     const granted = metaOnNow ? (extGrantSet.get(ctx) || new Set<string>()) : new Set<string>();
 
     const ownSuffix = '__' + tag;
+    // ★★★ 2026-10-31（主人实测：disable 之后还能调用）——
+    //   "自己实例那份"是靠 `endsWith(ownSuffix)` 无条件进 want 的，所以 disable 只删 grant 没用：
+    //   下一轮 apply 又把它算进 want ⇒ 重新注册 ⇒ 照样能调。
+    //   现在加一个"用户主动关掉"的集合 `extUserOff`：want 计算时排除它；
+    //   enable 时移除、disable 时加入并**立即**调 disposer 注销。
+    const offSet = extUserOff.get(ctx) ?? new Set<string>();
     const want = new Map<string, (typeof all)[number]>();
     for (const ent of all) {
+      if (offSet.has(ent.full)) continue;                       // 用户关掉的，一律不注册
       if (ent.full.endsWith(ownSuffix) || granted.has(ent.full)) want.set(ent.full, ent);
       // 注：granted 里可能有别的实例的工具（gain 领取的），也一并注册进本 agent
     }
@@ -3813,6 +3826,8 @@ function makeGainTool(globalCtx: unknown, logger?: { info?: (m: string) => void 
             const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name) || undefined;
             if (!ent) { badList.push(name); continue; }
             gset.add(ent.full);
+            // enable 时把它从"用户主动关掉"的集合里移出来（否则 apply 仍会排除它）
+            try { extUserOff.get(actx)?.delete(ent.full); } catch { /* ignore */ }
             // 兜底：按需取用模式下工具未全局注册，得真注册一次
             if (!mm.has(ent.full) && toolsObj && typeof regFn === 'function') {
               try {
@@ -3830,25 +3845,46 @@ function makeGainTool(globalCtx: unknown, logger?: { info?: (m: string) => void 
         if (action === 'disable') {
           const actx = agentCtxOf(exec);
           if (actx) {
-            const gset = extGrantSet.get(actx);
-            if (!gset || !gset.size) return { ok: true, msg: '当前会话没有领取过扩展工具' };
+            // ★★★ 2026-10-31（主人实测：disable 后还能调用）——
+            //   两个都要做：① 加进"用户主动关掉"集合（apply 计算 want 时排除）
+            //              ② **立即**调 disposer 注销（否则本会话的 schema 还在，照样能调）
+            const offNow = (() => {
+              let s = extUserOff.get(actx);
+              if (!s) { s = new Set<string>(); extUserOff.set(actx, s); }
+              return s;
+            })();
+            const killNow = (full: string): void => {
+              try {
+                const stAny = extRestrictState2.get(actx) as unknown as { disposers?: Map<string, () => void> } | undefined;
+                const dm = stAny?.disposers;
+                const d = dm?.get(full);
+                if (d) { d(); dm!.delete(full); }
+                const g2 = extGranted.get(actx);
+                const d2 = g2?.get(full);
+                if (d2) { d2(); g2!.delete(full); }
+              } catch { /* ignore */ }
+            };
             if (!wantTools.length) {
-              gset.clear();
-              applyExtToolVisibility(actx);
-              return { ok: true, msg: '已收回本会话领取的全部扩展工具' };
+              const all2 = [...extToolIndex.keys()];
+              for (const full of all2) { offNow.add(full); killNow(full); }
+              extGrantSet.get(actx)?.clear();
+              extRestrictState2.set(actx, { sig: '', dispose: undefined } as never);
+              return { ok: true, msg: '已在本会话关闭全部扩展工具（已注销）' };
             }
             const done: string[] = [];
-            const miss: string[] = [];
             for (const name of wantTools) {
               const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name) || undefined;
               const full = ent ? ent.full : name;
-              if (gset.delete(full)) done.push(full); else miss.push(name);
+              offNow.add(full);
+              killNow(full);
+              extGrantSet.get(actx)?.delete(full);
+              done.push(full);
             }
-            applyExtToolVisibility(actx);
+            // 让下一轮 apply 按新状态重算（sig 置空强制重跑）
+            extRestrictState2.set(actx, { sig: '', dispose: undefined } as never);
             return {
-              ok: miss.length === 0,
-              msg: (done.length ? '已收回 ' + done.length + ' 个：' + done.join(', ') : '没有收回任何工具')
-                + (miss.length ? ('；未领取：' + miss.join(', ')) : ''),
+              ok: true,
+              msg: '已在本会话关闭 ' + done.length + ' 个：' + done.join(', ') + '（已注销，再调用会报 unknown tool）',
             };
           }
           const m = extGranted.get(actx as never);
