@@ -1048,7 +1048,7 @@ export class SessionManager {
             //   （现象：自己的工具"新增了一个 step，下个 step 又移除"）。
             // 兜底（主路径已挪到 agent/inbox/claimed；这里只防 claimed 未触发的极端情况）
             try {
-                ensureExtToolsGlobal(this.ctx);
+                ensureExtToolsGlobal(this.ctx, agent0?.ctx);
             }
             catch { /* ignore */ }
             try {
@@ -1076,8 +1076,9 @@ export class SessionManager {
             //   ⚠️ 必须放在**最外层、无条件**执行 —— 它跟"无上下文模式"无关，任何会话的每一步都该保证注册到位。
             //   （人家最初把它塞进了下面的条件分支 ⇒ 条件不满足就永不执行 ⇒ 工具谁都看不到，连自己都看不见。）
             //   函数内部：15s 节流 + 幂等（已注册的 name@tag 直接跳过）+ fail-soft（出错静默）。
+            //   2026-10-31：把当前 agent ctx 传进去 —— 扫描末尾会在**同一轮**跑 apply 剪枝，避免"先新增又移除"。
             try {
-                ensureExtToolsGlobal(this.ctx);
+                ensureExtToolsGlobal(this.ctx, payload?.agent?.ctx);
             }
             catch { /* ignore */ }
             // ★ 2026-10-28：扩展工具「默认全剪枝」—— 每个会话（含非 QQ）都按已领取集合重设一次 deny；

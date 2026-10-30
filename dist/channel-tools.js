@@ -4223,7 +4223,7 @@ function extMetaOnOfInstance(dataRoot, mgrConfig) {
     }
     return mgrConfig?.extMetaTool === true;
 }
-export function ensureExtToolsGlobal(globalCtx) {
+export function ensureExtToolsGlobal(globalCtx, agentCtxForApply) {
     // 节流：本函数挂在 agent/pre-step（**每个 step** 都触发）—— 15 秒内不重复扫盘；
     // 幂等保证：即便节流窗口外重复进入，已注册的 name@tag 也会被跳过。
     extGlobDiag('enter ctxType=' + (globalCtx === null ? 'null' : typeof globalCtx));
@@ -4471,6 +4471,14 @@ export function ensureExtToolsGlobal(globalCtx) {
                     }
                 }
             }
+            // ★ 2026-10-31 修抖动：注册发生在上面（此时 deny 还没算），模型本 step 会先看到
+            //   "新增 N 个"，下一轮 apply 才 deny → "又移除 N 个"（主人截图里就是这个）。
+            //   这里在**同一轮**对触发这次扫描的 agent ctx 再跑一遍剪枝，让注册与 deny 一次落定。
+            try {
+                if (agentCtxForApply)
+                    applyExtToolVisibility(agentCtxForApply);
+            }
+            catch { /* ignore */ }
             extGlobDiag('index=' + extToolIndex.size + ' 可领取');
         }
         catch (e) {
