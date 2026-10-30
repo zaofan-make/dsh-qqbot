@@ -4262,9 +4262,12 @@ export function ensureExtToolsGlobal(globalCtx) {
             //   **不改变注册行为** —— expose:'all' 的工具照旧按普通扩展工具的方式注册（全局 + 逐会话剪枝），
             //   清单只是额外产物。
             try {
-                const first = insts[0];
-                if (first && first.dataRoot) {
-                    const f = join(first.dataRoot, '.qqbot', 'ext-tools-index.json');
+                // ⚠️ 2026-10-30 修（主人实测：文件没生成）：不能取 insts[0] ——
+                //   managersOf() 的第 0 个是 standard 实例（没配 dataRoot）⇒ 条件不成立直接跳过。
+                //   改成「找第一个有 dataRoot 的实例」，没有就写到自己能算出来的那个。
+                const host = insts.find((x) => x && x.dataRoot);
+                if (host && host.dataRoot) {
+                    const f = join(host.dataRoot, '.qqbot', 'ext-tools-index.json');
                     const payload = {
                         updatedAt: new Date().toISOString(),
                         note: 'expose:all 扩展工具清单（供 gain_qq_tools 查询；注册行为与普通扩展工具一致）',
