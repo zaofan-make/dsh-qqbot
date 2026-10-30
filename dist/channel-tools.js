@@ -3911,6 +3911,53 @@ function buildExtTool(ent, globalCtx, logger) {
     });
 }
 /** 元工具本体（全局注册一次） */
+/**
+ * 读「可领取清单」：每个实例各自在自己 dataRoot 下写了
+ * `{dataRoot}/.qqbot/ext-tools-index.json`（只列自己的 expose:'all' 工具），
+ * 这里把所有实例的合并成一份（按 full 去重）。
+ *
+ * ★ 2026-10-30（主人方案）：清单文件是"跨实例领取"的完整名单来源 —— 内存索引只在
+ * 本进程扫过之后才有，而清单在启动扫描时就落盘了，进程重启/别的工作区也能读。
+ */
+function readExtIndexFile() {
+    const seen = new Set();
+    const out = [];
+    try {
+        for (const m of managersOf()) {
+            const dr = String(m?.dataRoot ?? '').trim();
+            if (!dr)
+                continue;
+            const f = join(dr, '.qqbot', 'ext-tools-index.json');
+            if (!existsSync(f))
+                continue;
+            let arr = [];
+            try {
+                const j = JSON.parse(readFileSync(f, 'utf8'));
+                arr = Array.isArray(j?.tools) ? j.tools : [];
+            }
+            catch {
+                continue;
+            }
+            for (const x of arr) {
+                const o = (x ?? {});
+                const full = String(o.full ?? '').trim();
+                if (!full || seen.has(full))
+                    continue;
+                seen.add(full);
+                out.push({
+                    full,
+                    tag: String(o.tag ?? ''),
+                    baseName: String(o.baseName ?? ''),
+                    description: String(o.description ?? ''),
+                    dataRoot: o.dataRoot ? String(o.dataRoot) : dr,
+                    cwd: o.cwd ? String(o.cwd) : undefined,
+                });
+            }
+        }
+    }
+    catch { /* ignore */ }
+    return out;
+}
 function makeGainTool(globalCtx, logger) {
     return defineTool({
         name: GAIN_TOOL_NAME,
@@ -3942,7 +3989,17 @@ function makeGainTool(globalCtx, logger) {
             const wantTag = String(args?.tag ?? '').trim();
             const limRaw = Number(args?.limit);
             const lim = Math.max(1, Math.min(50, Number.isFinite(limRaw) && limRaw > 0 ? Math.trunc(limRaw) : 20));
-            const rows = [...extToolIndex.values()].filter((e) => (!wantTag || e.tag === wantTag));
+            // ★ 2026-10-30：清单文件优先（每实例各一份，合并看）；内存索引兜底
+            const fileRows = readExtIndexFile();
+            const srcRows = fileRows.length
+                ? fileRows
+                : [...extToolIndex.values()].map((e) => ({
+                    full: e.full, tag: e.tag, baseName: e.baseName,
+                    description: String(e.description || ''),
+                    dataRoot: e.inst?.dataRoot,
+                    cwd: e.inst?.cwd,
+                }));
+            const rows = srcRows.filter((e) => (!wantTag || e.tag === wantTag));
             try {
                 if (action === 'list' || action === 'search') {
                     const hit = action === 'search'
@@ -3978,7 +4035,9 @@ function makeGainTool(globalCtx, logger) {
                     const okList = [];
                     const badList = [];
                     for (const name of wantTools) {
-                        const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name) || undefined;
+                        // 2026-10-30：内存索引优先；没有就用清单文件里的条目（buildExtTool 需要 ExtToolEntry 形状，
+                        //   文件条目缺 def/inst，这里只做"有现成索引就用"的判断，文件条目走下面的兜底注册）。
+                        const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name && extToolIndex.has(e.full)) || undefined;
                         if (!ent) {
                             badList.push(name);
                             continue;
@@ -4039,7 +4098,9 @@ function makeGainTool(globalCtx, logger) {
                         const done = [];
                         const miss = [];
                         for (const name of wantTools) {
-                            const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name) || undefined;
+                            // 2026-10-30：内存索引优先；没有就用清单文件里的条目（buildExtTool 需要 ExtToolEntry 形状，
+                            //   文件条目缺 def/inst，这里只做"有现成索引就用"的判断，文件条目走下面的兜底注册）。
+                            const ent = extToolIndex.get(name) || rows.find((e) => e.baseName === name && extToolIndex.has(e.full)) || undefined;
                             const full = ent ? ent.full : name;
                             if (gset.delete(full)) {
                                 dropOne(full);
@@ -4261,17 +4322,23 @@ export function ensureExtToolsGlobal(globalCtx) {
             //   用途：gain_qq_tools 的 list/search 读它（跨实例领取时不必等内存索引）；
             //   **不改变注册行为** —— expose:'all' 的工具照旧按普通扩展工具的方式注册（全局 + 逐会话剪枝），
             //   清单只是额外产物。
-            try {
-                // ⚠️ 2026-10-30 修（主人实测：文件没生成）：不能取 insts[0] ——
-                //   managersOf() 的第 0 个是 standard 实例（没配 dataRoot）⇒ 条件不成立直接跳过。
-                //   改成「找第一个有 dataRoot 的实例」，没有就写到自己能算出来的那个。
-                const host = insts.find((x) => x && x.dataRoot);
-                if (host && host.dataRoot) {
-                    const f = join(host.dataRoot, '.qqbot', 'ext-tools-index.json');
+            // ★ 2026-10-30（主人方案）：**每个实例各自落一份清单**到自己 dataRoot 下的
+            //   `.qqbot/ext-tools-index.json`，只列**自己 tag** 的工具（就是它自己扩展目录里
+            //   expose:'all' 的那些）。gain_qq_tools 读取时会把所有实例的清单合并起来看，
+            //   这样"跨实例领取"才有完整名单。
+            //   内容与注册行为无关（注册仍按普通扩展工具的方式走）。
+            for (const inst of insts) {
+                if (!inst || !inst.dataRoot)
+                    continue;
+                try {
+                    const f = join(inst.dataRoot, '.qqbot', 'ext-tools-index.json');
+                    const mine = [...extToolIndex.values()].filter((e) => e.tag === inst.tag);
                     const payload = {
                         updatedAt: new Date().toISOString(),
-                        note: 'expose:all 扩展工具清单（供 gain_qq_tools 查询；注册行为与普通扩展工具一致）',
-                        tools: [...extToolIndex.values()].map((e) => ({
+                        instance: inst.tag,
+                        dataRoot: inst.dataRoot,
+                        note: 'expose:all 扩展工具清单（本实例；供 gain_qq_tools 查询与热注册）',
+                        tools: mine.map((e) => ({
                             full: e.full,
                             tag: e.tag,
                             baseName: e.baseName,
@@ -4282,11 +4349,11 @@ export function ensureExtToolsGlobal(globalCtx) {
                     };
                     mkdirSync(dirname(f), { recursive: true });
                     writeFileSync(f, JSON.stringify(payload, null, 2), 'utf8');
-                    extGlobDiag('清单已落盘: ' + f + ' (' + payload.tools.length + ' 件)');
+                    extGlobDiag('清单已落盘: ' + f + ' (' + payload.tools.length + ' 件, ' + inst.tag + ')');
                 }
-            }
-            catch (e) {
-                extGlobDiag('清单落盘失败: ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 120));
+                catch (e) {
+                    extGlobDiag('清单落盘失败(' + inst.tag + '): ' + ((e instanceof Error ? e.message : String(e)) || '').slice(0, 120));
+                }
             }
             // ── 阶段 2：**先剪枝**（此时索引已完整）──────────────────────────
             //   ★ 2026-10-28（主人抓到抖动："新增 7 个 → 下个 step 又移除 7 个"）：
