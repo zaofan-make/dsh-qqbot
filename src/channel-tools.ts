@@ -3647,10 +3647,21 @@ export function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): voi
     const st = extAgentReg.get(ctx);
     if (st && st.sig === sig) return;
 
-    const toolsObj = toolsOfScope(ctx) as { register?: (t: unknown) => unknown } | undefined;
+    // ★ 2026-10-30 关键：必须用 **agentCtx 自己的 tools 服务**（`ctx.tools`），
+    //   绝不能回落到 `ctx.get('tools')` —— 那个是**向上查找到的根层服务**，
+    //   用它注册等于注册到全局层 ⇒ 所有会话（含非 QQ）都能看见（这就是 issue #34 的泄漏）。
+    //   dsh-tools 的 register 语义是「Register globally **or in the calling agent scope**」，
+    //   落在哪一层由**调用时 ctx 的服务实例**决定。
+    const toolsObj = (() => {
+      try {
+        const t = (ctx as { tools?: { register?: unknown } }).tools;
+        if (t && typeof (t as { register?: unknown }).register === 'function') return t as { register: (x: unknown) => unknown };
+      } catch { /* 未 inject tools 时读 ctx.tools 会抛 */ }
+      return undefined;
+    })();
     const reg = toolsObj?.register;
     if (!toolsObj || typeof reg !== 'function') {
-      traceToolReg('[ext-vis] per-agent 注册失败: 拿不到 tools.register');
+      traceToolReg('[ext-vis] per-agent 注册失败: agentCtx.tools 不可用（插件 apply 的 inject 里没声明 tools）');
       return;
     }
     const disposers = st ? st.disposers : new Map<string, () => void>();
