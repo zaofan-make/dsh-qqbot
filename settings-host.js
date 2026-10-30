@@ -6650,7 +6650,9 @@ const WHY_MAP = { busy: '目标会话回合活跃,已等待至回合结束仍超
       } catch (e) {
         uiSeeded = { error: e instanceof Error ? e.message : String(e) };
       }
-      writeJson(res, 200, { ok: written > 0, written, total: files.length, failed, dest, uiSeeded });
+      // 2026-10-30 修 issue #32：这里原本写 files.length，但作用域里只有 list（files 根本不存在）
+      //   ⇒ ReferenceError 被外层 catch 成 500 ⇒「文件已写入却提示安装失败、卡片也不变已安装」。
+      writeJson(res, 200, { ok: written > 0, written, total: list.length, failed, dest, uiSeeded });
     } catch (e) {
       writeJson(res, 500, { ok: false, error: String((e && e.message) || e) });
     }

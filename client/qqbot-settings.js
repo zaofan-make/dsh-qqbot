@@ -7675,12 +7675,12 @@ var QQS_THEME_CSS = [
                         ? h('span', { className: 'qqs-mk-tag' }, canUpdate ? ('已装 v' + localVer) : '已安装')
                         : null,
                       canUpdate
-                        ? h('button', { className: 'qqs-mk-btn', disabled: busy, onClick: function () { onInstall({ id: id }) } },
+                        ? h('button', { type: 'button', className: 'qqs-mk-btn', disabled: busy, onClick: function () { onInstall({ id: id }) } },
                             busy ? '更新中…' : ('更新到 v' + remoteVer))
                         : null,
                       isIn
-                        ? h('button', { className: 'qqs-mk-ghost', disabled: busy, onClick: function () { onRemove({ id: id }) } }, busy ? '处理中…' : '卸载')
-                        : (canUpdate ? null : h('button', { className: 'qqs-mk-btn', disabled: busy, onClick: function () { onInstall({ id: id }) } }, busy ? '安装中…' : '安装')))),
+                        ? h('button', { type: 'button', className: 'qqs-mk-ghost', disabled: busy, onClick: function () { onRemove({ id: id }) } }, busy ? '处理中…' : '卸载')
+                        : (canUpdate ? null : h('button', { type: 'button', className: 'qqs-mk-btn', disabled: busy, onClick: function () { onInstall({ id: id }) } }, busy ? '安装中…' : '安装')))),
                   p.description ? h('div', { className: 'qqs-mk-desc', style: S2.cardDesc }, String(p.description)) : null,
                   (p.tags && p.tags.length)
                     ? h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
