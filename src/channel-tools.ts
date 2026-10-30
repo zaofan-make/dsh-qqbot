@@ -3786,7 +3786,17 @@ function makeGainTool(globalCtx: unknown, logger?: { info?: (m: string) => void 
             dataRoot: (e.inst as { dataRoot?: string } | undefined)?.dataRoot,
             cwd: (e.inst as { cwd?: string } | undefined)?.cwd,
           }));
-      const rows = srcRows.filter((e) => (!wantTag || e.tag === wantTag));
+      // ★ 2026-10-30（主人定）：**机器人自己的会话不用领自己的工具**（插件 ctx 注册的本来就可见），
+      //   所以这里把"当前会话所属实例"的 tag 过滤掉；非 QQ 会话拿不到 tag ⇒ 不过滤。
+      let selfTagOfCaller = '';
+      try {
+        const sess0 = findSessionRec(channelOf(exec as never), exec as never);
+        const mgr0 = sess0?.ch?.manager;
+        if (mgr0) selfTagOfCaller = instanceTagOfManager(mgr0);
+      } catch { /* ignore */ }
+      const rows = srcRows
+        .filter((e) => !selfTagOfCaller || e.tag !== selfTagOfCaller)
+        .filter((e) => (!wantTag || e.tag === wantTag));
       try {
         if (action === 'list' || action === 'search') {
           const hit = action === 'search'
@@ -3921,6 +3931,24 @@ function ensureGainToolGlobal(globalCtx: unknown, logger?: { info?: (m: string) 
   }
 }
 
+/**
+ * 读**某个实例**的「扩展工具按需取用」勾选状态（2026-10-30 主人要求按实例生效）。
+ * 顺序：`{dataRoot}/.qqbot/ext-meta-tool.json`（面板保存写的）→ 该实例 config.extMetaTool。
+ */
+function extMetaOnOfInstance(dataRoot: string, mgrConfig?: { extMetaTool?: boolean }): boolean {
+  const dr = String(dataRoot ?? '').trim();
+  if (dr) {
+    try {
+      const f = join(dr, '.qqbot', 'ext-meta-tool.json');
+      if (existsSync(f)) {
+        const o = JSON.parse(readFileSync(f, 'utf8')) as { on?: unknown };
+        if (typeof o?.on === 'boolean') return o.on;
+      }
+    } catch { /* ignore */ }
+  }
+  return mgrConfig?.extMetaTool === true;
+}
+
 export function ensureExtToolsGlobal(globalCtx: unknown): void {
   // 节流：本函数挂在 agent/pre-step（**每个 step** 都触发）—— 15 秒内不重复扫盘；
   // 幂等保证：即便节流窗口外重复进入，已注册的 name@tag 也会被跳过。
@@ -3950,31 +3978,20 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
       if (!toolsObj || typeof toolsObj.register !== 'function') { extGlobDiag('FAIL 拿不到 tools 服务'); extDiag('[extglob] 拿不到 tools 服务, 跳过'); return; }
       // 2026-10-28：元工具**先注册**，且不依赖"有没有实例"——
       //   上一版放在扫描末尾，若中途 early-return 就永远注册不上（实测：开了按需取用却连元工具都没有）。
+      // ★ 2026-10-30（主人定）：**任一启动中的实例勾选了，就全局注册 gain_qq_tools**；
+      //   而"能领哪些工具"由**勾选实例的并集**决定（见 scanTargets）。
+      //   逐实例读：{dataRoot}/.qqbot/ext-meta-tool.json → 该实例 config.extMetaTool。
       const metaOn = (() => {
-        // ① **文件开关优先**（最可靠，2026-10-28 主人实测："重启了也读不到勾选"）：
-        //    settings-host 保存时写 {dataRoot}/.qqbot/ext-meta-tool.json，这里每次扫描现读；
-        //    不依赖 config 快照，也不依赖 globalThis 有没有被写过。
         try {
-          const dr = String((managersOf()[0] as unknown as { dataRoot?: string } | undefined)?.dataRoot ?? '').trim();
-          if (dr) {
-            const o = JSON.parse(readFileSync(join(dr, '.qqbot', 'ext-meta-tool.json'), 'utf8')) as { on?: unknown };
-            if (typeof o?.on === 'boolean') return o.on;
+          for (const m of managersOf()) {
+            const mm = m as unknown as { dataRoot?: string; config?: { extMetaTool?: boolean } };
+            if (extMetaOnOfInstance(String(mm.dataRoot ?? ''), mm.config)) return true;
           }
-        } catch { /* 文件不存在 = 还没设过，往下走 */ }
-        // ② 进程级热标记：设置页保存时 settings-host 写入（config 是启动快照，不会自己变）。
+        } catch { /* ignore */ }
+        // 进程级热标记（设置页刚保存、还没落盘的瞬间）
         try {
           const live = (globalThis as unknown as { __qqbotExtMetaTool?: unknown }).__qqbotExtMetaTool;
           if (typeof live === 'boolean') return live;
-        } catch { /* ignore */ }
-        // ② 回退 config —— ⚠️ 必须**遍历所有实例**，不能只看 managersOf()[0]：
-        //   index.ts 的 'qqbot/settings-changed' 监听会  把
-        //   保存值原地合并进当前实例的 config（这就是面板其它开关的热更路子）；但只有**被保存的那个
-        //   实例**里有这个字段，第一个 manager 未必是它 ⇒ 只看第 0 个会永远读到 undefined/false。
-        try {
-          for (const m of managersOf()) {
-            const cfgM = (m as unknown as { config?: { extMetaTool?: boolean } } | undefined)?.config;
-            if (cfgM && cfgM.extMetaTool === true) return true;
-          }
         } catch { /* ignore */ }
         return false;
       })();
@@ -4005,7 +4022,12 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
       (globalThis as unknown as { __qqbotExtMetaOn?: boolean }).__qqbotExtMetaOn = metaMode;
       extGlobDiag('metaMode=' + String(metaMode));
       // ── 阶段 1：扫描，**只填索引**（不注册）────────────────────────────
-      for (const inst of insts) {
+      // ★ 2026-10-30（主人定）：**只扫勾了「扩展工具按需取用」的实例**。
+      //   没勾的实例，它扩展目录里的 expose:'all' 工具不进清单、也不能被领取
+      //   （它自己的 QQ 会话里照样看得到 —— 那是插件 ctx 注册的，跟本开关无关）。
+      const scanTargets = insts.filter((x) => extMetaOnOfInstance(x.dataRoot));
+      extGlobDiag('scanTargets=' + scanTargets.length + '/' + insts.length);
+      for (const inst of scanTargets) {
         let defs: Awaited<ReturnType<typeof loadExtensionTools>> = [];
         try {
           defs = await loadExtensionTools(inst.dataRoot, (gctx.logger ?? console) as Parameters<typeof loadExtensionTools>[1]);
