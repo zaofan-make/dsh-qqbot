@@ -4270,7 +4270,31 @@ export function ensureExtToolsGlobal(globalCtx) {
             globalThis.__qqbotExtMetaOn = metaMode;
             extGlobDiag('metaMode=' + String(metaMode));
             // ── 阶段 1：扫描，**只填索引**（不注册）────────────────────────────
+            // ★★ 2026-10-31（主人实测：关掉三号的开关，gain 还能列/领它的工具）：
+            //   **只扫"勾了按需取用"的实例**。没勾的实例，它扩展目录里的 expose:'all'
+            //   既不进索引、也就不会出现在 gain 的可领取列表里、更领不到。
             for (const inst of insts) {
+                const optIn = (() => {
+                    try {
+                        const o = JSON.parse(readFileSync(join(inst.dataRoot, '.qqbot', 'ext-meta-tool.json'), 'utf8'));
+                        if (typeof o?.on === 'boolean')
+                            return o.on;
+                    }
+                    catch { /* 没文件 → 看 config */ }
+                    try {
+                        for (const m of managersOf()) {
+                            const mm = m;
+                            if (String(mm.dataRoot ?? '') === inst.dataRoot && mm.config?.extMetaTool === true)
+                                return true;
+                        }
+                    }
+                    catch { /* ignore */ }
+                    return false;
+                })();
+                if (!optIn) {
+                    extGlobDiag('SKIP not-opted-in: ' + inst.tag);
+                    continue;
+                }
                 let defs = [];
                 try {
                     defs = await loadExtensionTools(inst.dataRoot, (gctx.logger ?? console));
