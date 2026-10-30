@@ -175,7 +175,7 @@ export async function rewriteLocalMarkdownImages(text, explicitTarget) {
         catch { /* 单张失败不影响其它 */ }
     }
     // 2026-10-30: 有图没传成功也不留 markdown 语法 —— 没转换成 qqbot-media 的本地图降级成
-    //   [MEDIA:image|本地路径]，走普通发图通道（已转换的是 qqbot-media:// 引用，不会被碰到）
+    //   [MEDIA:image|本地路径]，走普通发图通道（已转换的那些是 qqbot-media:// 引用，不会被碰到）
     if (failed > 0)
         out = localMarkdownImagesToMediaMarkers(out);
     setLast({ matched: matches.length, converted, failed, at: Date.now() });
