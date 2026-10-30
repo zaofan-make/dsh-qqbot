@@ -4224,6 +4224,9 @@ function extMetaOnOfInstance(dataRoot, mgrConfig) {
     return mgrConfig?.extMetaTool === true;
 }
 export function ensureExtToolsGlobal(globalCtx, agentCtxForApply, selfTagOfThisInstance) {
+    // 2026-10-31：selfTagOfThisInstance 暂不参与注册决策（隔离靠 applyExtToolVisibility 的 deny），
+    //   保留签名是为了不破坏调用点。
+    void selfTagOfThisInstance;
     // 节流：本函数挂在 agent/pre-step（**每个 step** 都触发）—— 15 秒内不重复扫盘；
     // 幂等保证：即便节流窗口外重复进入，已注册的 name@tag 也会被跳过。
     extGlobDiag('enter ctxType=' + (globalCtx === null ? 'null' : typeof globalCtx));
@@ -4236,15 +4239,12 @@ export function ensureExtToolsGlobal(globalCtx, agentCtxForApply, selfTagOfThisI
         try {
             if (!globalCtx || typeof globalCtx !== 'object')
                 return;
-            // ★★ 2026-10-30（主人定）：**注册到插件 ctx，不挂 `ctx.root`**。
-            //   为什么改：`ctx.root` = 全局层 ⇒ 注册进去后**所有会话**（含非 QQ 工作区的普通会话）
-            //   都能看见 `xxx__<tag>`，只能靠逐会话 deny 遮，而 deny 只在 QQ agent 上跑 ⇒ 泄漏（issue #34）。
-            //   而**普通扩展工具**（没写 expose）从来就是注册在插件 ctx 上：QQ 会话的 agent 是插件的
-            //   子作用域，能继承下来；非 QQ 会话不是 ⇒ 天然看不见。
-            //   ⇒ `expose:'all'` 就该和"没有这个字段"一样处理（插件 ctx），唯一差别是**多落一份清单**
-            //   给非 QQ 会话按需读取/注册（gain_qq_tools）。
-            const rootCtx = globalCtx;
-            extGlobDiag('scope=plugin-ctx（不再挂 root）');
+            // ★ 2026-10-10 关键修复：必须拿**插件根 ctx**（cordis 的 ctx.root 才是根作用域）。
+            //   2026-10-30 曾一度改成"插件 ctx"，结果 tools.restrict **deny 不掉**这些工具
+            //   （restrict 只对**全局层**的名字有效）⇒ 非 QQ 会话反而全都能看见（实测回退）。
+            //   ⇒ 注册必须在 root 层，隔离靠 applyExtToolVisibility 的 deny。
+            const rootCtx = ((globalCtx?.root) ?? globalCtx);
+            extGlobDiag('root=' + (rootCtx === globalCtx ? 'same-as-passed' : 'DIFFERS'));
             const gctx = rootCtx;
             let toolsObj;
             try {
@@ -4410,10 +4410,7 @@ export function ensureExtToolsGlobal(globalCtx, agentCtxForApply, selfTagOfThisI
                 //   别的实例的工具也进了自己的会话，只能再靠 deny 遮（正是"先新增又移除"的来源）。
                 //   现在：自己的那份直接注册（插件 ctx，只对自己 QQ 会话可见）；
                 //   别人的只进清单文件，由 gain_qq_tools.enable **现场注册**。这样根本不需要 deny。
-                const selfTagReg = String(selfTagOfThisInstance ?? '').trim();
                 for (const ent of extToolIndex.values()) {
-                    if (selfTagReg && ent.tag !== selfTagReg)
-                        continue;
                     if (reg.has(ent.full))
                         continue;
                     const def = ent.def;
