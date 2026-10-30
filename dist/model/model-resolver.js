@@ -32,7 +32,11 @@ export class ModelResolver {
         }
         catch {
             return undefined;
-        } })());
+        } })(), 
+        // ★ 2026-10-31（同步上游 e49dadf）：读写失败必须**可见**（warn）。
+        //   旧版只走 debugLog（默认关）⇒ 偏好文件写失败完全静默，
+        //   表现就是"QQ 里上下文莫名其妙丢了"，而且没有任何线索可查。
+        (msg) => this.logger?.warn(`im-qqbot: ${msg}`));
         this.settings = new SettingsReader();
     }
     /**

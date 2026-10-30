@@ -18,6 +18,15 @@ export declare class PrefsStore {
     /** 隔离偏好文件路径 */
     private readonly prefsPath;
     private readonly debugLog?;
+    /** 可见告警回调（读写失败升级为 warn —— 映射丢失在旧版是"静默"的，完全无从排查） */
+    private readonly onError?;
+    /**
+     * 本进程**显式删除**的 key（四张表各一套）。
+     * 写前合并磁盘时会把这些 key 压住，防止「删除被并发写复活」。
+     */
+    private readonly deleted;
+    /** 损坏文件只备份一次（避免每次写入都产出新备份） */
+    private corruptedBackedUp;
     /**
      * @param debugLog 调试日志回调
      * @param baseDir  存放目录。**强烈建议传 `{dataRoot}/.qqbot`** ——
@@ -25,7 +34,7 @@ export declare class PrefsStore {
      *   这个偏好文件仍孤零零留在 C 盘用户目录（其他数据都在 dataRoot，就它漏了）。
      *   不传时回落到 `$DSH_HOME/.dsh-qqbot`（再退 `~/.dsh-qqbot`），保持向后兼容。
      */
-    constructor(debugLog?: DebugFn, baseDir?: string);
+    constructor(debugLog?: DebugFn, baseDir?: string, onError?: DebugFn);
     /** 把老位置(`~/.dsh-qqbot/model-prefs.json`)的偏好**搬到新位置**（新位置没有时才搬，搬完保留原文件改名 .migrated） */
     private migrateLegacy;
     /** 每个 Map 的条目上限 —— 只增不减会让文件无限膨胀（2026-09-24 主人反馈"越写越长"）。 */
@@ -58,6 +67,19 @@ export declare class PrefsStore {
     setSessionPreset(sessionKey: string, preset: string): void;
     clearSessionPreset(sessionKey: string): boolean;
     private load;
+    /**
+     * 读磁盘当前状态（用于写前合并）。
+     * 不存在 → null（首次写）；**损坏** → 先备份再返回 null（直接覆盖会把仍完好的
+     * 条目一起丢掉，用户表现就是"QQ 里丢上下文"且无从恢复）。
+     */
+    private readDiskState;
+    /** 损坏文件只备份一次；失败不阻断写入 */
+    private backupCorrupted;
+    /**
+     * 合并内存与磁盘：**内存覆盖同 key**，磁盘独有的（别的写者写的）保留，
+     * 墓碑里的 key 一律不写回（防止删除被复活）。
+     */
+    private mergeDisk;
     private write;
 }
 export {};
