@@ -778,7 +778,8 @@ export async function bootstrapGateway(
   setBotplayTriggerImpl(myNs, (target, eventId, triggererId) => botplayController!.trigger(target, eventId, triggererId));
   setBotplayCatalogImpl(myNs, (target, page) => botplayController!.sendCatalog(target, page));
   // 预设切换卡片(2026-09-10): /preset 无参发按钮卡, 点击热切人格(仿 botplay 翻页)
-  const presetSwitcher = new PresetSwitcherController(manager, sender, logger);
+  const presetSwitcher = new PresetSwitcherController(manager, sender, logger, () =>
+    (Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin!.owners!.map(String) : []));
   setPresetCardImpl(myNs, (target, scope, peerId, page) => presetSwitcher.sendCard(target, scope, peerId, page ?? 0));
   // 2026-10-30：模型切换卡片（/model、/bot-model 无参或参数不是已存在的模型时发）
   const modelSwitcher = new ModelSwitcherController(manager, sender, logger, () =>

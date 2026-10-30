@@ -95,10 +95,30 @@ export class PresetSwitcherController {
     manager;
     sender;
     logger;
-    constructor(manager, sender, logger) {
+    owners;
+    constructor(manager, sender, logger, 
+    /**
+     * 主人白名单（config.groupAdmin.owners）。
+     *
+     * ★ 2026-10-30 补（主人小号实测报的洞）：
+     *   「我怎么点击切换人格，照样生效了，人格卡片发出来，点击按钮没有做 openid 校验」
+     *   —— 以前只有 model 卡片校验了点击者，preset 卡片**谁点都算**，
+     *   于是群里任何人（哪怕只是转发的卡）都能把主人切好的人格再切回去。
+     *   切人格 = 改 AI 行为，属于管理动作，同样只能白名单点。
+     */
+    owners = () => []) {
         this.manager = manager;
         this.sender = sender;
         this.logger = logger;
+        this.owners = owners;
+    }
+    /** 点击者是否有权（名单为空 ⇒ 交给命令侧那套"去配置"提示，这里不额外拦） */
+    clickerAllowed(ev) {
+        const who = String(ev?.group_member_openid ?? ev?.user_openid ?? '').trim();
+        const list = this.owners().map((x) => String(x ?? '').trim()).filter(Boolean);
+        if (list.length === 0)
+            return { ok: true, who };
+        return { ok: !!who && list.includes(who), who };
     }
     /** 发预设选择卡片(某页)。返回给人看的摘要文本(命令 handler 用)。 */
     async sendCard(target, scope, peerId, page = 0) {
@@ -140,6 +160,16 @@ export class PresetSwitcherController {
         const parsed = parsePresetButton(e.data.resolved?.button_data);
         if (parsed === null)
             return false;
+        // ★ 2026-10-30：切人格是管理动作，只认白名单点击者（与 model 卡同一口径）
+        const gate = this.clickerAllowed(e);
+        if (!gate.ok) {
+            this.logger.warn?.(`[preset-switcher] 按钮被拒（非白名单点击者）: ${gate.who.slice(0, 8)}…`);
+            try {
+                await this.sender.sendMarkdown(target, '⚠️ 切人格只有主人能点哦。');
+            }
+            catch { /* ignore */ }
+            return true;
+        }
         try {
             const list = await this.manager.listPresets();
             const available = list.filter((p) => !p.broken);
