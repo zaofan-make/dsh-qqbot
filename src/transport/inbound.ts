@@ -16,6 +16,7 @@ import type { SessionManager } from '../session/index.js';
 import { skipSilentAppend } from '../session/surface-guard.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { ChatScope, Logger, RawAttachment, ReplyTarget } from '../types.js';
+import { c2cNameOf } from '../features/c2c-name.js';
 import type { DownloadedFile } from './attachment.js';
 import { clearGroupHistory } from '../features/history-store.js';
 import { traceContextless } from '../features/contextless-store.js';
@@ -157,6 +158,20 @@ export async function handleInbound(
 ): Promise<void> {
   const msg = rawMsg as ProcessedMessage;
   const mwState = (state ?? {}) as MiddlewareState;
+
+  // ★ 2026-10-30：私聊昵称兜底（放在这里，不放 bot.on('message')）。
+  //   原因：**私聊消息不走 message 处理器** —— debounce 层聚合后直接调 handleInbound
+  //   （debounce.ts:638 `flush(c2c …) → handleInbound`），在 message 里加等于永远不执行
+  //   （2026-10-30 实测踩到：代码在、进程也重启了，就是不生效）。
+  //   做法：同一实例内私聊 openid == 群 member_openid，拿它反查群台账即可。
+  try {
+    const m = msg as unknown as { kind?: string; senderId?: string; senderName?: string };
+    if (String(m.kind) === 'c2c' && m.senderId && (!m.senderName || m.senderName === m.senderId)) {
+      const hit = c2cNameOf(dataRootOf(config), m.senderId);
+      if (hit) m.senderName = hit;
+    }
+  } catch { /* 反查失败不影响主流程 */ }
+
 
   const scope: ChatScope = msg.kind === 'group' ? 'group' : 'c2c';
   const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;

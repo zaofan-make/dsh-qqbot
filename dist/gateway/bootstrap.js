@@ -9,7 +9,6 @@ import { buildUserAgent } from '../shared/index.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
-import { c2cNameOf } from '../features/c2c-name.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
@@ -168,19 +167,6 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     // ── 入站：经过中间件链后的消息交给 dsh agent ──
     bot.on('message', async (mCtx) => {
         const msg = mCtx.message;
-        // ★ 2026-10-30：私聊昵称兜底。
-        //   同一实例内私聊 openid == 群 member_openid（实测主人两处都是 E902…），
-        //   所以直接拿 senderId 反查群台账就能拿到昵称。
-        //   （SDK 的 C2C 分支漏读了 author.username，这里补一层；查不到就保持原样，不影响任何流程。）
-        try {
-            const m = msg;
-            if (String(m.kind) === 'c2c' && m.senderId && (!m.senderName || m.senderName === m.senderId)) {
-                const hit = c2cNameOf(dataRootOf(config), m.senderId);
-                if (hit)
-                    m.senderName = hit;
-            }
-        }
-        catch { /* 反查失败不影响主流程 */ }
         // 2026-10-20 主人需求: 先判消息类型 + 记进「最近 2 分钟」内存缓冲（不落盘）
         let inKind = 'text';
         let inText = '';
