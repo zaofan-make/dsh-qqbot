@@ -12,6 +12,7 @@ import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage } from './
 import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { dataRootOf } from './gateway/data-root.js';
 import { homedir } from 'node:os';
 import { getStickerStore } from './features/sticker-store.js';
 import { autoTagImage } from './features/sticker-tagger.js';
@@ -4193,39 +4194,46 @@ export function ensureExtToolsGlobal(globalCtx) {
             }
             // 2026-10-28：元工具**先注册**，且不依赖"有没有实例"——
             //   上一版放在扫描末尾，若中途 early-return 就永远注册不上（实测：开了按需取用却连元工具都没有）。
+            // ★★★ 2026-10-31（主人实测：关掉三号的勾选，非 QQ 会话的 gain 也被移除了）——
+            //   **只要有一个启动中的实例还勾着，gain_qq_tools 就必须在**。
+            //   以前第 ① 步读的是 `managersOf()[0]`（通常是三号 standard），它一关就 return false，
+            //   把 gain 整个摘掉 ⇒ 二号明明还开着，非 QQ 会话却没入口了。
+            //   现在：遍历**所有实例**，任一勾选即 true（文件优先，config 兜底）。
             const metaOn = (() => {
-                // ① **文件开关优先**（最可靠，2026-10-28 主人实测："重启了也读不到勾选"）：
-                //    settings-host 保存时写 {dataRoot}/.qqbot/ext-meta-tool.json，这里每次扫描现读；
-                //    不依赖 config 快照，也不依赖 globalThis 有没有被写过。
-                try {
-                    const dr = String(managersOf()[0]?.dataRoot ?? '').trim();
-                    if (dr) {
-                        const o = JSON.parse(readFileSync(join(dr, '.qqbot', 'ext-meta-tool.json'), 'utf8'));
-                        if (typeof o?.on === 'boolean')
-                            return o.on;
-                    }
-                }
-                catch { /* 文件不存在 = 还没设过，往下走 */ }
-                // ② 进程级热标记：设置页保存时 settings-host 写入（config 是启动快照，不会自己变）。
-                try {
-                    const live = globalThis.__qqbotExtMetaTool;
-                    if (typeof live === 'boolean')
-                        return live;
-                }
-                catch { /* ignore */ }
-                // ② 回退 config —— ⚠️ 必须**遍历所有实例**，不能只看 managersOf()[0]：
-                //   index.ts 的 'qqbot/settings-changed' 监听会  把
-                //   保存值原地合并进当前实例的 config（这就是面板其它开关的热更路子）；但只有**被保存的那个
-                //   实例**里有这个字段，第一个 manager 未必是它 ⇒ 只看第 0 个会永远读到 undefined/false。
+                let anyOn = false;
                 try {
                     for (const m of managersOf()) {
-                        const cfgM = m?.config;
-                        if (cfgM && cfgM.extMetaTool === true)
-                            return true;
+                        const mm = m;
+                        let dr = String(mm.dataRoot ?? '').trim();
+                        if (!dr) {
+                            try {
+                                dr = dataRootOf(mm.config);
+                            }
+                            catch {
+                                dr = '';
+                            }
+                        }
+                        if (dr) {
+                            try {
+                                const o = JSON.parse(readFileSync(join(dr, '.qqbot', 'ext-meta-tool.json'), 'utf8'));
+                                if (o?.on === true)
+                                    anyOn = true;
+                                continue; // 该实例有明确文件设置，按文件算
+                            }
+                            catch { /* 没文件，看 config */ }
+                        }
+                        if (mm.config?.extMetaTool === true)
+                            anyOn = true;
                     }
                 }
                 catch { /* ignore */ }
-                return false;
+                // 进程级热标记：只在"刚保存为开"时补一票（绝不能因为它是 false 就否定别的实例）
+                try {
+                    if (globalThis.__qqbotExtMetaTool === true)
+                        anyOn = true;
+                }
+                catch { /* ignore */ }
+                return anyOn;
             })();
             // ★ 2026-10-28（主人急）：**无条件注册元工具** —— 它是个极轻的入口，本来就不该被任何开关挡住。
             //   "开了按需取用却连 gain_qq_tools 都看不到" 这种状态毫无意义：要么两个都有，要么两个都没有。
