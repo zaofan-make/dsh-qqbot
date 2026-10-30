@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { errorHandler, messageFilter, accessPolicy, mentionGate, contentSanitizer, slashCommand, concurrencyGuard, typingIndicator, quoteRef, envelopeFormatter, } from '@tencent-connect/qqbot-nodejs';
 import { dataRootOf, stickerDirOf } from './data-root.js';
+import { stripLeadingMentions } from '../shared/mention-clean.js';
 import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from '../middleware/attachment.js';
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
@@ -91,7 +92,10 @@ pluginCtx) {
     registerExtCommandReloader(dataRootOf(config), rebuildCommandTable);
     /** 斜杠开头且命中真实命令(含 stop/bot-stop)→ 返回命令名小写; 未知命令/纯文本 → null(放行) */
     const knownCmdName = (content) => {
-        const t = String(content ?? '').trim();
+        // ★ 2026-10-31（issue #36）：**先剥行首 @ 标记再判 `/`**。
+        //   群里 @ 机器人时 content 是 `<@bot> /preset`，原来先判 startsWith('/')
+        //   ⇒ 永远判不出命令（被当成普通聊天交给 AI）。
+        const t = stripLeadingMentions(content);
         if (!t || !t.startsWith('/'))
             return null;
         const cleaned = t.replace(/<@!?[^>]+>\s*/g, '').trim();
@@ -374,7 +378,8 @@ pluginCtx) {
     bot.use(async (ctx, next) => {
         if (ctx.message?.kind !== 'group')
             return next(); // 私聊 SDK 已支持
-        const content = String(ctx.message?.content ?? '').trim();
+        // ★ 2026-10-31（issue #36）：先剥行首 @ 再判 `/`（群里 @bot 后正文以 <@id> 开头）
+        const content = stripLeadingMentions(String(ctx.message?.content ?? ''));
         if (!content || !content.startsWith('/'))
             return next();
         const cleaned = content.replace(/<@!?[^>]+>\s*/g, '').trim();

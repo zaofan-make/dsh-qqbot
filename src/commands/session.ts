@@ -4,6 +4,7 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
 import { getScopePeer } from '../shared/index.js';
+import { stripMentions } from '../shared/mention-clean.js';
 import { resolveCommandTarget } from '../features/botplay.js';
 import { sendPresetCard } from '../features/preset-switcher.js';
 import { ownerOnlyAuth } from './auth.js';
@@ -48,7 +49,10 @@ export function newPresetCommand({ manager, config, logger }: CommandDeps): Slas
     handler: async (cmdCtx) => {
       const { scope, peerId } = getScopePeer(cmdCtx);
       const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
-      const args = String((cmdCtx.command?.raw ?? '').trim());
+      // ★ 2026-10-31（群友截图）：`/preset whale-girl @鲸鱼娘` 这种写法，参数里会残留
+      //   `<@openid>` ⇒ 与人设 id 精确匹配失败（报“找不到人格「whale-girl @鲸鱼娘（万能ai）」”）。
+      //   命令参数一律先剥掉 @ 标记再匹配。
+      const args = stripMentions(String((cmdCtx.command?.raw ?? '').trim()));
       if (!args) {
         const r = await manager.startNewSession(scope, peerId, false, undefined, { replyTarget: target, senderId: triggererId });
         if (r === 'forked') return '已开启新会话 ✓(使用当前默认人格)';
@@ -90,7 +94,10 @@ export function presetSwitchCommand({ manager, config }: CommandDeps): SlashComm
     usage: '/preset <id>',
     handler: async (cmdCtx) => {
       const { scope, peerId } = getScopePeer(cmdCtx);
-      const args = String((cmdCtx.command?.raw ?? '').trim());
+      // ★ 2026-10-31（群友截图）：`/preset whale-girl @鲸鱼娘` 这种写法，参数里会残留
+      //   `<@openid>` ⇒ 与人设 id 精确匹配失败（报“找不到人格「whale-girl @鲸鱼娘（万能ai）」”）。
+      //   命令参数一律先剥掉 @ 标记再匹配。
+      const args = stripMentions(String((cmdCtx.command?.raw ?? '').trim()));
       if (!args) {
         // 无参 → 发人格切换按钮卡片(点按钮热切; 仿 /botplay 目录卡翻页)
         const { target } = resolveCommandTarget(cmdCtx as never);

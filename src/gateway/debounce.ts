@@ -35,6 +35,7 @@ import { handleInbound } from '../transport/inbound.js';
 import { getHistoryStore, historyGroupKey, clearGroupHistory } from '../features/history-store.js';
 import { lookupImagePath } from '../features/image-path-cache.js';
 import { appendFileSync } from 'node:fs';
+import { stripLeadingMentions } from '../shared/mention-clean.js';
 import { join } from 'node:path';
 
 /** 运行时可配字段(全部可缺省, 缺省回落默认值) */
@@ -692,7 +693,8 @@ export function debounceLayer(
     if (outMode === 'nothink') {
       const nm = ctx.message as unknown as Record<string, unknown>;
       const kind0 = String(nm.kind ?? '');
-      const content0 = String(nm.content ?? '').trim();
+      // ★ 2026-10-31（issue #36）：先剥行首 @ 再判 `/`（群里 @bot 后正文以 <@id> 开头）
+      const content0 = stripLeadingMentions(String(nm.content ?? ''));
       // 斜杠命令(/outmode 等)放行 → 走下方 slash 层(逃生通道: 主人可随时唤醒 nothink)
       if (content0.startsWith('/')) return next();
       if (kind0 === 'group' || kind0 === 'c2c') {
@@ -714,7 +716,8 @@ export function debounceLayer(
     if (kind !== 'group' && kind !== 'c2c') return next();
 
     // 斜杠命令不聚合: 保 /approve、/bot-stop、/help 等即时响应
-    const content = String(msg.content ?? '').trim();
+    // ★ 2026-10-31（issue #36）：先剥行首 @ 再判（否则 "@bot /stop" 会被当普通消息聚合）
+    const content = stripLeadingMentions(String(msg.content ?? ''));
     if (content.startsWith('/')) return next();
 
     const wasMentioned =

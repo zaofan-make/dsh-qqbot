@@ -14,6 +14,22 @@ export interface MentionLike {
     is_you?: boolean;
     is_bot?: boolean;
 }
+/**
+ * 剥掉**行首连续的 @ 标记**（`<@openid>` / `<@!openid>`），用于斜杠命令识别。
+ *
+ * ★ 2026-10-31（issue #36 + 群友实测截图）：
+ *   群里 @ 机器人后，入站 content 是 `<@botOpenid> /preset` —— **@ 标记在正文最前面**。
+ *   而所有 `startsWith('/')` 的判断都发生在剥 @ 之前 ⇒ 命令被当成普通聊天交给 AI。
+ *   反过来，`/preset whale-girl @bot` 这种"命令在前、@ 在后"的写法，参数里也会残留
+ *   `<@openid>` ⇒ 人格名匹配失败（报"找不到人格「whale-girl @鲸鱼娘（万能ai）」"）。
+ *
+ * 所以两处都要剥，但**剥的位置不同**：
+ *   - 行首：用本函数（`^` 锚定 + 只剥开头的连续 @，绝不误伤正文里的普通 @ 文本）
+ *   - 参数内：命令参数解析时单独 strip（见 stripMentions）
+ */
+export declare function stripLeadingMentions(text: string | undefined | null): string;
+/** 剥掉**任意位置**的 @ 标记（用于命令参数，如人格 id 后面跟的 @） */
+export declare function stripMentions(text: string | undefined | null): string;
 export declare function replaceBotMention(content: string | undefined | null, mentions?: MentionLike[] | null, wasMentioned?: boolean): string;
 /**
  * 这条消息 @ 的是**别人**（不是她）吗？
