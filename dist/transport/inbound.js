@@ -1312,10 +1312,15 @@ export function buildUserMessage(userContent, quotePart, senderId, senderName, i
         // ★ 2026-10-30 主人要求「给私聊消息加上名字前缀」：
         //   以前私聊只拼 `[消息号: xxx]` + 正文，**压根不带发送者名字** ——
         //   哪怕 senderName 有值也用不上，模型只能看到一串消息号，不知道在和谁说话。
-        //   现在与群聊同口径：`[昵称 #短号] 正文`（昵称来自 c2cNameOf 反查台账，查不到退回短 openid）。
-        const displayName = senderName ?? shortSenderId(senderId);
+        //
+        // ⚠️ 主人同日补充：「**查不到就不拼接，浪费上下文**」——
+        //   不要退回短 openid（那串对模型毫无意义，只是白占 token）。
+        //   所以：只有真拿到名字时才加 `[昵称 #短号]`；拿不到就维持原来那行消息号。
         const refPart = msgRef ? ` #${msgRef}` : '';
-        return `${quotePart}[${displayName}${refPart}] ${userContent}`;
+        if (senderName)
+            return `${quotePart}[${senderName}${refPart}] ${userContent}`;
+        const idPart = msgRef ? `[消息号: ${msgRef}]\n` : '';
+        return `${quotePart}${idPart}${userContent}`;
     }
     const mentionTag = wasMentioned ? ' (@you)' : '';
     const displayName = senderName ?? shortSenderId(senderId);
