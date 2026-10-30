@@ -99,6 +99,19 @@ export class SessionManager {
   private liveSettingsReader: SettingsReader | undefined;
 
   /** 注入 QQ 通道发送能力(供通道工具)；bootstrap 调用 */
+  /**
+   * 取本实例的**真发送器**（bootstrap 里那个 QQBotSender：sendMedia / sendTuwenCard /
+   * recallLast 全套都在）。
+   *
+   * 2026-10-30 加：扩展命令以前拿到的 `sender` 是中间件 ctx 上的 SDK bot（只有
+   * sendText / sendMarkdown），于是命令侧 `env.image()` / `env.card()` 全部静默返回 false
+   * —— 现象就是「/头像 会注入文字、但图发不出来」。这里把真 sender 暴露出去，
+   * capsForCmd 优先用它。
+   */
+  public get sender(): QQBotSender | undefined {
+    return this.channelSender;
+  }
+
   public installChannelSender(sender: QQBotSender): void {
     this.channelSender = sender;
   }

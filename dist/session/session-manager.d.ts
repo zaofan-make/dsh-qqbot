@@ -20,6 +20,16 @@ export declare class SessionManager {
     /** 群守则热更新: 每次 system prompt 渲染现读 settings.yaml(SettingsReader fresh 模式) */
     private liveSettingsReader;
     /** 注入 QQ 通道发送能力(供通道工具)；bootstrap 调用 */
+    /**
+     * 取本实例的**真发送器**（bootstrap 里那个 QQBotSender：sendMedia / sendTuwenCard /
+     * recallLast 全套都在）。
+     *
+     * 2026-10-30 加：扩展命令以前拿到的 `sender` 是中间件 ctx 上的 SDK bot（只有
+     * sendText / sendMarkdown），于是命令侧 `env.image()` / `env.card()` 全部静默返回 false
+     * —— 现象就是「/头像 会注入文字、但图发不出来」。这里把真 sender 暴露出去，
+     * capsForCmd 优先用它。
+     */
+    get sender(): QQBotSender | undefined;
     installChannelSender(sender: QQBotSender): void;
     /**
      * 最近一次"建会话"失败的原始错误（2026-10-24 加，issue #18）。

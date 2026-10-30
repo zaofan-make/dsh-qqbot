@@ -483,7 +483,10 @@ export async function setupMiddlewares(
             : []),
           // 命令侧能拿到的发送器就是中间件 ctx 上的 bot（至少有 sendText / sendMarkdown）；
           // 缺什么能力，对应的 env.xxx 会优雅地返回 false，而不是抛错。
-          sender: (ctx as { bot?: unknown }).bot as never,
+          // 2026-10-30：优先用 manager 的真 QQBotSender（含 sendMedia / sendTuwenCard），
+          //   否则退回中间件 ctx.bot（SDK 实例，只有 sendText / sendMarkdown）——
+          //   用后者时命令侧 env.image()/env.card() 全是 false（"/头像 图发不出来"就是这么来的）。
+          sender: ((manager as unknown as { sender?: unknown }).sender ?? (ctx as { bot?: unknown }).bot) as never,
           replyTarget: (ctx as { replyTarget?: unknown }).replyTarget,
           agent: (rec as { agent?: unknown } | undefined)?.agent as never,
           // ★ 2026-10-13 加：**本会话的 DSH 会话 id** —— 回灌钩子要的正是它。
