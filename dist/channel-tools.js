@@ -12,6 +12,7 @@ import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage } from './
 import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { dataRootOf } from './gateway/data-root.js';
 import { homedir } from 'node:os';
 import { getStickerStore } from './features/sticker-store.js';
 import { autoTagImage } from './features/sticker-tagger.js';
@@ -4287,8 +4288,24 @@ export function ensureExtToolsGlobal(globalCtx) {
                 for (const m of managersOf()) {
                     const mm = m;
                     const tag = instanceTagOfManager(mm);
-                    if (tag && mm.dataRoot)
-                        insts.push({ tag, dataRoot: String(mm.dataRoot), cwd: String(mm.cwd ?? '') });
+                    if (!tag)
+                        continue;
+                    // ★ 2026-10-31 修（主人实测：勾了三号却列不出东西）：
+                    //   以前要求 `mm.dataRoot` 非空才收 —— 而**没显式配 dataRoot 的实例**（如 standard）
+                    //   dataRoot 是空串，于是它整个被排除，它的扩展目录压根没被扫。
+                    //   这里按插件口径兜底算：config.dataRoot || {absCwd(cwd)/process.cwd()}/dshqqbot。
+                    let dr = String(mm.dataRoot ?? '').trim();
+                    if (!dr) {
+                        try {
+                            dr = dataRootOf(mm.config);
+                        }
+                        catch {
+                            dr = '';
+                        }
+                    }
+                    if (!dr)
+                        continue;
+                    insts.push({ tag, dataRoot: dr, cwd: String(mm.cwd ?? mm.config?.cwd ?? '') });
                 }
             }
             catch { /* ignore */ }
