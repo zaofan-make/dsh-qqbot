@@ -3864,18 +3864,25 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
   void (async () => {
     try {
       if (!globalCtx || typeof globalCtx !== 'object') return;
-      // ★ 2026-10-10 关键修复：必须拿**插件根 ctx**。
-  //   证据：主人日志里 context_* + qq_group_admin + 人家的两个工具被**一起移除** ——
-  //   说明它们其实都挂在**会话作用域**上（会话一换就没了），也就是说 this.ctx 不是根。
-  //   cordis 的 ctx.root 才是根作用域；拿不到就退回原值（行为不变）。
-  const rootCtx = (((globalCtx as { root?: unknown } | null)?.root) ?? globalCtx) as object;
-  extGlobDiag('root=' + (rootCtx === globalCtx ? 'same-as-passed' : 'DIFFERS'));
+      // ★★ 2026-10-31（主人最终口径，第 2 次明确）：
+  //   **expose:'all' 的工具就按「普通扩展工具」的注册方式来注册** ——
+  //   用**插件 ctx（globalCtx）** + `ctx.tools`（属性访问，绑定本作用域），
+  //   注册结果只有 QQ 会话（插件的子 agent）继承得到，非 QQ 会话天然看不见。
+  //   ⚠️ 之前两个错：① 取 `ctx.root` 挂全局层；② 用 `ctx.get('tools')` 拿到的也是根层服务实例
+  //      （服务查找会向上冒泡），两者都等于注册到全局。
+  const rootCtx = globalCtx as object;
+  extGlobDiag('scope=plugin-ctx（同普通扩展工具）');
   const gctx = rootCtx as {
         get?: (n: string) => unknown;
         logger?: { info?: (m: string) => void; warn?: (m: string) => void };
       };
       let toolsObj: { register?: (t: unknown) => unknown } | undefined;
-      try { toolsObj = gctx.get?.('tools') as typeof toolsObj; } catch { /* ignore */ }
+      // ⚠️ 必须**优先 `ctx.tools`（属性访问 → 绑定本作用域）**；
+      //    `ctx.get('tools')` 是服务查找，会向上拿到**根层**的实例 ⇒ 注册等于挂全局。
+      try { toolsObj = (gctx as { tools?: typeof toolsObj }).tools; } catch { /* 未 inject 会抛 */ }
+      if (!toolsObj || typeof toolsObj.register !== 'function') {
+        try { toolsObj = gctx.get?.('tools') as typeof toolsObj; } catch { /* ignore */ }
+      }
       if (!toolsObj || typeof toolsObj.register !== 'function') { extGlobDiag('FAIL 拿不到 tools 服务'); extDiag('[extglob] 拿不到 tools 服务, 跳过'); return; }
       // 2026-10-28：元工具**先注册**，且不依赖"有没有实例"——
       //   上一版放在扫描末尾，若中途 early-return 就永远注册不上（实测：开了按需取用却连元工具都没有）。
