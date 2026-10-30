@@ -3964,18 +3964,25 @@ export function ensureExtToolsGlobal(globalCtx: unknown, agentCtxForApply?: unkn
   void (async () => {
     try {
       if (!globalCtx || typeof globalCtx !== 'object') return;
-      // ★ 2026-10-10 关键修复：必须拿**插件根 ctx**（cordis 的 ctx.root 才是根作用域）。
-  //   2026-10-30 曾一度改成"插件 ctx"，结果 tools.restrict **deny 不掉**这些工具
-  //   （restrict 只对**全局层**的名字有效）⇒ 非 QQ 会话反而全都能看见（实测回退）。
-  //   ⇒ 注册必须在 root 层，隔离靠 applyExtToolVisibility 的 deny。
-  const rootCtx = (((globalCtx as { root?: unknown } | null)?.root) ?? globalCtx) as object;
-  extGlobDiag('root=' + (rootCtx === globalCtx ? 'same-as-passed' : 'DIFFERS'));
+      // ★★ 2026-10-31（主人纠正 2 次）：**和普通扩展工具完全一样**——用**插件 ctx** 注册，
+  //   不取 `ctx.root`。普通工具走 `ctx.tools.register`（见本文件下面的 register），
+  //   注册落在插件作用域 ⇒ 只有 QQ 会话（插件的子 agent）继承得到，非 QQ 会话天然看不见。
+  //   我之前搞错的地方：**取 tools 服务用了 `ctx.get('tools')`** —— 那是"服务查找"，
+  //   会向上拿到**根层**的服务实例 ⇒ 注册等于挂到全局（这才是泄漏 + restrict 认不出的真正原因）。
+  //   现在两处都对齐普通工具：ctx = 插件 ctx，服务 = `ctx.tools`（属性，绑定本作用域）。
+  const rootCtx = globalCtx as object;
+  extGlobDiag('scope=plugin-ctx（同普通扩展工具）');
   const gctx = rootCtx as {
         get?: (n: string) => unknown;
         logger?: { info?: (m: string) => void; warn?: (m: string) => void };
       };
       let toolsObj: { register?: (t: unknown) => unknown } | undefined;
-      try { toolsObj = gctx.get?.('tools') as typeof toolsObj; } catch { /* ignore */ }
+      // ⚠️ 必须**优先 `ctx.tools`（属性访问，绑定本作用域）**；
+      //    只在拿不到时才退回 `get('tools')`（那是向上查找到的根服务，注册会落到全局）。
+      try { toolsObj = (gctx as { tools?: typeof toolsObj }).tools; } catch { /* 未 inject 会抛 */ }
+      if (!toolsObj || typeof toolsObj.register !== 'function') {
+        try { toolsObj = gctx.get?.('tools') as typeof toolsObj; } catch { /* ignore */ }
+      }
       if (!toolsObj || typeof toolsObj.register !== 'function') { extGlobDiag('FAIL 拿不到 tools 服务'); extDiag('[extglob] 拿不到 tools 服务, 跳过'); return; }
       // 2026-10-28：元工具**先注册**，且不依赖"有没有实例"——
       //   上一版放在扫描末尾，若中途 early-return 就永远注册不上（实测：开了按需取用却连元工具都没有）。
