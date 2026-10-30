@@ -21,15 +21,16 @@ export function modelCommand({ manager, config }) {
             // 无参数（卡片发不出去时）兜底：显示当前模型 + 可用模型列表
             if (!args) {
                 const current = manager.getEffectiveModel(scope, peerId);
-                const all = await manager.listAvailableModels();
-                // 2026-09-11 主人要求: 只显示当前服务商(provider)的模型 —— 点按钮只传模型名,
-                // provider 继承当前路由, 列表混杂其他服务商反而误导。
-                const models = current?.provider ? all.filter((m) => m.provider === current.provider) : all;
+                // ★ 2026-10-30 主人要求：**列出全部 provider 的模型**，不要只显示当前这一家
+                //   （原注释 2026-09-11 的"只显示当前 provider"作废 —— 那样切不到别的服务商）。
+                //   排序按 provider 聚在一起，便于一眼看出归属。
+                const models = [...(await manager.listAvailableModels())]
+                    .sort((a, b) => String(a.provider).localeCompare(String(b.provider)));
                 // 当前模型展示：优先用别名（name），找不到别名时回退到 provider/model id
                 let currentDisplay = '宿主默认配置';
                 if (current) {
                     const matched = models.find((m) => m.provider === current.provider && m.id === current.model);
-                    currentDisplay = matched?.name ?? `${current.provider}/${current.model}`;
+                    currentDisplay = `${matched?.name ?? current.model}（${current.provider}）`;
                 }
                 const lines = [
                     '### 🤖 模型配置',
@@ -37,11 +38,16 @@ export function modelCommand({ manager, config }) {
                     `**当前模型:** ${currentDisplay}`,
                 ];
                 if (models.length > 0) {
-                    lines.push('', '**可用模型（点击切换）:**');
+                    lines.push('', '**可用模型（点击切换，按服务商分组）:**');
+                    let lastGroup = '';
                     for (const m of models) {
+                        if (m.provider !== lastGroup) {
+                            lines.push('', `**── ${m.provider} ──**`);
+                            lastGroup = m.provider;
+                        }
                         const modelPath = `${m.provider}/${m.id}`;
-                        const displayName = m.name ? `${m.name}` : modelPath;
-                        lines.push(`<qqbot-cmd-input text="/bot-model ${modelPath}" show="/bot-model ${displayName}"/>`);
+                        const displayName = m.name || m.id;
+                        lines.push(`<qqbot-cmd-input text="/bot-model ${modelPath}" show="${displayName}"/>`);
                     }
                 }
                 lines.push('', '手动指定: `/bot-model provider/model`');
