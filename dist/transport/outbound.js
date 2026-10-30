@@ -29,7 +29,7 @@ export function isGateSilence(rawArgs) {
 import { parseEvent, extractTurnError, } from './events.js';
 import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
-import { rewriteLocalMarkdownImages } from '../features/md-media-rewrite.js';
+import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers } from '../features/md-media-rewrite.js';
 /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
 const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
 /** 适配主动: 同一入站消息(msg_id)最多被动回复条数(QQ 回复同一消息上限 ~4-5 条), 超出自动转主动 */
@@ -588,7 +588,8 @@ class OutboundRouter {
             //   直接用本 router 自己的 manager —— 它一定就是这个会话实例的那个。
             let mdTarget;
             try {
-                const ga = this.manager.groupAdmin;
+                // 2026-10-30: groupAdmin 只在群管理开着时才有；素材上传跟那个开关无关，所以回落 mediaApi
+                const ga = this.manager.groupAdmin ?? this.manager.mediaApi;
                 if (ga)
                     mdTarget = { apiCall: ga.apiCall.bind(ga) };
             }
@@ -602,6 +603,10 @@ class OutboundRouter {
                 }
                 catch (err) {
                     this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
+                    // 2026-10-30: 回落时不能把 qqbot-media 引用或原始 markdown 当文本发出去 ——
+                    //   本地图直接降级成 [MEDIA:image|路径]，走普通发图通道把图真发出来
+                    await sendRichOutbound(this.bot, _record.replyTarget, localMarkdownImagesToMediaMarkers(text), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));
+                    return;
                 }
             }
             await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));

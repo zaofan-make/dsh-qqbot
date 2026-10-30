@@ -54,7 +54,8 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     // 2026-10-21: 出站自动传图用 —— 给 md-media-rewrite 一个拿得到 token 的句柄
     try {
         setMaterialTargetFactory(() => {
-            const c = manager.groupAdmin;
+            // 2026-10-30: 素材上传不依赖群管理开关，groupAdmin 没有就回落 mediaApi
+            const c = manager.groupAdmin ?? manager.mediaApi;
             return c ? { apiCall: c.apiCall.bind(c) } : undefined;
         });
     }
@@ -343,7 +344,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                 //   绕过了 OutboundRouter.send() 里的那次重写，所以这里必须再来一次。
                 if (rawText.indexOf('![') >= 0) {
                     try {
-                        const ga = manager.groupAdmin;
+                        const ga = manager.groupAdmin ?? manager.mediaApi;
                         if (ga)
                             rawText = await rewriteLocalMarkdownImages(rawText, { apiCall: ga.apiCall.bind(ga) });
                         // 2026-10-21（主人定）：markdown 卡片通道里，本地图没传成功就**不发送**这条（正文不受影响，正文走 send()）

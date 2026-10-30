@@ -66,6 +66,35 @@ function fromFileUrl(u: string): string {
   }
 }
 
+/** 扫出文本里所有「本地图 markdown」（顺序与出现顺序一致） */
+function localMarkdownImages(text: string): Array<{ raw: string; alt: string; src: string }> {
+  if (!text || text.indexOf('![') < 0) return [];
+  const out: Array<{ raw: string; alt: string; src: string }> = [];
+  IMG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = IMG_RE.exec(text)) !== null) {
+    const src = String(m[2] ?? '').trim();
+    if (isLocalImagePath(src)) out.push({ raw: m[0], alt: String(m[1] ?? ''), src });
+  }
+  return out;
+}
+
+/**
+ * 兜底降级（2026-10-30）：把「本地图 markdown」改写成 `[MEDIA:image|本地路径]`。
+ *   素材上传不可用 / 单张上传失败时用 —— 让图走普通发图通道(file_type=1)真发出去，
+ *   而不是把 `![说明](D:\...\x.jpg)` 这段语法原样当文本发给群友。
+ */
+export function localMarkdownImagesToMediaMarkers(text: string): string {
+  const hits = localMarkdownImages(text);
+  if (hits.length === 0) return text;
+  let out = text;
+  for (const h of hits) {
+    const p = (/^file:\/\//i.test(h.src) ? fromFileUrl(h.src) : h.src).replace(/\|/g, '');
+    out = out.split(h.raw).join('[MEDIA:image|' + p + ']');
+  }
+  return out;
+}
+
 interface RemoteImageLite { image_id?: string; created_at?: number }
 
 async function ensureQuota(target: MdMediaTarget, need: number): Promise<number> {
@@ -103,9 +132,12 @@ export async function rewriteLocalMarkdownImages(text: string, explicitTarget?: 
   if (!text || text.indexOf('![') < 0) return text;
   const target = explicitTarget ?? targetFactory?.();
   if (!target) {
-    diag('no target（没有可用的 groupAdmin 句柄）');
-    setLast({ matched: 0, converted: 0, failed: 0, at: Date.now() });
-    return text;
+    // 2026-10-30: 没有素材句柄不再原样放行 —— 降级成 [MEDIA:image|本地路径]，
+    //   交给普通发图通道把图真发出去（以前这里 return text，markdown 语法被当纯文本发给群友）
+    const hits = localMarkdownImages(text);
+    diag('no target（没有可用的素材句柄）→ 降级 [MEDIA:image] x' + hits.length);
+    setLast({ matched: hits.length, converted: 0, failed: 0, at: Date.now() });
+    return localMarkdownImagesToMediaMarkers(text);
   }
 
   const matches: Array<{ raw: string; alt: string; src: string }> = [];
@@ -149,6 +181,9 @@ export async function rewriteLocalMarkdownImages(text: string, explicitTarget?: 
       converted += 1;
     } catch { /* 单张失败不影响其它 */ }
   }
+  // 2026-10-30: 有图没传成功也不留 markdown 语法 —— 没转换成 qqbot-media 的本地图降级成
+  //   [MEDIA:image|本地路径]，走普通发图通道（已转换的那些是 qqbot-media:// 引用，不会被碰到）
+  if (failed > 0) out = localMarkdownImagesToMediaMarkers(out);
   setLast({ matched: matches.length, converted, failed, at: Date.now() });
   return out;
 }

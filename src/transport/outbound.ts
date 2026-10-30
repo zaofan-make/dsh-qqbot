@@ -49,7 +49,7 @@ import {
 } from './events.js';
 import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
-import { rewriteLocalMarkdownImages } from '../features/md-media-rewrite.js';
+import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers } from '../features/md-media-rewrite.js';
 
 export type { QQBotSender } from './outbound-buffer.js';
 export type { ToolsRegistryLike } from './tool-presenter.js';
@@ -666,7 +666,8 @@ class OutboundRouter {
       //   直接用本 router 自己的 manager —— 它一定就是这个会话实例的那个。
       let mdTarget: { apiCall: (m: string, p: string, b?: unknown) => Promise<unknown> } | undefined;
       try {
-        const ga = this.manager.groupAdmin;
+        // 2026-10-30: groupAdmin 只在群管理开着时才有；素材上传跟那个开关无关，所以回落 mediaApi
+        const ga = this.manager.groupAdmin ?? this.manager.mediaApi;
         if (ga) mdTarget = { apiCall: ga.apiCall.bind(ga) as unknown as (m: string, p: string, b?: unknown) => Promise<unknown> };
       } catch { /* ignore */ }
       const outText = await rewriteLocalMarkdownImages(text, mdTarget as never);
@@ -677,6 +678,21 @@ class OutboundRouter {
           return;
         } catch (err) {
           this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
+          // 2026-10-30: 回落时不能把 qqbot-media 引用或原始 markdown 当文本发出去 ——
+          //   本地图直接降级成 [MEDIA:image|路径]，走普通发图通道把图真发出来
+          await sendRichOutbound(
+            this.bot,
+            _record.replyTarget,
+            localMarkdownImagesToMediaMarkers(text),
+            this.config.textChunkLimit,
+            this.config.cwd,
+            (m) => this.logger.error(m),
+            () => this.resolveTarget(_record),
+            this.chunkTargetFn(_record),
+            undefined,
+            this.refLookupFor(_record),
+          );
+          return;
         }
       }
       await sendRichOutbound(

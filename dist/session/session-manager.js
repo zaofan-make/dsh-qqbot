@@ -120,6 +120,24 @@ export class SessionManager {
         return this._groupAdmin;
     }
     _groupAdmin;
+    /**
+     * 素材上传专用的轻量客户端（2026-10-30）：
+     *   md-media 只借它的 apiCall 走 `/v2/media-images` 传图，与「群管理功能开不开」无关。
+     *   以前直接复用 groupAdmin，而 groupAdmin.enabled=false 时那个 getter 恒返回 undefined，
+     *   于是本地图 markdown 永远不改写，正文把 `![说明](D:\...\x.jpg)` 原样当文本发给群友。
+     */
+    get mediaApi() {
+        if (!this._mediaApi) {
+            try {
+                this._mediaApi = createGroupAdmin({ appId: this.config.appId, appSecret: this.config.appSecret });
+            }
+            catch {
+                return undefined;
+            }
+        }
+        return this._mediaApi;
+    }
+    _mediaApi;
     /** 对话内默认管理群(web/非群会话时群工具用它; 空=未配置) */
     get manageGroup() {
         return this.config.groupAdmin?.manageGroup ?? '';
