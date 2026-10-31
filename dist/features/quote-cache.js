@@ -40,10 +40,26 @@ function save(dataRoot, data) {
     }
     catch { /* 缓存写失败不影响主链 */ }
 }
+/** 本地日期键 YYYY-MM-DD（编号按天重置的判据） */
+function todayKey() {
+    const d = new Date();
+    const p = (n) => (n < 10 ? '0' + n : String(n));
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+/** 取下一个编号：当天内累加，跨天重置为 1 */
+function nextId(data) {
+    const today = todayKey();
+    if (data.day !== today) {
+        data.day = today;
+        data.count = 0;
+    }
+    data.count = (Number(data.count) || 0) + 1;
+    return data.count;
+}
 /** 存一条引用原文, 返回它的编号（超上限丢最旧） */
 export function pushQuote(dataRoot, key, text, sender) {
     const data = load(dataRoot);
-    const entry = { id: (data.seq += 1), text: String(text || ''), sender, at: Date.now() };
+    const entry = { id: nextId(data), text: String(text || ''), sender, at: Date.now() };
     const list = Array.isArray(data.map[key]) ? data.map[key] : [];
     list.push(entry);
     data.map[key] = list.slice(-QUOTE_CACHE_MAX);

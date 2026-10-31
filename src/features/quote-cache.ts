@@ -27,7 +27,19 @@ export interface QuoteEntry {
 }
 
 interface CacheFile {
+  /** 旧的全局自增编号（兼容老文件；新逻辑改用 day/count） */
   seq: number;
+  /**
+   * ★ 2026-11-01（主人定）：编号改成**当天内累加、第二天重置**。
+   *
+   * 为什么不是 1~10 循环：缓存只留 10 条，循环编号会在淘汰后**指向别的条目** ——
+   * 同一天里 `#3` 今天指 A、明天指 B，引用直接错乱。
+   * 为什么不是全局自增：号会越涨越大（已经到 #4407），看着像"缓存里有几千条"，
+   * 实际只有 10 条，纯噪音。
+   * 折中就是按天重置：**当天内唯一且单调**（不会错乱），第二天从 1 重新开始（不会无限涨）。
+   */
+  day?: string;
+  count?: number;
   map: Record<string, QuoteEntry[]>;
 }
 
@@ -59,10 +71,28 @@ function save(dataRoot: string, data: CacheFile): void {
   } catch { /* 缓存写失败不影响主链 */ }
 }
 
+/** 本地日期键 YYYY-MM-DD（编号按天重置的判据） */
+function todayKey(): string {
+  const d = new Date();
+  const p = (n: number): string => (n < 10 ? '0' + n : String(n));
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+/** 取下一个编号：当天内累加，跨天重置为 1 */
+function nextId(data: CacheFile): number {
+  const today = todayKey();
+  if (data.day !== today) {
+    data.day = today;
+    data.count = 0;
+  }
+  data.count = (Number(data.count) || 0) + 1;
+  return data.count;
+}
+
 /** 存一条引用原文, 返回它的编号（超上限丢最旧） */
 export function pushQuote(dataRoot: string, key: string, text: string, sender?: string): QuoteEntry {
   const data = load(dataRoot);
-  const entry: QuoteEntry = { id: (data.seq += 1), text: String(text || ''), sender, at: Date.now() };
+  const entry: QuoteEntry = { id: nextId(data), text: String(text || ''), sender, at: Date.now() };
   const list = Array.isArray(data.map[key]) ? data.map[key] : [];
   list.push(entry);
   data.map[key] = list.slice(-QUOTE_CACHE_MAX);
