@@ -87,7 +87,18 @@ export function startScheduler(manager, config, logger) {
                 msgType: 0,
                 attachments: undefined,
             };
-            await handleInbound(fakeMsg, manager, config, logger, undefined);
+            await handleInbound(fakeMsg, manager, config, logger, 
+            // ★ 2026-11-01（issue #37，作者 LLLCCKK 定位得很准）：
+            //   以前这里传 `undefined` ⇒ 价值评分拿不到"强制入站"标记；而伪造消息又**故意不带 @**
+            //   （避免污染"被点名"语义）⇒ `gate:'block'` 下"提醒大家该睡觉了"这类提醒句恒定低分
+            //   （实测 0.11~0.14 < 0.5）→ 只 append 进上下文、群里一个字都不发，
+            //   可 schedule-state.json 里 lastRun 已写 ⇒ 当天不再补发，用户只觉得"定时任务没生效"。
+            //   定时任务是"主人自己排的闹钟"，值不值得回在配置那一刻就定了，不该再由价值评分二次裁决
+            //   ⇒ 带上插件已有的强制入站标记（它**不伪造 @**，真实消息的评分与拦截不受影响）。
+            {
+                qqInboundForceWake: true,
+                qqInboundForceWakeReason: 'scheduled-task',
+            });
             logger.info(`[scheduler] injected inbound → handleInbound: task=${task.id} key=${key}`);
         }
         catch (err) {

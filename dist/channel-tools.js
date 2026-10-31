@@ -3317,7 +3317,13 @@ export async function askAiToWriteFakeMsg(ns, scope, peerId, senderName, prompt)
         };
         const noop = () => { };
         const logger = { info: noop, warn: noop, debug: noop, error: noop };
-        await handleInbound(fakeMsg, mgr, cfg, logger, undefined);
+        // ★ 2026-11-01（issue #37 同源问题）：面板按钮 / "让 AI 写" 这类**人为触发**的伪造入站，
+        //   以前也传 `undefined` ⇒ 同样会被价值评分拦（且伪造消息不带 @ ⇒ mentioned 也为 false）。
+        //   语义上和定时任务一样：值不值得回在"点按钮那一刻"就定了，不该由评分二次裁决。
+        await handleInbound(fakeMsg, mgr, cfg, logger, {
+            qqInboundForceWake: true,
+            qqInboundForceWakeReason: 'panel-task',
+        });
         return { ok: true, msg: `已伪造一条消息唤醒 ${scope === 'group' ? '群' : '私聊'} …${peerId.slice(-6)} 的 AI 回合, 稍等她回复 ✧` };
     }
     catch (e) {
