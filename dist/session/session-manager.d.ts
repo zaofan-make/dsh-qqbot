@@ -145,6 +145,23 @@ export declare class SessionManager {
      * 仅当 QQ 侧 /bot-model 明确设过 override 时调用(QQ 设置优先, 持久生效);
      * 无 override 时**不覆盖** —— 尊重宿主/ web 设置的模型(重启后不回退)。
      */
+    /**
+     * 给一个活的 agent 应用模型路由。
+     *
+     * ★★ 2026-10-31（对照 DSH v0.2.1-alpha.4 起的官方升级指南 `session-model-selection`）：
+     *   新宿主把"选模型"做成了 agent 上**受控的引用** `agent.model`（`ModelSelectionRef`）：
+     *     · `current`   —— 下一步进 prompt 组装时用的选择
+     *     · `assembled` —— 本步已快照的选择
+     *   宿主通过 `installModelSelection()` 挂 `system-prompt/assemble` / `agent/request` /
+     *   `agent/pre-step` 三个监听器，用这两个字段决定真正的 provider/model。
+     *   而 `agent/request` **不再允许插件改路由** —— 也就是说直接改 `agent.options` 在
+     *   新宿主上会**静默失效**（用户以为切了模型，其实还是旧的）。
+     *
+     * 所以这里按能力分三级降级，新旧宿主都能跑：
+     *   ① 有 `agent.model.current`（新宿主）→ 写它（走宿主受控通道）
+     *   ② 否则有 `agent.options`（旧宿主）→ 维持原行为，直接改 options
+     *   ③ 都没有 → 记一条 warn，别静默
+     */
     private applyModelRoute;
     /**
      * 通道工具自愈 + 固化(2026-09-05 升级): 每次消息都全量幂等注册 channel-tools(静态 import,

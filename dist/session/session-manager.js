@@ -809,19 +809,59 @@ export class SessionManager {
      * 仅当 QQ 侧 /bot-model 明确设过 override 时调用(QQ 设置优先, 持久生效);
      * 无 override 时**不覆盖** —— 尊重宿主/ web 设置的模型(重启后不回退)。
      */
+    /**
+     * 给一个活的 agent 应用模型路由。
+     *
+     * ★★ 2026-10-31（对照 DSH v0.2.1-alpha.4 起的官方升级指南 `session-model-selection`）：
+     *   新宿主把"选模型"做成了 agent 上**受控的引用** `agent.model`（`ModelSelectionRef`）：
+     *     · `current`   —— 下一步进 prompt 组装时用的选择
+     *     · `assembled` —— 本步已快照的选择
+     *   宿主通过 `installModelSelection()` 挂 `system-prompt/assemble` / `agent/request` /
+     *   `agent/pre-step` 三个监听器，用这两个字段决定真正的 provider/model。
+     *   而 `agent/request` **不再允许插件改路由** —— 也就是说直接改 `agent.options` 在
+     *   新宿主上会**静默失效**（用户以为切了模型，其实还是旧的）。
+     *
+     * 所以这里按能力分三级降级，新旧宿主都能跑：
+     *   ① 有 `agent.model.current`（新宿主）→ 写它（走宿主受控通道）
+     *   ② 否则有 `agent.options`（旧宿主）→ 维持原行为，直接改 options
+     *   ③ 都没有 → 记一条 warn，别静默
+     */
     applyModelRoute(agent, route, label) {
         if (!route)
             return;
-        const liveOpts = agent.options;
-        if (!liveOpts)
+        const a = agent;
+        // ① 新宿主：受控引用
+        try {
+            const ref = a.model;
+            if (ref && typeof ref === 'object' && 'current' in ref) {
+                const cur = ref.current;
+                if (cur?.provider === route.provider && cur?.model === route.model)
+                    return;
+                // 保留宿主可能存在的其它字段（reasoningEffort 等），只换 provider/model
+                ref.current = {
+                    ...(cur ?? {}),
+                    provider: route.provider,
+                    model: route.model,
+                };
+                this.logger.info(`getOrCreate: ${label} 模型覆盖(agent.model) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`);
+                return;
+            }
+        }
+        catch { /* 新宿主不适用，往下走旧路径 */ }
+        // ② 旧宿主：直接改 options（原行为）
+        const liveOpts = a.options;
+        if (!liveOpts) {
+            // ③ 两条路都没有 —— 别静默：这类失败在用户侧表现为"切了没反应"，极难排查
+            this.logger.warn(`getOrCreate: ${label} 无法应用模型路由（agent 既无 model 也无 options）: ${route.provider}/${route.model}`);
             return;
+        }
         if (liveOpts.provider !== route.provider || liveOpts.model !== route.model) {
             agent.options = {
                 ...liveOpts,
                 provider: route.provider,
                 model: route.model,
             };
-            this.logger.info(`getOrCreate: ${label} 模型覆盖 ${liveOpts.provider}/${liveOpts.model} -> ${route.provider}/${route.model}`);
+            this.logger.info(`getOrCreate: ${label} 模型覆盖(options) ${liveOpts.provider}/${liveOpts.model} -> ${route.provider}/${route.model}`);
         }
     }
     /**
