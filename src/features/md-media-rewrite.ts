@@ -95,6 +95,32 @@ export function localMarkdownImagesToMediaMarkers(text: string): string {
   return out;
 }
 
+/**
+ * 兜底降级（2026-10-31，主人实测截图）：把**任意** markdown 图片语法从要当纯文本发的内容里拿掉。
+ *
+ * 为什么要它：`localMarkdownImagesToMediaMarkers` 只认**本地路径**，而上传成功的图已经被改写成
+ * `qqbot-media://image/v1/...` 远程引用 —— 那种引用**只有 markdown 消息（msg_type=2）能渲染**，
+ * 一旦 markdown 通道失败、回落到普通文本，就会把整段
+ * `![说明 #350 #1500px](qqbot-media://image/v1/xxx)` 原样发到群里（群友看到一堆语法）。
+ *
+ * 处理策略（尽量不丢信息）：
+ *  - 本地路径的图 → 仍交给 `[MEDIA:image|路径]`（走普通发图通道真发出去）；
+ *  - 已经是 `qqbot-media://` / http(s) 的 → 纯文本发不出去，就把整段语法换成 `[图片]`（保留 alt 作说明）。
+ */
+export function stripMarkdownImagesForPlainText(text: string): string {
+  return String(text ?? '')
+    // ![alt](src) —— alt 里可能有换行/尺寸注释，src 里不含右括号（QQ 引用串是 base64-ish）
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt: string, src: string) => {
+      if (/^file:\/\//i.test(src) || /^[A-Za-z]:[\\/]/.test(src) || src.startsWith('\\\\')) {
+        const p = (/^file:\/\//i.test(src) ? fromFileUrl(src) : src).replace(/\|/g, '');
+        return '[MEDIA:image|' + p + ']';
+      }
+      const name = String(alt ?? '').replace(/#\s*\d+px/g, '').replace(/\s+/g, ' ').trim();
+      return name ? `[图片：${name}]` : '[图片]';
+    })
+    .trim();
+}
+
 interface RemoteImageLite { image_id?: string; created_at?: number }
 
 async function ensureQuota(target: MdMediaTarget, need: number): Promise<number> {

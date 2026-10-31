@@ -29,7 +29,7 @@ export function isGateSilence(rawArgs) {
 import { parseEvent, extractTurnError, } from './events.js';
 import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
-import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers } from '../features/md-media-rewrite.js';
+import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText } from '../features/md-media-rewrite.js';
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
 /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
 const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
@@ -618,7 +618,11 @@ class OutboundRouter {
                     this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
                     // 2026-10-30: 回落时不能把 qqbot-media 引用或原始 markdown 当文本发出去 ——
                     //   本地图直接降级成 [MEDIA:image|路径]，走普通发图通道把图真发出来
-                    await sendRichOutbound(this.bot, _record.replyTarget, localMarkdownImagesToMediaMarkers(text), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));
+                    // 2026-10-31（主人实测截图）：**已经上传成 qqbot-media:// 的图**
+                    //   `localMarkdownImagesToMediaMarkers` 认不出来（它只认本地路径）⇒ 整段语法原样发到群里。
+                    //   这里再套一层 stripMarkdownImagesForPlainText 统一收拾：
+                    //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。绝不把语法露给群友。
+                    await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(text)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));
                     return;
                 }
             }
