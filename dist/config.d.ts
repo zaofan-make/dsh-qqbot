@@ -88,8 +88,16 @@ export interface InjectRuleConfig {
 /** 定时唤醒时刻任务(M3): 一条时刻记录, 挂在某个目标(群/人)下面 */
 export interface ScheduledWakeTask {
     id: string;
-    /** 每天触发时刻, 24h 本地时区 "HH:MM" */
+    /**
+     * 触发方式（2026-11-01 新增，向后兼容：没这个字段 = `daily`）：
+     * - `daily`：每天到 `time` 触发（原来的行为）
+     * - `once` ：到 `dueAt` 这个时刻触发一次，之后由 `schedule-state.json` 记 `"DONE"` 标死
+     */
+    kind?: 'daily' | 'once';
+    /** 每天触发时刻, 24h 本地时区 "HH:MM"（kind=daily 用；once 时仅作展示） */
     time: string;
+    /** kind=once 用：触发时刻的毫秒时间戳（本地时区解释，由面板填） */
+    dueAt?: number;
     enabled: boolean;
     /** 可选: 指定这次想让她聊的方向(空=自由发挥) */
     prompt?: string;

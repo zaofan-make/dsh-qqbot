@@ -128,16 +128,31 @@ export function startScheduler(manager, config, logger) {
             return;
         const hhmm = nowHHMM();
         const today = todayKey();
+        const nowMs = Date.now();
         for (const { target, task } of tasksNow) {
-            if ((task.time ?? '') !== hhmm)
-                continue;
+            // ★ 2026-11-01：支持「一次性」(kind='once')。
+            //   · daily(默认/未填) —— 老行为：time 命中 + 今天没跑过
+            //   · once          —— dueAt 到点（≤现在）且没跑过 ⇒ 触发一次
+            //   触发后统一记进 lastRun：once 记 `DONE`（永不重复），daily 记日期。
+            //   ⚠️ 不删配置行：面板上留着能看见"这条跑过了"，用户自己决定要不要删。
+            const isOnce = task.kind === 'once';
+            if (isOnce) {
+                if (!task.dueAt || nowMs < task.dueAt)
+                    continue;
+            }
+            else {
+                if ((task.time ?? '') !== hhmm)
+                    continue;
+            }
             if (state.lastRun[task.id] === today)
                 continue; // 今天已触发
+            if (isOnce && state.lastRun[task.id] === 'DONE')
+                continue; // 一次性已用掉
             if (inFlight.has(task.id))
                 continue; // 同分钟并发防重
             inFlight.add(task.id);
             // 触发瞬间即记账(乐观) —— 宁可漏发也不重复打扰
-            state.lastRun[task.id] = today;
+            state.lastRun[task.id] = isOnce ? 'DONE' : today;
             persist();
             void fireTask(target, task).finally(() => inFlight.delete(task.id));
         }

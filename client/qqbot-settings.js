@@ -1922,7 +1922,7 @@ window.__ModuleLoader__.load({
           h(SButton, { variant: 'primary', size: 'sm', onClick: addRow }, '+ 添加一行')),
         // 表格头
         h('div', { style: { display: 'flex', alignItems: 'center', background: T.cardHi, border: '1px solid #dde1e7', borderRadius: T.radius + ' ' + T.radius + ' 0 0', fontWeight: 700, fontSize: T.fsSm, color: T.text2 } },
-          h('div', { style: { width: 90, padding: '8px 10px' } }, '时间'),
+          h('div', { style: { width: 190, padding: '8px 10px' } }, '方式 / 时间'),
           h('div', { style: { flex: '1 1 26%', minWidth: 140, padding: '8px 10px' } }, '对象'),
           h('div', { style: { flex: '2 1 38%', minWidth: 160, padding: '8px 10px' } }, '任务描述'),
           // ★ 2026-11-01（主人实测踩坑）：这一列原来写「每天」，但它绑定的是 `task.enabled`（启停）——
@@ -1936,9 +1936,48 @@ window.__ModuleLoader__.load({
             var tg = r.tg, tt = r.task
             var nm = chatLabelOf(tg.scope, tg.targetId)
             return h('div', { key: tg.id + ':' + tt.id, style: { display: 'flex', alignItems: 'center', background: idx % 2 ? T.cardHi : '#ffffff', borderBottom: '1px solid #dde1e7', borderLeft: '1px solid #dde1e7', borderRight: '1px solid #dde1e7', fontSize: T.fsSm } },
-              // 时间
-              h('div', { style: { width: 90, padding: '6px 8px' } },
-                h('input', { className: 'qqs-inp', style: { width: 62, padding: '2px 6px', border: '1px solid ' + T.border, borderRadius: T.radius }, value: sv(tt.time), placeholder: '09:00', onChange: function (e) { patchTask(r.ti, tt.id, { time: e.target.value }) } })),
+              // 方式 + 时间（2026-11-01：新增「一次性」，之前只能每天重复）
+              //   daily → 顺手的时间输入 HH:MM；once → datetime-local，落到 dueAt(毫秒)
+              h('div', { style: { width: 190, padding: '6px 8px', display: 'flex', gap: 4, alignItems: 'center' } },
+                h('select', {
+                  style: { flexShrink: 0, padding: '2px 4px', border: '1px solid ' + T.border, borderRadius: T.radius, fontSize: T.fsSm },
+                  value: tt.kind === 'once' ? 'once' : 'daily',
+                  onChange: function (e) {
+                    var k = e.target.value
+                    if (k === 'once') {
+                      // 切到一次性：默认给「现在+5 分钟」，省得用户从 1970 开始填
+                      var d = new Date(Date.now() + 5 * 60000)
+                      var p2 = function (n) { return (n < 10 ? '0' : '') + n }
+                      patchTask(r.ti, tt.id, {
+                        kind: 'once',
+                        dueAt: d.getTime(),
+                        time: p2(d.getHours()) + ':' + p2(d.getMinutes()),
+                      })
+                    } else {
+                      patchTask(r.ti, tt.id, { kind: 'daily', dueAt: undefined })
+                    }
+                  },
+                },
+                  h('option', { value: 'daily' }, '每天'),
+                  h('option', { value: 'once' }, '一次')),
+                (tt.kind === 'once')
+                  ? h('input', {
+                      type: 'datetime-local',
+                      className: 'qqs-inp',
+                      style: { flex: 1, minWidth: 0, padding: '1px 4px', border: '1px solid ' + T.border, borderRadius: T.radius, fontSize: 11 },
+                      value: (function () {
+                        if (!tt.dueAt) return ''
+                        var d = new Date(tt.dueAt)
+                        var p3 = function (n) { return (n < 10 ? '0' : '') + n }
+                        return d.getFullYear() + '-' + p3(d.getMonth() + 1) + '-' + p3(d.getDate()) + 'T' + p3(d.getHours()) + ':' + p3(d.getMinutes())
+                      })(),
+                      onChange: function (e) {
+                        var v = e.target.value
+                        var ms = v ? new Date(v).getTime() : undefined
+                        patchTask(r.ti, tt.id, { dueAt: ms, time: v ? v.slice(11, 16) : tt.time })
+                      },
+                    })
+                  : h('input', { className: 'qqs-inp', style: { width: 62, padding: '2px 6px', border: '1px solid ' + T.border, borderRadius: T.radius }, value: sv(tt.time), placeholder: '09:00', onChange: function (e) { patchTask(r.ti, tt.id, { time: e.target.value }) } })),
               // 对象: 类型小标 + 可搜索选择器(点击弹出, 输入过滤; 每行独立, 互不牵连)
               h('div', { style: { flex: '1 1 26%', minWidth: 150, padding: '6px 8px', display: 'flex', gap: 4, alignItems: 'center' } },
                 h('span', { style: { flexShrink: 0, fontSize: 10, padding: '0 5px', borderRadius: 4, color: '#fff', background: tg.scope === 'c2c' ? T.primary : T.primary2 } }, tg.scope === 'c2c' ? '私' : '群'),
