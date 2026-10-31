@@ -14,6 +14,28 @@ export declare function setMaterialTargetFactory(fn: (() => MdMediaTarget | unde
  *   素材上传不可用 / 单张上传失败时用 —— 让图走普通发图通道(file_type=1)真发出去，
  *   而不是把 `![说明](D:\...\x.jpg)` 这段语法原样当文本发给群友。
  */
+/**
+ * 规范化 markdown 图片语法（2026-10-31，主人实测：整段语法被当文本发出）：
+ *
+ * 模型经常写出**畸形**的图片语法，QQ 的 markdown 卡（msg_type=2）是严格解析的，
+ * 畸形就 400 → 回落纯文本 → 群友看到一堆语法。实测样本：
+ *
+ * ```
+ * ![再说我是大肥鱼 #350 #350
+ * #1500px
+ * #1500px](qqbot-media://image/v1/…)
+ * ```
+ *
+ * 三个问题：alt 里有换行、尺寸注释重复（同一个属性写 4 遍）、`](...)` 主体被折行断开。
+ *
+ * 这里统一收拾成合法形态：alt 压成单行、尺寸注释去重保留最多两个、src 去空白。
+ */
+export declare function normalizeMarkdownImages(text: string): string;
+/**
+ * 兜底降级（2026-10-30）：把「本地图 markdown」改写成 `[MEDIA:image|本地路径]`。
+ *   素材上传不可用 / 单张上传失败时用 —— 让图走普通发图通道(file_type=1)真发出去，
+ *   而不是把 `![说明](D:\...\x.jpg)` 这段语法原样当文本发给群友。
+ */
 export declare function localMarkdownImagesToMediaMarkers(text: string): string;
 /**
  * 兜底降级（2026-10-31，主人实测截图）：把**任意** markdown 图片语法从要当纯文本发的内容里拿掉。

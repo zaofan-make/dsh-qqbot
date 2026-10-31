@@ -77,6 +77,56 @@ function localMarkdownImages(text) {
  *   素材上传不可用 / 单张上传失败时用 —— 让图走普通发图通道(file_type=1)真发出去，
  *   而不是把 `![说明](D:\...\x.jpg)` 这段语法原样当文本发给群友。
  */
+/**
+ * 规范化 markdown 图片语法（2026-10-31，主人实测：整段语法被当文本发出）：
+ *
+ * 模型经常写出**畸形**的图片语法，QQ 的 markdown 卡（msg_type=2）是严格解析的，
+ * 畸形就 400 → 回落纯文本 → 群友看到一堆语法。实测样本：
+ *
+ * ```
+ * ![再说我是大肥鱼 #350 #350
+ * #1500px
+ * #1500px](qqbot-media://image/v1/…)
+ * ```
+ *
+ * 三个问题：alt 里有换行、尺寸注释重复（同一个属性写 4 遍）、`](...)` 主体被折行断开。
+ *
+ * 这里统一收拾成合法形态：alt 压成单行、尺寸注释去重保留最多两个、src 去空白。
+ */
+export function normalizeMarkdownImages(text) {
+    const src = String(text ?? '');
+    if (src.indexOf('![') < 0)
+        return src;
+    // 允许 alt 与 src 里出现换行（先整体匹配跨行的图片语法）
+    return src.replace(/!\[([\s\S]*?)\]\(([\s\S]*?)\)/g, (_m, altRaw, srcRaw) => {
+        const altOne = String(altRaw).replace(/\s+/g, ' ').trim();
+        const srcOne = String(srcRaw).replace(/\s+/g, '').trim();
+        if (!srcOne)
+            return _m;
+        // 尺寸注释：只保留最多两个（宽、高），并按出现顺序去重
+        const sizeHits = altOne.match(/#\s*(\d{1,5})\s*(?:px)?/g) ?? [];
+        const sizes = [];
+        for (const h of sizeHits) {
+            const n = (h.match(/\d{1,5}/) ?? [''])[0];
+            if (!n)
+                continue;
+            if (sizes.includes(n))
+                continue;
+            sizes.push(n);
+            if (sizes.length === 2)
+                break;
+        }
+        // alt 去掉所有尺寸注释后再拼回规范的两个
+        const altClean = altOne.replace(/#\s*\d{1,5}\s*(?:px)?/g, '').replace(/\s+/g, ' ').trim();
+        const sizePart = sizes.length === 2 ? ` #${sizes[0]}px #${sizes[1]}px` : '';
+        return `![${altClean}${sizePart}](${srcOne})`;
+    });
+}
+/**
+ * 兜底降级（2026-10-30）：把「本地图 markdown」改写成 `[MEDIA:image|本地路径]`。
+ *   素材上传不可用 / 单张上传失败时用 —— 让图走普通发图通道(file_type=1)真发出去，
+ *   而不是把 `![说明](D:\...\x.jpg)` 这段语法原样当文本发给群友。
+ */
 export function localMarkdownImagesToMediaMarkers(text) {
     const hits = localMarkdownImages(text);
     if (hits.length === 0)

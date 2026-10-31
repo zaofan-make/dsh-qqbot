@@ -49,7 +49,7 @@ import {
 } from './events.js';
 import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
-import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText } from '../features/md-media-rewrite.js';
+import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText, normalizeMarkdownImages } from '../features/md-media-rewrite.js';
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
 
 export type { QQBotSender } from './outbound-buffer.js';
@@ -683,7 +683,11 @@ class OutboundRouter {
         const ga = this.manager.groupAdmin ?? this.manager.mediaApi;
         if (ga) mdTarget = { apiCall: ga.apiCall.bind(ga) as unknown as (m: string, p: string, b?: unknown) => Promise<unknown> };
       } catch { /* ignore */ }
-      const outText = await rewriteLocalMarkdownImages(text, mdTarget as never);
+      // 2026-10-31（主人实测）：模型常输出**畸形**图片语法（alt 里换行、尺寸注释重复、
+      //   括号主体被折行拆断）→ QQ markdown 严格解析就会 400 → 回落纯文本。
+      //   ⇒ 先规范化成单行合法语法，再上传/发送。
+      const normalized = normalizeMarkdownImages(text);
+      const outText = await rewriteLocalMarkdownImages(normalized, mdTarget as never);
       // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
       if (outText.indexOf('qqbot-media://') >= 0) {
         try {
