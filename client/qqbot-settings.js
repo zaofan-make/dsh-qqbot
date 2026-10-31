@@ -1925,7 +1925,10 @@ window.__ModuleLoader__.load({
           h('div', { style: { width: 90, padding: '8px 10px' } }, '时间'),
           h('div', { style: { flex: '1 1 26%', minWidth: 140, padding: '8px 10px' } }, '对象'),
           h('div', { style: { flex: '2 1 38%', minWidth: 160, padding: '8px 10px' } }, '任务描述'),
-          h('div', { style: { width: 80, padding: '8px 10px', textAlign: 'center' } }, '每天'),
+          // ★ 2026-11-01（主人实测踩坑）：这一列原来写「每天」，但它绑定的是 `task.enabled`（启停）——
+          //   用户会理解成"要不要每天重复"，于是不勾 ⇒ 实际把任务停用了 ⇒ 到点毫无反应，
+          //   而界面上完全看不出任务被禁用（只能去翻 JSON 才发现 enabled:false）。文案改成「启用」。
+          h('div', { style: { width: 80, padding: '8px 10px', textAlign: 'center' }, title: '勾上才会触发；不勾＝这条任务停用' }, '启用'),
           h('div', { style: { width: 56, padding: '8px 10px', textAlign: 'center' } }, '')),
         // 行
         shown.length === 0 ? h('div', { style: { border: '1px solid ' + T.border, borderTop: 'none', borderRadius: '0 0 ' + T.radius + ' ' + T.radius, padding: 22, textAlign: 'center', color: T.text3, fontSize: T.fsSm } }, '还没有任务行 —— 点「+ 添加一行」开始配置')
