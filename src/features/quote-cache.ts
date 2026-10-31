@@ -115,7 +115,8 @@ export function getQuote(dataRoot: string, key: string, id?: number): QuoteEntry
     //   原来 `list.find` 从头（旧）找 ⇒ 会命中昨天那条、把今天的内容顶掉。
     //   改成从尾（新）往前找：同 id 一律取**最新**那条。
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].id === id) return list[i];
+      const e = list[i];
+      if (e && e.id === id) return e;
     }
     return undefined;
   }
