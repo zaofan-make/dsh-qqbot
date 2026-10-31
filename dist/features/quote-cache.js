@@ -76,8 +76,16 @@ export function getQuote(dataRoot, key, id) {
     const list = load(dataRoot).map[key];
     if (!Array.isArray(list) || list.length === 0)
         return undefined;
-    if (typeof id === 'number' && Number.isFinite(id))
-        return list.find((x) => x.id === id);
+    if (typeof id === 'number' && Number.isFinite(id)) {
+        // ★ 2026-11-01：编号改成按天重置后，**跨天会出现同一个 id**（昨天的 #5 / 今天的 #5）。
+        //   原来 `list.find` 从头（旧）找 ⇒ 会命中昨天那条、把今天的内容顶掉。
+        //   改成从尾（新）往前找：同 id 一律取**最新**那条。
+        for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].id === id)
+                return list[i];
+        }
+        return undefined;
+    }
     return list[list.length - 1];
 }
 //# sourceMappingURL=quote-cache.js.map
