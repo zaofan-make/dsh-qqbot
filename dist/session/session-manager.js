@@ -830,24 +830,26 @@ export class SessionManager {
         if (!route)
             return;
         const a = agent;
-        // ① 新宿主：受控引用
+        // ① 新宿主：AgentModel 实例（**方法**，不是属性！）
+        //   ⚠️⚠️ 2026-11-03 事故：之前写成 `ref.current = {...}` —— 而 `current` 是个**方法**
+        //   （`current(): ModelSelection | undefined`），把它覆盖成普通对象之后，
+        //   宿主每轮调 `this.model.current()` 就炸：`this.model.current is not a function`，
+        //   整个会话「本轮运行失败」。正确用法是 `current()` 读 + `select(sel)` 写。
         try {
-            const ref = a.model;
-            if (ref && typeof ref === 'object' && 'current' in ref) {
-                const cur = ref.current;
+            const m = a.model;
+            if (m && typeof m.current === 'function' && typeof m.select === 'function') {
+                const cur = m.current();
                 if (cur?.provider === route.provider && cur?.model === route.model)
                     return;
                 // 保留宿主可能存在的其它字段（reasoningEffort 等），只换 provider/model
-                ref.current = {
-                    ...(cur ?? {}),
-                    provider: route.provider,
-                    model: route.model,
-                };
-                this.logger.info(`getOrCreate: ${label} 模型覆盖(agent.model) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`);
+                m.select({ ...(cur ?? {}), provider: route.provider, model: route.model });
+                this.logger.info(`getOrCreate: ${label} 模型覆盖(agent.model.select) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`);
                 return;
             }
         }
-        catch { /* 新宿主不适用，往下走旧路径 */ }
+        catch (err) {
+            this.logger.warn(`getOrCreate: ${label} agent.model 选择失败，回落 options: ${err instanceof Error ? err.message : String(err)}`);
+        }
         // ② 旧宿主：直接改 options（原行为）
         const liveOpts = a.options;
         if (!liveOpts) {
