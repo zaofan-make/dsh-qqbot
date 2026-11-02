@@ -28,10 +28,10 @@
 import type { Middleware, MiddlewareContext, HistoryEntry } from '@tencent-connect/qqbot-nodejs';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { ImQQBotConfig } from '../config.js';
-import { dataRootOf } from './data-root.js';
+import { dataRootOf , stickerDirOf} from './data-root.js';
 import type { SessionManager } from '../session/index.js';
 import type { Logger } from '../types.js';
-import { handleInbound } from '../transport/inbound.js';
+import { handleInbound, buildQuotePart } from '../transport/inbound.js';
 import { getHistoryStore, historyGroupKey, clearGroupHistory } from '../features/history-store.js';
 import { lookupImagePath } from '../features/image-path-cache.js';
 import { appendFileSync } from 'node:fs';
@@ -306,14 +306,39 @@ function attachmentNote(atts: unknown, processed: unknown): string {
   return out.join(' ');
 }
 
-/** 把窗口这批消息拼成一条插话文本(带发送者标签; 当时 @ 过她的补 (@you), 与正常派发同款事实标注) */
-function buildInterjectText(entries: DebounceEntry[], note: string): string {
+/**
+ * 把窗口这批消息拼成一条插话文本(带发送者标签; 当时 @ 过她的补 (@you), 与正常派发同款事实标注)。
+ *
+ * ★ 2026-11-02（主人实测：插话里丢了引用）：`[麦克斯韦] 把这条里的链接2和3放进同一个里面`
+ *   —— "这条"指的是他引用的那条消息，而插话只拼了正文，引用块整个没带 ⇒ 她根本不知道"这条"是什么。
+ *   窗口里其实**已经按 messageId 存了每条的引用**（`w.quoteByMsg`，见 recordEntry），
+ *   这里按 messageId 取出来，用与正常派发相同的 `buildQuotePart()` 拼在前面。
+ */
+function buildInterjectText(
+  entries: DebounceEntry[],
+  note: string,
+  quoteByMsg?: Map<string, unknown>,
+  stickerDir: string = '',
+): string {
   const lines: string[] = [];
   for (const e of entries) {
-    const m = e.msg as { content?: unknown; senderName?: unknown; senderId?: unknown; attachments?: unknown };
+    const m = e.msg as { content?: unknown; senderName?: unknown; senderId?: unknown; attachments?: unknown; messageId?: unknown };
     const atts = attachmentNote(m.attachments, e.processed);
     const body = [String(m.content ?? '').trim(), atts].filter(Boolean).join(' ') || '(无文字内容)';
-    lines.push(`[${shortSender(m.senderName ?? m.senderId)}] ${body}${e.wasMentioned ? ' (@you)' : ''}`);
+    // 引用块（有才拼；超长截断交给 buildQuotePart 内部逻辑）
+    let quotePart = '';
+    const mid = String(m.messageId ?? '');
+    const q = mid && quoteByMsg ? quoteByMsg.get(mid) : undefined;
+    if (q) {
+      try {
+        quotePart = buildQuotePart(q as never, stickerDir);
+        // 插话是"即时补料"，引用太长会白吃 token ⇒ 超过 400 字就截断并提示用 quote_view
+        if (quotePart.length > 400) {
+          quotePart = quotePart.slice(0, 400) + '\n…（引用过长已截断）\n[/引]\n';
+        }
+      } catch { quotePart = ''; }
+    }
+    lines.push(`${quotePart}[${shortSender(m.senderName ?? m.senderId)}] ${body}${e.wasMentioned ? ' (@you)' : ''}`);
   }
   if (lines.length === 0) return '';
   return `${note}\n${lines.join('\n')}`;
@@ -324,12 +349,19 @@ function buildInterjectText(entries: DebounceEntry[], note: string): string {
  * (不唤醒、不拆 tool_calls → 宿主在下个 step 组包时带上, 她本轮就读到了)。
  * @returns true=已插进去(调用方清窗口); false=没有注入能力 / 注入抛错(调用方回落原排队逻辑, 消息不丢)
  */
-function interjectBatch(rec: InterjectTarget, entries: DebounceEntry[], logger: Logger): boolean {
+function interjectBatch(
+  rec: InterjectTarget,
+  entries: DebounceEntry[],
+  logger: Logger,
+  quoteByMsg?: Map<string, unknown>,
+  stickerDir = '',
+): boolean {
   const a = rec.agent as { inject?: (m: unknown) => void } | undefined;
   if (!a || typeof a.inject !== 'function') return false;
   // 逐次缩短提示(2026-10-09): 本回合第 n 次插话就用第 n 档; 注入成功后才 +1（失败回落排队，不算插过）
   const seq = Number(rec.interjectSeq) || 0;
-  const text = buildInterjectText(entries, interjectNoteFor(seq, (rec as { sessionId?: string }).sessionId));
+  // ★ 2026-11-02：把窗口上按 messageId 存的引用一起带上（否则插话里"这条"指代不明）
+  const text = buildInterjectText(entries, interjectNoteFor(seq, (rec as { sessionId?: string }).sessionId), quoteByMsg, stickerDir);
   if (!text) return false;
   try {
     a.inject(createUserMessage({
@@ -449,7 +481,7 @@ export function debounceLayer(
           //      效果等同排队 —— 这是宿主 inject 的固有语义, 不是 bug。
           //   ⚠️ 插话是"即时补料"不是"派发回复": 不唤醒 ⇒ 不消耗群冷却, 也不在这里走冷却判断。
           if (busySendModeOf(config) === 'interject') {
-            if (interjectBatch(busyRec as InterjectTarget, pre, logger)) {
+            if (interjectBatch(busyRec as InterjectTarget, pre, logger, w.quoteByMsg, (() => { try { return stickerDirOf(config); } catch { return ''; } })())) {
               clearTimer(w);
               windows.delete(key);
               // 与正常派发同款: 清群历史缓存 —— 免得这批消息这轮插过、下轮又被当 [历史] 打包一遍
