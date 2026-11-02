@@ -658,6 +658,22 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
         }
         const ts = msgTs(msg);
         const arrivedAt = Date.now();
+        // ★★ 2026-11-02（主人实测：群里同一个人一直说话，send_media 报「msgid 已经过期,不能回复」）——
+        //   根因：`record.replyTarget.msgId` 只在 **flush（真正派发）** 时才更新；而聚合窗口的逻辑是
+        //   「说话的人还在说 → 重新计时」，所以同一人连续刷屏时窗口迟迟不 flush，
+        //   msgId 就停在很久以前那条消息上（QQ 的被动回复窗口只有 5 分钟）
+        //   ⇒ 这时发文件/图片自然"msgid 过期"。别人插一句（或 @ 触发立即派发）才会刷新，所以看起来
+        //   "别人说话才更新"。
+        //   修法：**每条入站群消息都顺手刷新 replyTarget.msgId**（不等 flush）——
+        //   "正在说话的那个人"本身就是当前最新的可回复目标。
+        try {
+            const scopeKey = (kind === 'group' ? 'group' : 'c2c');
+            const rec = manager.findByPeer(scopeKey, String(peerId));
+            const mid = String(msg.messageId ?? '');
+            if (rec && mid)
+                rec.replyTarget = { scope: scopeKey, targetId: String(peerId), msgId: mid };
+        }
+        catch { /* ignore */ }
         // 到达日志: 记录"到达本中间件的时刻"+"服务器时间戳", 用于对比官方帧序与真实发送序
         dbg(`arrive key=${key} at=${arrivedAt} ts=${String(msg.timestamp ?? '')} parsedTs=${ts} id=${String(msg.messageId ?? '').slice(0, 14)} mention=${wasMentioned} content=${JSON.stringify(content.slice(0, 30))}`);
         // 只有"比窗口现有消息更新"的消息才算最近说话者继续开口 → 重置静默计时;
