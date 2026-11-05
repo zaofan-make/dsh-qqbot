@@ -12,6 +12,8 @@ import { ConfigSchema, EditableConfigSchema } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
 import { takePendingMemoText } from './features/people-memo.js';
 import { getProfileDir, resolveEnv, resolveProfileName } from './shared/index.js';
+import { warmSessions } from './features/warm-sessions.js';
+import { applyExtToolVisibility } from './channel-tools.js';
 import { describeNsConflict, nsPathsOf, scanNsOwners } from './features/ns-guard.js';
 void getProfileDir;
 import { runQrSetup, persistCredentialsToProfile } from './setup.js';
@@ -406,6 +408,43 @@ export async function apply(ctx, config) {
                 onDisposer: (d) => { gatewayDispose = d; },
             });
             logger.info(`实例 ${ns}: 网关已启动（凭据热更新生效，无需重启）`);
+            // ★★ 2026-11-05（issue #39 问题 1）：**启动预热已知 QQ 会话**。
+            //   1.11.13 起扩展工具按 agent 作用域注册，触发点是 agent/inbox/claimed 与
+            //   agent/pre-step —— 都要求"有回合"。冷启动后空闲会话从来没注册过，
+            //   于是工具清单里没有那些扩展工具，必须等一条入站消息跑完回合才恢复。
+            //   这里在网关起来后**主动**把已知会话建出来并注册一遍（不开回合）。
+            //   丢后台跑：预热慢一点无所谓，绝不能拖住启动。
+            void (async () => {
+                try {
+                    const cfg = resolvedConfig;
+                    if (cfg.warmSessionsOnStart === false)
+                        return;
+                    // manager 按实例注册在 session-registry 里（`registerSessionManager(ns, m)`）。
+                    // 预热时**每个 target 单独解析**更稳：并发/多实例下 ns→manager 的映射可能还没建立，
+                    // 而 `findManagerByPeer` 会先查活跃表、再按群注册表/台账归属匹配、最后回退。
+                    const reg = await import('./features/session-registry.js');
+                    const dataRoot0 = String(resolvedConfig.dataRoot
+                        || join(String(resolvedConfig.cwd || process.cwd()), 'dshqqbot'));
+                    const tag0 = String(resolvedConfig.preset || '').trim();
+                    await warmSessions({
+                        dataRoot: dataRoot0,
+                        tag: tag0,
+                        maxSessions: Number(cfg.warmMaxSessions ?? 12),
+                        logger,
+                        getOrCreate: async (scope, peerId) => {
+                            const m = reg.findManagerByPeer(scope, peerId);
+                            const mm = m;
+                            if (!mm || typeof mm.getOrCreate !== 'function')
+                                return undefined;
+                            return await mm.getOrCreate(scope, peerId, '', { scope, targetId: peerId });
+                        },
+                        register: (agentCtx, tag) => applyExtToolVisibility(agentCtx, tag),
+                    });
+                }
+                catch (err) {
+                    logger.debug?.(`实例 ${ns}: 会话预热失败(不影响启动): ${err instanceof Error ? err.message : String(err)}`);
+                }
+            })();
         }
         catch (err) {
             gatewayStarted = false; // 失败则允许下次重试

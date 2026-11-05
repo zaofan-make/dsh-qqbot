@@ -490,6 +490,16 @@ export interface ImQQBotConfig {
      * 该回合中途 QQ 有人插话 ⇒ 从此全部放行；图片/文件/工具调用不受影响。
      */
     webTurnSilent?: boolean;
+    /**
+     * 启动预热已知 QQ 会话（2026-11-05，issue #39 问题 1；默认 **true**）。
+     *
+     * 背景：扩展工具从 1.11.13 起按 agent 作用域注册，触发点都要求"有回合"，
+     * 冷启动后空闲会话从来没注册过 ⇒ 工具清单里没有它们，必须等一条入站消息。
+     * 打开本项后，网关起来时会主动把已知会话建出来并注册一遍（不开回合）。
+     */
+    warmSessionsOnStart?: boolean;
+    /** 预热上限（默认 12）：每个预热都会真的创建一个 agent，避免几十个群拖慢启动 */
+    warmMaxSessions?: number;
     /** botplay 互动事件列表(运行时 live, 与 settings 同源) */
     botplayEvents: BotplayEventConfig[];
 }

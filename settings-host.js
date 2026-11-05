@@ -2692,6 +2692,22 @@ export function apply(ctx) {
         if (hitN && Date.now() - hitN.at < 30000) return hitN.name;
         try {
           const cwd = bot.cwd;   // nsBot.cwd = 数据根（不是工作目录）
+          // ★ 2026-11-05（issue #39 问题 2 后半）：
+          //   原来只读 known-chats 台账 —— 它对 **group** 记的是「最近发言人昵称」，
+          //   于是面板顶栏把群显示成某个成员的名字。群名应该以 **groups.json 注册表**为准
+          //   （与设置面板群列表同一个数据源）。台账只用来兜底 c2c / 注册表里没名字的群。
+          if (scope === 'group') {
+            try {
+              const reg = readGroupsJson(cwd);
+              const g = reg && reg[peerId];
+              const gn = g && (g.name || g.groupName);
+              if (gn && String(gn).trim()) {
+                const name = String(gn).trim();
+                nc.set(ck, { at: Date.now(), name });
+                return name;
+              }
+            } catch { /* 没有注册表 → 走台账兜底 */ }
+          }
           const ld = chatLedgerNames(join(cwd, '表情包')).get(scope + ':' + peerId);
           const name = (ld && ld.name) || '';
           nc.set(ck, { at: Date.now(), name });
@@ -2729,11 +2745,16 @@ export function apply(ctx) {
             if (!sid || String(sid) !== sessionId) continue;
             // 兼容 "sessionKey@sessionId" 形态（overrides 的键是那个形状，sessionIds 一般不带）
             const sk = String(sk0).split('@')[0];
-            const i = sk.indexOf(':');
-            if (i <= 0) continue;
-            const scope = sk.slice(0, i);
-            const peerId = sk.slice(i + 1);
-            if (!peerId || (scope !== 'group' && scope !== 'c2c')) continue;
+            // ★★ 2026-11-05（issue #39 问题 2 前半：群会话 hits 恒为空）：
+            //   sessionKey 的不定形态是 `qqbot:<appId>:group:<group_openid>`，
+            //   原来按**第一个**冒号切 ⇒ scope 变成 'qqbot' ⇒ 被下面那行过滤掉，
+            //   结果群会话永远查不到（私聊能中是因为它的 key 恰好以 c2c 开头）。
+            //   改成按**最后一个** `group:` / `c2c:` 定位。
+            const m = /(?:^|:)(group|c2c):(.+)$/.exec(sk);
+            if (!m) continue;
+            const scope = m[1];
+            const peerId = m[2];
+            if (!peerId) continue;
             pushHit(ns, scope, peerId, nameOf(ns, scope, peerId), 'prefs');
           }
         } catch { /* 没有偏好文件 / JSON 坏了：跳过 */ }

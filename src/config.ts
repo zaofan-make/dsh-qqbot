@@ -825,6 +825,16 @@ export interface ImQQBotConfig {
    * 该回合中途 QQ 有人插话 ⇒ 从此全部放行；图片/文件/工具调用不受影响。
    */
   webTurnSilent?: boolean;
+  /**
+   * 启动预热已知 QQ 会话（2026-11-05，issue #39 问题 1；默认 **true**）。
+   *
+   * 背景：扩展工具从 1.11.13 起按 agent 作用域注册，触发点都要求"有回合"，
+   * 冷启动后空闲会话从来没注册过 ⇒ 工具清单里没有它们，必须等一条入站消息。
+   * 打开本项后，网关起来时会主动把已知会话建出来并注册一遍（不开回合）。
+   */
+  warmSessionsOnStart?: boolean;
+  /** 预热上限（默认 12）：每个预热都会真的创建一个 agent，避免几十个群拖慢启动 */
+  warmMaxSessions?: number;
   /** botplay 互动事件列表(运行时 live, 与 settings 同源) */
   botplayEvents: BotplayEventConfig[];
 }
@@ -908,6 +918,8 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   questionsMode: Schema.union(['async', 'blocking']).default('async').description('提问卡片怎么等答案: 后台(async, 默认)=卡片发出后工具立刻返回, 她能继续聊天/干活, 对方答完的答案会自动作为一条回执消息送回来(她忙就插进当前回合、空闲就唤醒她处理); 阻塞(blocking)=旧行为, 工具一直挂到对方作答或超时才继续(期间她动不了)'),
   outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
   webTurnSilent: Schema.boolean().default(false).description('web 回合静默(出站模式的附加开关): 勾上后, 在 DSH 界面里发起的回合其正文块不发到 QQ(留在 DSH); 该回合中途 QQ 有人插话则从此全部放行; 图片/文件/视频/语音与工具调用不受影响'),
+  warmSessionsOnStart: Schema.boolean().default(true).description('启动时预热已知 QQ 会话(默认开): 网关起来后主动把已有会话建出来并注册扩展工具, 不用等一条入站消息; 关掉=老行为(必须等消息才恢复工具)'),
+  warmMaxSessions: Schema.number().default(12).description('启动预热上限(默认12): 每个预热会真的创建一个 agent, 太多会拖慢启动'),
   botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });
 
