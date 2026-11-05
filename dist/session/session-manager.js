@@ -1113,6 +1113,10 @@ export class SessionManager {
                 if (!this.nsForCwd(cwdC))
                     return;
                 const tagC = instanceTagOfManager(this);
+                // ★ 2026-11-06：内置工具（mountChannelTools）也在这里注册一次 —— 与扩展工具同待遇。
+                //   幂等：重名 already registered 被内部静默跳过，和 inbound / claimed 两条路不冲突。
+                if (ag.ctx)
+                    void mountChannelTools(ag.ctx);
                 if (!tagC)
                     return;
                 applyExtToolVisibility(ag.ctx, tagC);
@@ -1154,6 +1158,21 @@ export class SessionManager {
             catch { /* ignore */ }
             try {
                 this.syncScopedToolsOnClaim(agent0);
+            }
+            catch { /* ignore */ }
+            // ★★ 2026-11-06（主人："web 回合拿不到 outbound_mode 等内置工具，不利于自动化"）：
+            //   内置工具（toolDefs：outbound_mode / reply_gate / send_media / quote_view / group_* …）
+            //   原来**只有** `inbound.ts:368` 的 `ensureChannelTools(record)` 一个注册点 ——
+            //   也就是"必须有一条 QQ 消息入站"才会注册。
+            //   而它们和扩展工具一样是 per-agent 的（`mountChannelTools(agentCtx)`）⇒
+            //   web/桌面发起的回合、其它自动化注入的回合，全都看不到这批工具。
+            //   这里在 claimed（早于 assemble 快照）补一次：mountChannelTools 内部是幂等的
+            //   （重名 already registered 静默跳过），所以和 inbound 那条路不冲突。
+            try {
+                const agC = agent0;
+                const cwdC = String(agent0?.session?.header?.cwd ?? '');
+                if (agC?.ctx && this.nsForCwd(cwdC))
+                    void mountChannelTools(agC.ctx);
             }
             catch { /* ignore */ }
         });
