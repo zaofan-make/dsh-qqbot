@@ -501,17 +501,28 @@ function findSessionRec(ch, exec) {
     const tryOne = (c) => {
         if (!c?.manager || !exec.agent)
             return undefined;
+        const sid0 = String(exec.agent?.session?.id ?? '');
         const byAgent = c.manager.findByAgent(exec.agent);
         if (byAgent)
             return { ch: c, rec: byAgent };
-        const sid = String(exec.agent?.session?.id ?? '');
-        if (sid) {
-            const bySid = c.manager.findBySessionId(sid);
+        if (sid0) {
+            const bySid = c.manager.findBySessionId(sid0);
             if (bySid) {
-                diag(`findSessionRec: 按 sessionId 命中 ${sid.slice(0, 8)}（agent 引用不同，web 回合常见）`);
+                diag(`findSessionRec: 按 sessionId 命中 ${sid0.slice(0, 8)}（agent 引用不同，web 回合常见）`);
                 return { ch: c, rec: bySid };
             }
         }
+        // ★ 2026-11-06 诊断（主人实测：web 回合工具全报「通道未就绪」）：
+        //   byAgent / bySid 都没中时要能看见"到底为什么"，不能再靠猜。
+        //   写到 ~/.dsh/contextless-trace.log（与其它插件诊断同一个文件）。
+        try {
+            const mgr = c.manager;
+            const known = [...(mgr.sessions?.values?.() ?? [])].slice(0, 8)
+                .map((r) => `${String(r.sessionKey ?? '?')}=${String(r.sessionId ?? '?').slice(0, 8)}`);
+            traceToolReg(`[findSessionRec-miss] sid=${sid0.slice(0, 8) || '(空)'} bridges=${channelBridges.length}`
+                + ` byAgent=miss bySid=miss known=[${known.join(', ')}]`);
+        }
+        catch { /* ignore */ }
         return undefined;
     };
     if (ch) {

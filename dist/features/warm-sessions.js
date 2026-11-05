@@ -28,8 +28,22 @@
  *   · `warmMaxSessions`（默认 **12**）—— 超出按「最近用过的优先」截断
  *   · 失败静默（单个会话出错不影响启动，也不影响其它会话）
  */
-import { readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+/** 诊断：写进 ~/.dsh/contextless-trace.log（与插件其它诊断同一个文件，便于一起看） */
+function traceWarm(line) {
+    try {
+        const home = process.env['HOME'] || process.env['USERPROFILE'] || homedir();
+        if (!home)
+            return;
+        const dir = join(home, '.dsh');
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(join(dir, 'contextless-trace.log'), `${new Date().toISOString()} [warm] ${line}
+`, 'utf8');
+    }
+    catch { /* ignore */ }
+}
 /**
  * 从 sessionKey 里解析 scope/peerId。
  *
@@ -86,10 +100,13 @@ export function listKnownTargets(dataRoot) {
 export async function warmSessions(opts) {
     const { dataRoot, tag, maxSessions, logger, getOrCreate, register } = opts;
     const result = { total: 0, warmed: 0, failed: 0 };
-    if (!tag)
-        return result; // 拿不到 tag ⇒ 没东西可注册
+    if (!tag) {
+        traceWarm(`跳过：tag 为空 dataRoot=${dataRoot}`);
+        return result;
+    }
     const all = listKnownTargets(dataRoot);
     result.total = all.length;
+    traceWarm(`开始 dataRoot=${dataRoot} tag=${tag} 已知=${all.length} 上限=${maxSessions}`);
     if (all.length === 0)
         return result;
     const limit = Math.max(0, Math.floor(maxSessions));
@@ -97,18 +114,26 @@ export async function warmSessions(opts) {
     for (const t of targets) {
         try {
             const rec = await getOrCreate(t.scope, t.peerId);
-            if (!rec || !rec.agentCtx) {
+            if (!rec) {
                 result.failed += 1;
+                traceWarm(`✗ ${t.scope}:${t.peerId.slice(0, 8)} getOrCreate 返回空`);
+                continue;
+            }
+            if (!rec.agentCtx) {
+                result.failed += 1;
+                traceWarm(`✗ ${t.scope}:${t.peerId.slice(0, 8)} 无 agentCtx（setup 未完成）`);
                 continue;
             }
             register(rec.agentCtx, tag);
             result.warmed += 1;
+            traceWarm(`✓ ${t.scope}:${t.peerId.slice(0, 8)} 已注册`);
         }
         catch (err) {
             result.failed += 1;
-            logger?.debug?.(`[warm] ${t.scope}:${t.peerId.slice(0, 8)} 预热失败: ${err instanceof Error ? err.message : String(err)}`);
+            traceWarm(`✗ ${t.scope}:${t.peerId.slice(0, 8)} 异常 ${err instanceof Error ? err.message : String(err)}`);
         }
     }
+    traceWarm(`结束 ${result.warmed}/${targets.length} 成功（共 ${result.total} 已知，失败 ${result.failed}）`);
     logger?.info?.(`[warm] 启动预热：${result.warmed}/${targets.length} 个会话已就绪（共 ${result.total} 个已知会话，失败 ${result.failed}）`);
     return result;
 }
