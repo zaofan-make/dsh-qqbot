@@ -27,7 +27,7 @@ import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
 import { IdleEvictor } from './idle-evictor.js';
 import { markTurnAborted } from '../gateway/debounce.js';
-import { apply as mountChannelTools, readContextPending, clearContextPending, syncChannelScopedTools, ensureExtToolsGlobal, applyExtToolVisibility, instanceTagOfManager } from '../channel-tools.js';
+import { apply as mountChannelTools, readContextPending, clearContextPending, syncChannelScopedTools, ensureExtToolsGlobal, applyExtToolVisibility, instanceTagOfManager, setCtxEnv } from '../channel-tools.js';
 import { createGroupAdmin } from '../api/group-admin.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
@@ -1115,8 +1115,15 @@ export class SessionManager {
                 const tagC = instanceTagOfManager(this);
                 // ★ 2026-11-06：内置工具（mountChannelTools）也在这里注册一次 —— 与扩展工具同待遇。
                 //   幂等：重名 already registered 被内部静默跳过，和 inbound / claimed 两条路不冲突。
-                if (ag.ctx)
+                if (ag.ctx) {
+                    // ★ 2026-11-06：注册内置工具前**先种会话坐标**（ctxEnvMap）——
+                    //   否则工具虽在，执行时 findSessionRec 查不到 ns/dataRoot
+                    //   （实测报错：「出站模式切换器未注册(ns=(未指定))」）。
+                    //   sessionKey 此刻通常还不知道（还没建 record），先只给 dataRoot；
+                    //   claimed / pre-step 会补上 sessionKey。
+                    setCtxEnv(ag.ctx, { dataRoot: this.resolveDataRootSmart() });
                     void mountChannelTools(ag.ctx);
+                }
                 if (!tagC)
                     return;
                 applyExtToolVisibility(ag.ctx, tagC);
@@ -1171,8 +1178,12 @@ export class SessionManager {
             try {
                 const agC = agent0;
                 const cwdC = String(agent0?.session?.header?.cwd ?? '');
-                if (agC?.ctx && this.nsForCwd(cwdC))
+                if (agC?.ctx && this.nsForCwd(cwdC)) {
+                    // 同样先种会话坐标（这次能带上 sessionKey）
+                    const skC = String(this.findByAgent(agent0)?.sessionKey ?? '');
+                    setCtxEnv(agC.ctx, { dataRoot: this.resolveDataRootSmart(), sessionKey: skC });
                     void mountChannelTools(agC.ctx);
+                }
             }
             catch { /* ignore */ }
         });

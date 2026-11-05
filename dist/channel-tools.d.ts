@@ -87,6 +87,18 @@ export declare function getCtxSmartText(): string;
  * 由 session-manager 在每个回合的 pre-step 里调用（拿 rec.agentCtx）。
  * 这样面板一改开关，**下一回合就生效**，不需要重启，也没有"apply 时读全局变量"的时序竞态。
  */
+/**
+ * ★ 2026-11-06（主人实测：web 回合里 outbound_mode 报「出站模式切换器未注册(ns=(未指定))」）：
+ *   内置工具本身注册上了，但**执行时拿不到会话坐标** —— `ctxEnvMap` 只在
+ *   `syncContextTools`（pre-step）/`syncChannelScopedTools`（claimed）里写，
+ *   而我在 `agent/created` 里只调了 `mountChannelTools`，没写坐标
+ *   ⇒ 工具跑起来 `findSessionRec` 查不到 ns/dataRoot。
+ *   这里开一个小口子，让早期注册点也能把坐标种进去。
+ */
+export declare function setCtxEnv(agentCtx: unknown, env: {
+    dataRoot?: string;
+    sessionKey?: string;
+}): void;
 export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean, env?: {
     dataRoot?: string;
     sessionKey?: string;
