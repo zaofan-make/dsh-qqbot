@@ -848,6 +848,19 @@ export class SessionManager {
     // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。
     void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, sessionId, this.logger);
 
+    // ★★ 2026-11-05（issue #39 问题 1 的**真正根治点**，主人追问"为什么非得在 QQ 里说话才注册"）：
+    //   扩展工具的注册原来只挂在 `agent/inbox/claimed` 与 `agent/pre-step` 两个钩子上 ——
+    //   它们都是**回合事件**。于是会话说"创建了、但没跑过回合"时（冷启动后的空闲会话），
+    //   工具清单里空空如也；必须等一条入站消息跑完一个回合才恢复。
+    //
+    //   但注册所需的 `agentCtx` 在**会话创建完成时就已经有了**（`this.lastSetupCtx`），
+    //   跟回合没有任何关系 ⇒ 这里就地注册一次，让"会话存在"就等于"工具就绪"。
+    //   幂等：`applyExtToolVisibility` 内部有签名比对，重复调用是零动作。
+    try {
+      const selfTag0 = instanceTagOfManager(this);
+      if (selfTag0) applyExtToolVisibility(record.agentCtx, selfTag0);
+    } catch { /* 注册失败不影响建会话 */ }
+
     return record;
   }
 
