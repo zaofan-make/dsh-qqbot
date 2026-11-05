@@ -2856,6 +2856,42 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
       if (!m) { m = new Map(); disposeStore.set(k, m); }
       return m;
     })();
+    // ★★ 2026-11-06（主人："v1.11.42 为什么没这问题？它只在 QQ 入站后注册"）：
+    //   **根因就是"反复拆装"**。v1.11.42 只有 inbound 一条路径，且重名时静默跳过
+    //   ⇒ 工具只被"加"过一次，之后一直用着。
+    //   现在多了 agent/created / claimed / getOrCreate×2 / 预热 五条路径，
+    //   每回合都跑一遍这段，而下面的热替换是**先 dispose 旧的、再 register 新的** ——
+    //   只要 register 有一次失败（schema 不合、依赖加载异常…），
+    //   旧的就没了、新的也没上 ⇒ **工具永久消失**。
+    //   resource_lookup 最惨：它最早注册、disposer 在 globalThis 留得最久，
+    //   "先拆"的次数最多，而它偏偏有外部依赖（opencc-js），最容易注册失败。
+    //
+    //   **修法**：签名缓存 —— 这份 defs 和上次注册的**一模一样**时，
+    //   一根手指都不动（不拆、不建、零风险）。只有你真的改了 .mjs，才走热替换。
+    const extSigStore = (() => {
+      const g = globalThis as unknown as Record<symbol, WeakMap<object, string> | undefined>;
+      const KEY = Symbol.for('im-qqbot.extToolSig');
+      let st = g[KEY];
+      if (!st) { st = new WeakMap(); g[KEY] = st; }
+      return st;
+    })();
+    const extSigOf = (list: typeof defs): string => {
+      try {
+        // 只取"会影响注册"的字段：名字 + 描述 + schema 形态 + expose 标记
+        return list
+          .map((d) => `${d.name}|${String(d.expose ?? '')}|${String(d.description ?? '').slice(0, 40)}|${JSON.stringify(d.inputSchema ?? {})}`)
+          .join('\n');
+      } catch { return ''; }
+    };
+    const curSig = extSigOf(defs);
+    const prevSig = extSigStore.get(ctx as unknown as object);
+    if (curSig && prevSig === curSig && myDisposers.size > 0) {
+      // 完全没变化 ⇒ 直接返回，避免"先拆后建"带来的永久丢失风险
+      extDiag(`扩展工具未变化(${defs.length} 个)，跳过重复注册`);
+      return;
+    }
+    // 记录新签名（注册过程中的个别失败不影响后续判定；只要 defs 不变就不再重试）
+    if (curSig) extSigStore.set(ctx as unknown as object, curSig);
     for (const def of defs) {
       // ★ expose:'all' 的工具**不在这里注册** —— 交给 ensureExtToolsGlobal 挂到插件根
       //   （只有挂到那一层，web / 终端等非 QQ 会话才继承得到；在这儿重复注册的话，
