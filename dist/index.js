@@ -445,8 +445,12 @@ export async function apply(ctx, config) {
                         maxSessions: Number(cfg.warmMaxSessions ?? 12),
                         logger,
                         getOrCreate: async (scope, peerId) => {
-                            const m = reg.findManagerByPeer(scope, peerId);
-                            const mm = m;
+                            // ★★ 2026-11-06（trace 实证：预热把 6 个会话建到了**别的实例**）：
+                            //   原来用 `findManagerByPeer(scope, peerId)` —— 它会遍历所有 manager、
+                            //   按活跃表/群注册表命中的**第一个**返回，多实例下极可能拿到另一个实例的 manager
+                            //   ⇒ 会话建到了错的数据根，本实例的 sessions 表里依然没有。
+                            //   必须按**本实例 ns** 精确取。
+                            const mm = reg.getManagerByNs(ns);
                             if (!mm || typeof mm.getOrCreate !== 'function')
                                 return undefined;
                             return await mm.getOrCreate(scope, peerId, '', { scope, targetId: peerId });

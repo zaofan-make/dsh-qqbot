@@ -64,6 +64,8 @@ export declare function setBotOnline(ns: string, on: boolean): void;
 export declare function isBotOnline(ns: string): boolean;
 /** 是否已注册某 ns(诊断用) */
 export declare function hasManager(ns: string): boolean;
+/** 按实例 ns 精确取 manager（2026-11-06：预热不能靠 findManagerByPeer，会串到别的实例） */
+export declare function getManagerByNs(ns: string): SessionManager | undefined;
 export declare function listManagerNs(): string[];
 /** 全部已注册 manager(通用插件: 跨实例枚举/寻址用, 同一 ESM 实例无 realm 隔离) */
 export declare function managersOf(): SessionManager[];

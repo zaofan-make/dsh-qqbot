@@ -156,6 +156,11 @@ export function hasManager(ns: string): boolean {
   return managers.has(ns);
 }
 
+/** 按实例 ns 精确取 manager（2026-11-06：预热不能靠 findManagerByPeer，会串到别的实例） */
+export function getManagerByNs(ns: string): SessionManager | undefined {
+  return managers.get(ns);
+}
+
 export function listManagerNs(): string[] {
   return [...managers.keys()];
 }

@@ -126,6 +126,10 @@ export function isBotOnline(ns) {
 export function hasManager(ns) {
     return managers.has(ns);
 }
+/** 按实例 ns 精确取 manager（2026-11-06：预热不能靠 findManagerByPeer，会串到别的实例） */
+export function getManagerByNs(ns) {
+    return managers.get(ns);
+}
 export function listManagerNs() {
     return [...managers.keys()];
 }
