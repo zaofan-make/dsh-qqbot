@@ -64,10 +64,78 @@ export function qlogoOf(appId: string, openid: string, size = AVATAR_SRC_SIZE): 
 
 /**
  * 取「机器人头像的 markdown 首行」（不含换行）。取不到返回空串（调用方直接跳过，不塞占位）。
+ *
+ * ★★ 2026-11-06（主人定：「刷新和缓存分开」+「不要让消息等待」+「允许个别消息没头像」）：
+ *   **这个函数是同步的、只读缓存、绝不等待网络**。
+ *   签名 URL 会过期，但刷新走 {@link kickAvatarRefresh} 在**后台**做：
+ *     · 本回合读到的是上一次刷新留下的值（可能是旧的、也可能为空）
+ *     · 允许这条消息**没有头像** —— 换来的是出站零延迟
+ *     · 刷新成功后写盘 + 更新内存 ⇒ **下一条消息**才用上
+ *
+ *   为什么不用本地文件：markdown 里的本地图要先上传成 `qqbot-media://`，
+ *   会占「单机器人最多 100 张」的素材配额（主人明确否掉）。
  */
 export function botAvatarMarkdown(dataRoot: string, appId: string): string {
   const self = loadBotSelf(dataRoot);
   const url = cached || self.avatar || (self.openid ? qlogoOf(appId, self.openid) : '');
+  // 顺手踢一脚后台刷新（不 await、不阻塞、失败静默）
+  try { kickAvatarRefresh(dataRoot, appId); } catch { /* ignore */ }
   if (!url) return '';
   return `![${self.username || '机器人'} #${AVATAR_MD_SIZE}px #${AVATAR_MD_SIZE}px](${url})`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 后台刷新（与缓存读取彻底分开）
+// ══════════════════════════════════════════════════════════════════════════
+
+/** 拉取 `GET /users/@me` 的能力（由 bootstrap 注入 —— 插件运行时才知道怎么发官方 API 请求） */
+type AvatarFetcher = () => Promise<{ avatar?: string; username?: string; openid?: string } | undefined>;
+let avatarFetcher: AvatarFetcher | undefined;
+/** 注入取头像能力（bootstrap 里调一次） */
+export function setAvatarFetcher(fn: AvatarFetcher | undefined): void { avatarFetcher = fn; }
+
+/** 刷新节流：同一实例 5 分钟内最多一次，且不并发 */
+const REFRESH_MIN_MS = 5 * 60 * 1000;
+let refreshing = false;
+let lastRefreshAt = 0;
+/** 上次刷新是否因为「没 fetcher」而跳过（避免每发一条就试一遍） */
+let noFetcherWarned = false;
+
+/**
+ * 后台刷新头像（fire-and-forget）。**任何情况下都不抛、不阻塞调用方**。
+ * 触发条件：距上次刷新超过 5 分钟，或当前根本没有可用 URL。
+ */
+export function kickAvatarRefresh(dataRoot: string, appId: string): void {
+  if (refreshing) return;
+  if (!avatarFetcher) { noFetcherWarned = true; return; }
+  const self = loadBotSelf(dataRoot);
+  const has = !!(cached || self.avatar || (self.openid ? qlogoOf(appId, self.openid) : ''));
+  const stale = Date.now() - lastRefreshAt > REFRESH_MIN_MS;
+  if (has && !stale) return;         // 有值且不旧 → 什么都不做
+  refreshing = true;
+  lastRefreshAt = Date.now();
+  void (async () => {
+    try {
+      const info = await avatarFetcher!();
+      if (!info) return;
+      const patch: { avatar?: string; openid?: string; username?: string } = {};
+      if (info.avatar) patch.avatar = info.avatar;
+      if (info.openid) patch.openid = info.openid;
+      if (info.username) patch.username = info.username;
+      if (Object.keys(patch).length > 0) saveBotSelf(dataRoot, patch);
+    } catch { /* 后台刷新失败就失败，允许这条/这几条消息没头像 */ }
+    finally { refreshing = false; }
+  })();
+}
+
+/** 诊断用：当前缓存状态（不改任何东西） */
+export function botAvatarState(dataRoot: string): { url: string; hasFetcher: boolean; refreshing: boolean; lastRefreshAt: number; noFetcherWarned: boolean } {
+  const self = loadBotSelf(dataRoot);
+  return {
+    url: cached || self.avatar || '',
+    hasFetcher: !!avatarFetcher,
+    refreshing,
+    lastRefreshAt,
+    noFetcherWarned,
+  };
 }

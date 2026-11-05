@@ -21,7 +21,7 @@ import type { Logger } from '../types.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
-import { loadBotSelf, saveBotSelf } from '../features/bot-avatar.js';
+import {setAvatarFetcher, kickAvatarRefresh} from '../features/bot-avatar.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
@@ -197,27 +197,41 @@ export async function bootstrapGateway(
   // 2026-10-20: 消息历史台账（落盘、按会话一个文件）
   initMsgHistory(dataRootOf(config));
 
-  // ★ 2026-10-30：启动后异步拉一次机器人自己的资料（/users/@me → avatar + username），
-  //   缓存到 {dataRoot}/.qqbot/bot-self.json，供「私聊首行显示头像」（c2cShowBotAvatar）使用。
-  //   放在启动后 1.5s（等 token/通道就绪），失败只 log 不重试、不影响启动。
+  // ★ 2026-10-30 / 改 2026-11-06：拉机器人自己的资料（/users/@me → avatar + username）。
+  //
+  // ★★ 主人定（2026-11-06）：「刷新和缓存分开」「刷新不要让消息等待」「允许个别消息没头像」。
+  //   所以这里**只负责注入取图能力**（setAvatarFetcher），真正什么时候刷由出站侧决定：
+  //     · 出站读缓存（同步、零延迟）
+  //     · 顺手 kickAvatarRefresh() 起一个后台刷新，**不 await**
+  //     · 刷新成功的下一条消息才用上；失败就这条没头像，无所谓
+  //   启动时的那次"延迟 1.5s 拉一次"也保留（预热缓存），但同样不阻塞任何东西。
+  try {
+    const api = (manager as unknown as { mediaApi?: { apiCall?: (m: string, p: string) => Promise<unknown> } }).mediaApi;
+    if (api && typeof api.apiCall === 'function') {
+      const callApi = api.apiCall.bind(api) as (m: string, p: string) => Promise<unknown>;
+      setAvatarFetcher(async () => {
+        const res = (await callApi('GET', '/users/@me')) as
+          | { ok?: boolean; data?: { avatar?: string; username?: string; openid?: string } }
+          | { avatar?: string; username?: string; openid?: string }
+          | undefined;
+        const data = (res && 'data' in res && res.data) || (res as { avatar?: string; username?: string; openid?: string } | undefined);
+        if (!data) return undefined;
+        return {
+          avatar: data.avatar ? String(data.avatar) : undefined,
+          username: data.username ? String(data.username) : undefined,
+          openid: data.openid ? String(data.openid) : undefined,
+        };
+      });
+      logger.info?.('im-qqbot: 已注入机器人头像的取图能力（按需后台刷新）');
+    }
+  } catch { /* 注入失败不影响运行 */ }
   void (async () => {
     try {
       await new Promise((r) => setTimeout(r, 1500));
       const dr = dataRootOf(config);
-      const api = (manager as unknown as { mediaApi?: { apiCall?: (m: string, p: string) => Promise<unknown> } }).mediaApi;
-      if (!api || typeof api.apiCall !== 'function') return;
-      const res = (await api.apiCall('GET', '/users/@me')) as
-        | { ok?: boolean; data?: { avatar?: string; username?: string } }
-        | { avatar?: string; username?: string }
-        | undefined;
-      const data = (res && 'data' in res && res.data) || (res as { avatar?: string; username?: string } | undefined);
-      if (data && data.avatar) {
-        saveBotSelf(dr, { avatar: String(data.avatar), username: String(data.username ?? '') });
-        loadBotSelf(dr);
-        logger.info?.('im-qqbot: 已缓存机器人头像（/users/@me）');
-      }
+      kickAvatarRefresh(dr, String(config.appId ?? ''));
     } catch (e) {
-      logger.debug?.('im-qqbot: 拉取 /users/@me 失败（不影响运行）: ' + (e instanceof Error ? e.message : String(e)));
+      logger.debug?.('im-qqbot: 启动预热头像失败（不影响运行）: ' + (e instanceof Error ? e.message : String(e)));
     }
   })();
 
