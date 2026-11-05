@@ -103,16 +103,20 @@ export function normalizeMarkdownImages(text) {
         const srcOne = String(srcRaw).replace(/\s+/g, '').trim();
         if (!srcOne)
             return _m;
-        // 尺寸注释：只保留最多两个（宽、高），并按出现顺序去重
+        // 尺寸注释：取**前两个**（宽、高）。
+        // ★★ 2026-11-06（主人实测：正文图片在 QQ 里一直不渲染）：
+        //   **这里绝不能去重**！`#200px #200px`（正方形图）宽高相同，
+        //   旧逻辑 `if (sizes.includes(n)) continue` 会把第二个删掉 ⇒ sizes 长度=1
+        //   ⇒ 下面 `sizes.length === 2 ? ... : ''` 拿到空串 ⇒ **尺寸被整个剥掉**
+        //   ⇒ QQ 要求 markdown 图片必须带两个尺寸，缺了就不渲染（不报错、不降级，直接看不见）。
+        //   正确做法：不管是否相同，取前两个数字即可；多出来的（畸形语法）忽略。
         const sizeHits = altOne.match(/#\s*(\d{1,5})\s*(?:px)?/g) ?? [];
         const sizes = [];
         for (const h of sizeHits) {
             const n = (h.match(/\d{1,5}/) ?? [''])[0];
             if (!n)
                 continue;
-            if (sizes.includes(n))
-                continue;
-            sizes.push(n);
+            sizes.push(n); // ← 不去重：宽高可以相同
             if (sizes.length === 2)
                 break;
         }
