@@ -19,7 +19,19 @@ export declare function readContextPending(dataRoot: string, sessionKey: string)
 export declare function clearContextPending(dataRoot: string, sessionKey: string): void;
 export declare function setChannelBridge(b: QQChannel | undefined): void;
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
-export declare function apply(ctx: Context): Promise<void>;
+/**
+ * @param opts.dataRoot 本实例的数据根（**显式传**，不要让函数自己去猜）。
+ *   ★ 2026-11-06 事故：多实例下 `extRoot` 原来按
+ *   `qqCh?.dataRoot || 全局桥[最后一个]?.dataRoot || ctx.cwd || process.cwd()` 解析，
+ *   而 `channelBridges` 末尾可能是**另一个实例**的桥 ⇒ 加载了隔壁的数据根
+ *   ⇒ 本实例 `.qqbot-extensions/tools` 里那 30 个工具一个都没注册（只剩有 expose 的 5 个）。
+ *   调用方（session-manager）知道自己是谁，必须把根传进来。
+ * @param opts.cwd 本实例的工作目录（扩展 runner 的 env.cwd）
+ */
+export declare function apply(ctx: Context, opts?: {
+    dataRoot?: string;
+    cwd?: string;
+}): Promise<void>;
 /**
  * host 面板用(2026-09-13 主人要的「让ai写」按钮):
  * **照抄定时任务的做法** —— 伪造一条消息直接调 handleInbound 唤醒该群/私聊的 AI 回合

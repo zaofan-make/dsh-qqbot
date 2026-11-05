@@ -519,7 +519,16 @@ function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getSticker
 }
 
 /** 装载本插件时把 qqChannel 一并注入(由 dsh-qqbot setup 提供) */
-export async function apply(ctx: Context): Promise<void> {
+/**
+ * @param opts.dataRoot 本实例的数据根（**显式传**，不要让函数自己去猜）。
+ *   ★ 2026-11-06 事故：多实例下 `extRoot` 原来按
+ *   `qqCh?.dataRoot || 全局桥[最后一个]?.dataRoot || ctx.cwd || process.cwd()` 解析，
+ *   而 `channelBridges` 末尾可能是**另一个实例**的桥 ⇒ 加载了隔壁的数据根
+ *   ⇒ 本实例 `.qqbot-extensions/tools` 里那 30 个工具一个都没注册（只剩有 expose 的 5 个）。
+ *   调用方（session-manager）知道自己是谁，必须把根传进来。
+ * @param opts.cwd 本实例的工作目录（扩展 runner 的 env.cwd）
+ */
+export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: string }): Promise<void> {
 
   // ★★★ 2026-10-31：记住本插件的 apply ctx —— expose:'all' 的工具必须注册到**这个** ctx 上，
   //   才能和普通扩展工具（下面的 `ctx.tools.register`）处在同一个作用域。
@@ -2809,13 +2818,16 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
     // 扫描根解析: 扩展目录挂在插件数据根(dataRoot=config.dataRoot||cwd), 与工作区其他文件分离。
     //  ①agent ctx qqChannel; ②全局桥(热刷/自愈路径 ctx 可能无 qqChannel); ③ctx.cwd; ④进程 cwd
     const bridgeCh = channelBridges.length ? channelBridges[channelBridges.length - 1] : undefined;
-    const extRoot = (qqCh?.manager?.dataRoot as string | undefined)
+    // ★★ 2026-11-06：**显式参数最优先**（多实例下其余几条都不可靠，见函数头注释）
+    const extRoot = (opts?.dataRoot && String(opts.dataRoot).trim())
+      || (qqCh?.manager?.dataRoot as string | undefined)
       || (bridgeCh?.manager?.dataRoot as string | undefined)
       || (qqCh?.manager?.cwd as string | undefined)
       || (bridgeCh?.manager?.cwd as string | undefined)
       || (ctx as { cwd?: string }).cwd
       || process.cwd();
-    const workCwd = (qqCh?.manager?.cwd as string | undefined)
+    const workCwd = (opts?.cwd && String(opts.cwd).trim())
+      || (qqCh?.manager?.cwd as string | undefined)
       || (bridgeCh?.manager?.cwd as string | undefined)
       || (ctx as { cwd?: string }).cwd
       || process.cwd();

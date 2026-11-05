@@ -642,7 +642,7 @@ export class SessionManager {
               return;
             }
             try {
-              await mountChannelTools(agentCtx as never);
+              await mountChannelTools(agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
               (agentCtx as unknown as { [k: symbol]: unknown })[CTX_TOOLS_READY] = true;
               this.logger.info('im-qqbot: 通道工具已注册到 agentCtx(send_media/recall_message/list_stickers)');
               diagSm('agentCtx 注册完成(mountChannelTools 正常返回)');
@@ -953,7 +953,7 @@ export class SessionManager {
       return;
     }
     try {
-      await mountChannelTools(agentCtx);
+      await mountChannelTools(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
       (agentCtx as unknown as { [k: symbol]: unknown })[CTX_TOOLS_READY] = true;
       record.channelToolsReady = true;
       diagSm('ensureChannelTools: 全量幂等注册完成');
@@ -1006,8 +1006,8 @@ export class SessionManager {
     }
     url.searchParams.set('hot', hotVer);
     const mod = (await import(url.href)) as { apply?: (c: Context) => unknown };
-    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context) => unknown;
-    await applyFn(agentCtx);
+    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context, o?: { dataRoot?: string; cwd?: string }) => unknown;
+    await applyFn(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
     this.logger.info('im-qqbot: 通道工具热刷新完成(新工具已注册到 agentCtx)');
     diagSm('hotReloadChannelTools: 完成');
   }
@@ -1176,7 +1176,7 @@ export class SessionManager {
           | undefined;
         if (rec0?.agentCtx) {
           setCtxEnv(rec0.agentCtx, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(rec0.sessionKey ?? '') });
-          void mountChannelTools(rec0.agentCtx as never);
+          void mountChannelTools(rec0.agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
         }
         if (!tagC) return;
         applyExtToolVisibility(ag.ctx, tagC);
@@ -1231,7 +1231,7 @@ export class SessionManager {
         const ctxC = recC?.agentCtx ?? agC?.ctx;
         if (ctxC && this.nsForCwd(cwdC)) {
           setCtxEnv(ctxC, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(recC?.sessionKey ?? '') });
-          void mountChannelTools(ctxC as never);
+          void mountChannelTools(ctxC as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
         }
       } catch { /* ignore */ }
     });
