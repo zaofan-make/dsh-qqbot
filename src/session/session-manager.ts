@@ -1611,6 +1611,14 @@ export class SessionManager {
       });
       record.agent.followup(message);
       record.lastActivity = Date.now();
+      // ★★ 2026-11-05（主人要求：扩展契约也要能打 QQ 标记）：
+      //   `injectToPeer` **不走 handleInbound**，所以原来不会置 `turnOrigin` ⇒ 被当成
+      //   "web 回合"，`webTurnSilent` 一开就把它的回复也静默掉了。
+      //   而本方法的**全部调用方**都是 QQ 侧语义（定时任务 ticker、botplay 按钮回调、
+      //   session_wake、命令注入、扩展 `caps.wakeTo`）—— 它们代表"QQ 那边有人在等"，
+      //   所以这里统一标记成 QQ 回合（扩展想要"只进上下文不唤醒"请用 appendSilent / silentInto）。
+      record.turnOrigin = 'qq';
+      record.interjectLifted = false;
       this.logger.info(`injectToPeer: ${key} ok`);
       return true;
     } catch (err) {
