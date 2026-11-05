@@ -672,6 +672,14 @@ class OutboundRouter {
       //        兜底用：扩展可能直接调宿主底层 API 注入消息（不走 injectToPeer / handleInbound），
       //        那种情况插件感知不到；但"群里确实有人说过话"就该放行，不该被连累。
       //   另外：带媒体标记的块照常发（图片/文件/视频/语音）；工具调用走 tool-presenter，本来就不受影响。
+      //
+      //   ⚠️ 2026-11-05 主人补充澄清：上面 ②「插话后放行」**只在会出站的模式里成立** ——
+      //     adaptive / detail / passive（以及兼容的 active）。
+      //     **silent（完全不出站）与 nothink（完全不思考）不可能触发它**：
+      //       · silent：`onAgentEvent()` 在**事件入口**就 `return`（见上文 425 行），
+      //         正文块压根不会流到 `send()`，所以这里根本轮不到；
+      //       · nothink：QQ 入站不唤醒 LLM ⇒ 没有回合 ⇒ 也没有"插话"这一步。
+      //     换句话说：这两个模式下 web 静默这个开关等于无效（本来也不出站）。
       if (this.config.webTurnSilent === true) {
         const qqActiveThisTurn = _record.turnOrigin === 'qq'
           || _record.interjectLifted === true

@@ -4925,6 +4925,8 @@ var QQS_THEME_CSS = [
             + '</div>'
           body += '<div class="dk-msg" style="line-height:1.6;color:#666">勾上后：只有「由 QQ 消息触发」的回合才把正文发到 QQ；你在 web／桌面界面里打的字，正文只留在 DSH，群里看不到。'
             + '例外：① 该回合中途 QQ 有人<b>插话</b> → 从插话那步起<b>全部放行</b>直到回合结束；② <b>图片／文件／视频／语音与工具调用不受影响</b>，照常发。</div>'
+          body += '<div class="dk-msg" style="line-height:1.6;color:#999;font-size:11px">注：例外①只在会出站的模式下成立（适配主动／详细主动／被动）。'
+            + '<b>完全不出站</b>与<b>完全不思考</b>这两档本身就不往 QQ 发东西，插话放行对它们没有意义。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         } else if (String(state.tab || '').indexOf('ext:') === 0) {
           // ★ 2026-10-26 扩展页签（slot=dock）：把卡片用 Shadow DOM 挂进面板，
