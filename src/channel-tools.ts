@@ -457,9 +457,25 @@ type SessionRec = Exclude<ReturnType<SessionManager['findByAgent']>, undefined>;
  * ① ctx 通道的 manager 按引用/id 找(findByAgent 已含 id 兜底); ② 找不到→遍历所有实例桥再找。
  */
 function findSessionRec(ch: QQChannel | undefined, exec: { agent?: unknown }): { ch: QQChannel; rec: SessionRec } | undefined {
+  // ★★ 2026-11-06（主人实测：web 回合里 send_media 一直报「通道未就绪」）：
+  //   **根因在这里** —— 原来只按 `findByAgent(exec.agent)` 匹配。
+  //   而 `record.agent` 是 **QQ 入站时**创建的那个 agent 实例；web/桌面发起的回合用
+  //   宿主自己恢复/新建的 agent（**同一个 sessionId、不同 agent 对象**）⇒ 引用永远对不上
+  //   ⇒ 工具拿不到 record ⇒ 什么发不出去。
+  //   补一条按 **session.id** 反查：sessionId 是稳定的（`4a2c0243` 那种），跨 agent 实例不变。
   const tryOne = (c: QQChannel | undefined): { ch: QQChannel; rec: SessionRec } | undefined => {
     if (!c?.manager || !exec.agent) return undefined;
-    const rec = c.manager.findByAgent(exec.agent as never);    return rec ? { ch: c, rec } as { ch: QQChannel; rec: SessionRec } : undefined;
+    const byAgent = c.manager.findByAgent(exec.agent as never);
+    if (byAgent) return { ch: c, rec: byAgent } as { ch: QQChannel; rec: SessionRec };
+    const sid = String((exec.agent as { session?: { id?: string } })?.session?.id ?? '');
+    if (sid) {
+      const bySid = c.manager.findBySessionId(sid) as SessionRec | undefined;
+      if (bySid) {
+        diag(`findSessionRec: 按 sessionId 命中 ${sid.slice(0, 8)}（agent 引用不同，web 回合常见）`);
+        return { ch: c, rec: bySid } as { ch: QQChannel; rec: SessionRec };
+      }
+    }
+    return undefined;
   };
   if (ch) { const r = tryOne(ch); if (r) return r; }
   for (const b of channelBridges) {
