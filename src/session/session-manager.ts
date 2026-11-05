@@ -1169,14 +1169,14 @@ export class SessionManager {
         const tagC = instanceTagOfManager(this);
         // ★ 2026-11-06：内置工具（mountChannelTools）也在这里注册一次 —— 与扩展工具同待遇。
         //   幂等：重名 already registered 被内部静默跳过，和 inbound / claimed 两条路不冲突。
-        if (ag.ctx) {
-          // ★ 2026-11-06：注册内置工具前**先种会话坐标**（ctxEnvMap）——
-          //   否则工具虽在，执行时 findSessionRec 查不到 ns/dataRoot
-          //   （实测报错：「出站模式切换器未注册(ns=(未指定))」）。
-          //   sessionKey 此刻通常还不知道（还没建 record），先只给 dataRoot；
-          //   claimed / pre-step 会补上 sessionKey。
-          setCtxEnv(ag.ctx, { dataRoot: this.resolveDataRootSmart() });
-          void mountChannelTools(ag.ctx as never);
+        // 同上：优先用 record.agentCtx（setup 阶段注入过 qqChannel 的那个），
+        // 拿不到就**什么也不做** —— 此时 setup 还没跑完，用 agent.ctx 注册等于白做。
+        const rec0 = this.findBySessionId(String((ag as { session?: { id?: string } }).session?.id ?? '')) as
+          | { agentCtx?: unknown; sessionKey?: string }
+          | undefined;
+        if (rec0?.agentCtx) {
+          setCtxEnv(rec0.agentCtx, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(rec0.sessionKey ?? '') });
+          void mountChannelTools(rec0.agentCtx as never);
         }
         if (!tagC) return;
         applyExtToolVisibility(ag.ctx, tagC);
@@ -1220,11 +1220,18 @@ export class SessionManager {
       try {
         const agC = agent0 as { ctx?: unknown } | undefined;
         const cwdC = String((agent0 as { session?: { header?: { cwd?: string } } })?.session?.header?.cwd ?? '');
-        if (agC?.ctx && this.nsForCwd(cwdC)) {
-          // 同样先种会话坐标（这次能带上 sessionKey）
-          const skC = String((this.findByAgent(agent0 as never) as { sessionKey?: string } | undefined)?.sessionKey ?? '');
-          setCtxEnv(agC.ctx, { dataRoot: this.resolveDataRootSmart(), sessionKey: skC });
-          void mountChannelTools(agC.ctx as never);
+        // ★ 2026-11-06（重启后 send_media 仍报「未找到当前 QQ 会话(通道未就绪)」）：
+        //   关键是**用哪个 ctx 注册**。`qqChannel` 服务是插件在 setup 阶段注入到
+        //   **record.agentCtx** 上的；拿 `agent.ctx` 去 `ctx.get('qqChannel')` 很可能取不到
+        //   ⇒ 工具虽在，执行时 `findSessionRec` 找不到通道 ⇒ 「通道未就绪」。
+        //   所以优先用 record.agentCtx（与 inbound 老路完全一致），拿不到才回退 agent.ctx。
+        const recC = this.findByAgent(agent0 as never) as
+          | { agentCtx?: unknown; sessionKey?: string }
+          | undefined;
+        const ctxC = recC?.agentCtx ?? agC?.ctx;
+        if (ctxC && this.nsForCwd(cwdC)) {
+          setCtxEnv(ctxC, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(recC?.sessionKey ?? '') });
+          void mountChannelTools(ctxC as never);
         }
       } catch { /* ignore */ }
     });
