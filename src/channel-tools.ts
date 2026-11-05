@@ -475,18 +475,6 @@ function findSessionRec(ch: QQChannel | undefined, exec: { agent?: unknown }): {
         return { ch: c, rec: bySid } as { ch: QQChannel; rec: SessionRec };
       }
     }
-    // ★ 2026-11-06 诊断（主人实测：web 回合工具全报「通道未就绪」）：
-    //   byAgent / bySid 都没中时要能看见"到底为什么"，不能再靠猜。
-    //   写到 ~/.dsh/contextless-trace.log（与其它插件诊断同一个文件）。
-    try {
-      const mgr = c.manager as unknown as { sessions?: Map<string, { sessionId?: string; sessionKey?: string }> };
-      const known = [...(mgr.sessions?.values?.() ?? [])].slice(0, 8)
-        .map((r) => `${String(r.sessionKey ?? '?')}=${String(r.sessionId ?? '?').slice(0, 8)}`);
-      traceToolReg(
-        `[findSessionRec-miss] sid=${sid0.slice(0, 8) || '(空)'} bridges=${channelBridges.length}`
-        + ` byAgent=miss bySid=miss known=[${known.join(', ')}]`,
-      );
-    } catch { /* ignore */ }
     return undefined;
   };
   if (ch) { const r = tryOne(ch); if (r) return r; }
