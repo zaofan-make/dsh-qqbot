@@ -910,6 +910,7 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     //   顺手清掉"因插话解除静默"的标记 —— 新回合重新开始算。
     record.turnOrigin = 'qq';
     record.interjectLifted = false;
+    record.turnStartAt = Date.now();
     record.agent.followup(message);
     logger.debug(`→ followup sent: key=${scope}:${peerId}`);
     // 群消息回复后清空历史缓存（避免下次 @ 时重复组包，对齐 openclaw-qqbot dispatch）

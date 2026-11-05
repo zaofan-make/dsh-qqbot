@@ -353,6 +353,24 @@ handler 返回 `{ok:false,...}` 会原样透传，其它值包成 `{ok:true, dat
 
 > 反过来说：如果你确实想在 QQ 侧**也不要出声**，请用 `appendSilent` 而不是 `wakeTo`。
 
+#### 如果你直接调宿主底层 API 注入消息
+
+有些扩展不走 `caps.wakeTo()`，而是自己 `agent.send()` / `agent.inject()` / `session.append()` ——
+**这条路径插件感知不到**，那一回合会被判成「web 回合」。两种补救：
+
+| 场景 | 做法 |
+|---|---|
+| 本回合期间**群里有动静**（有人说过话） | 不用管 —— 插件有兜底：本回合开始后收到过任何 QQ 入站，就**不静默** |
+| 群里**没人说话**，但你就是想让这条发出去（比如自己算出来该主动提醒） | 在注入**之前**调 `await caps.markQqTurn({ reason: '主动提醒' })` |
+
+```js
+// 例：自定义调度器，用底层 API 注入
+await env.caps.markQqTurn({ reason: 'my-scheduler' });
+await env.agent.inject(myMessage);   // 或 caps.appendWake / 宿主 API
+```
+
+`markQqTurn` 返回 `false` = 拿不到当前会话记录（说明不是在 QQ 会话上下文里调的）。
+
 
 ---
 

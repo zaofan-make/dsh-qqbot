@@ -332,6 +332,44 @@ export function makeExtCaps(deps) {
             return false;
         },
         /**
+         * ★ 2026-11-05（主人定）：把**当前回合**标记为 QQ 回合。
+         *
+         * 为什么需要：扩展作者可能不用 `caps.wakeTo()`，而是**直接调宿主底层 API**注入消息
+         * （`agent.send` / `agent.inject` / `session.append`）—— 那条路径插件感知不到，
+         * 于是这一回合被判成「web 回合」，`webTurnSilent` 一开就把回复也静默了。
+         * 在注入**之前**调一次本方法，这一回合的正文就照常出站（`turn/end` 自动清）。
+         */
+        markQqTurn: async (opts) => {
+            try {
+                const sc = String(deps.scope ?? '').trim();
+                const pid = String(deps.peerId ?? '').trim();
+                if (!sc || !pid) {
+                    warn('markQqTurn', new Error('缺少 scope/peerId'));
+                    return false;
+                }
+                const reg = await import('./session-registry.js').catch(() => undefined);
+                if (!reg)
+                    return false;
+                const m = reg.findManagerByPeer(sc, pid);
+                const rec = m?.findByPeer(sc, pid);
+                if (!rec) {
+                    warn('markQqTurn', new Error('该会话没有活跃记录'));
+                    return false;
+                }
+                rec.turnOrigin = 'qq';
+                rec.interjectLifted = false;
+                try {
+                    logger?.debug?.('[ext-caps] markQqTurn: 本回合标记为 QQ 来源' + (opts?.reason ? ' (' + opts.reason + ')' : ''));
+                }
+                catch { /* ignore */ }
+                return true;
+            }
+            catch (err) {
+                warn('markQqTurn', err);
+                return false;
+            }
+        },
+        /**
          * ★ 按会话标识唤醒：钩子没有"当前消息"，必须显式点名目标。
          *   真正把 `peerId → agent` 解析出来的是宿主注入的 `deps.wakeTo`（见 gateway/bootstrap.ts）；
          *   这里只做参数清洗 + 兜底，永远不抛错。

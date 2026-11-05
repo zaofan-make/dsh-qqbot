@@ -665,14 +665,19 @@ class OutboundRouter {
       // ★★ 2026-11-05（主人定）：**web 回合静默**
       //   设置项 `webTurnSilent` 勾上后：不是由 QQ 入站触发的回合（`turnOrigin !== 'qq'`，
       //   即用户是在 DSH 的 web/桌面界面里打的字），它的**正文块不发到 QQ**。
-      //   两个例外：
-      //     ① 该回合中途**插话**了（QQ 里有人插话）⇒ `interjectLifted` 置位，
-      //        从此**全部放行**直到回合结束（主人明确："插话后全部放行"）。
-      //     ② 这一块**带媒体标记**（[MEDIA:image/file/video/voice]）⇒ 照常发，
-      //        工具调用/图片/文件不受本开关影响（主人："工具调用不影响"）。
+      //   三个放行条件（任一成立就不静默）：
+      //     ① 本回合由 QQ 入站触发（turnOrigin === 'qq'）；
+      //     ② 该回合中途**插话**了 ⇒ interjectLifted（主人："插话后全部放行"）；
+      //     ③ **本回合期间 QQ 侧有动静** —— lastInboundAt 晚于 turnStartAt。
+      //        兜底用：扩展可能直接调宿主底层 API 注入消息（不走 injectToPeer / handleInbound），
+      //        那种情况插件感知不到；但"群里确实有人说过话"就该放行，不该被连累。
+      //   另外：带媒体标记的块照常发（图片/文件/视频/语音）；工具调用走 tool-presenter，本来就不受影响。
       if (this.config.webTurnSilent === true) {
-        const fromQq = _record.turnOrigin === 'qq';
-        if (!fromQq && _record.interjectLifted !== true) {
+        const qqActiveThisTurn = _record.turnOrigin === 'qq'
+          || _record.interjectLifted === true
+          || (typeof _record.turnStartAt === 'number'
+              && (_record.lastInboundAt ?? 0) > _record.turnStartAt);
+        if (!qqActiveThisTurn) {
           const hasMedia = /\[MEDIA:(image|file|video|voice)\|/i.test(text);
           if (!hasMedia) {
             this.logger.debug(

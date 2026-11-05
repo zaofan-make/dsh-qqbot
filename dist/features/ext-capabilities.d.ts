@@ -281,6 +281,19 @@ export interface ExtCapabilities {
      * @returns 已投递 = true；目标会话不存在 / 宿主没接这能力 = false（不抛错）
      */
     wakeTo(scope: string, peerId: string, text: string): Promise<boolean>;
+    /**
+     * 把**当前回合**标记为 QQ 回合（2026-11-05 主人定，配合设置项 `webTurnSilent`）。
+     *
+     * 什么时候需要：你不用 `caps.wakeTo()`、而是**直接调宿主底层 API**注入消息
+     * （`agent.send` / `agent.inject` / `session.append` …）—— 那条路径插件感知不到，
+     * 于是这一回合会被判成「web 回合」，`webTurnSilent` 一开就把回复也静默了。
+     *
+     * 用法：**在注入之前**调一次即可，之后这一回合的正文照常发 QQ，`turn/end` 自动清。
+     * 返回 `false` = 拿不到当前会话记录（说明不是在 QQ 会话上下文里调的）。
+     */
+    markQqTurn(opts?: {
+        reason?: string;
+    }): Promise<boolean>;
     canAppendSilent(): boolean;
     user: {
         openid: string;

@@ -1619,6 +1619,7 @@ export class SessionManager {
       //   所以这里统一标记成 QQ 回合（扩展想要"只进上下文不唤醒"请用 appendSilent / silentInto）。
       record.turnOrigin = 'qq';
       record.interjectLifted = false;
+      record.turnStartAt = Date.now();
       this.logger.info(`injectToPeer: ${key} ok`);
       return true;
     } catch (err) {

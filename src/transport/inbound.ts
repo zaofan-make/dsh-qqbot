@@ -980,6 +980,7 @@ export async function handleInbound(
   //   顺手清掉"因插话解除静默"的标记 —— 新回合重新开始算。
   record.turnOrigin = 'qq';
   record.interjectLifted = false;
+  record.turnStartAt = Date.now();
   record.agent.followup(message);
   logger.debug(`→ followup sent: key=${scope}:${peerId}`);
 

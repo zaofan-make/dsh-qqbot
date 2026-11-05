@@ -118,6 +118,13 @@ export interface SessionRecord {
    * `interjectBatch` 注入成功时置 true，turn/end 清零。
    */
   interjectLifted?: boolean;
+  /**
+   * 本回合开始的时刻（epoch ms；2026-11-05 加）。
+   * 用途：配合 `lastInboundAt` 判断「**这个回合期间 QQ 侧有没有动静**」——
+   * 兜底那些「扩展直接调宿主底层 API 注入、插件感知不到」的情况：
+   * 只要本回合开始后群里有人说过话，`webTurnSilent` 就不静默。
+   */
+  turnStartAt?: number;
 }
 
 /** 会话状态信息（/status 用） */
