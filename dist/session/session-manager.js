@@ -814,6 +814,18 @@ export class SessionManager {
             const selfTag0 = instanceTagOfManager(this);
             if (selfTag0)
                 applyExtToolVisibility(record.agentCtx, selfTag0);
+            // ★★ 2026-11-06（主人实测：第一个 step 里 vote 仍 unknown，第二个 step 才有）：
+            //   `mountChannelTools` 是 **async**（要 await loadExtensionTools 动态 import 每个 .mjs），
+            //   而宿主时序是 claim → **assemble（拍工具表快照）** → pre-step。
+            //   之前各处都是 `void mountChannelTools(...)`（不等待）⇒ 扩展还没加载完，
+            //   快照已经拍好了 ⇒ **本回合第一个 step 看不到**，要等下一个 step 重新组包才出现。
+            //   这里在会话创建（async 上下文）里**真的 await**，让"会话建好"就等于"扩展已注册完"。
+            if (record.agentCtx) {
+                await mountChannelTools(record.agentCtx, {
+                    dataRoot: this.resolveDataRootSmart(),
+                    cwd: String(this.config.cwd ?? ''),
+                });
+            }
         }
         catch { /* 注册失败不影响建会话 */ }
         return record;
