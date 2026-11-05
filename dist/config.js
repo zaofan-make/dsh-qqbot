@@ -323,6 +323,7 @@ export const EditableConfigSchema = Schema.object({
     extMetaTool: Schema.boolean().default(true).description('扩展工具按需取用(默认开): 全局只挂一个 gain_qq_tools 元工具, 非 QQ 会话需要时自己领取(省 token); 关掉=所有 expose:all 扩展工具全量全局注册(老行为)'),
     approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
     outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 详细主动=与适配主动相同 + 额外把工具调用/工具结果也推到QQ(看进度用, 会更啰嗦); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
+    webTurnSilent: Schema.boolean().default(false).description('web 回合静默(出站模式的附加开关): 勾上后, 在 DSH 界面里发起的回合其正文块不发到 QQ(留在 DSH); 该回合中途 QQ 有人插话则从此全部放行; 图片/文件/工具调用不受影响'),
     botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS).description('botplay 互动事件(dock🎮装配器编辑, 保存即热更; /botplay 触发发卡)'),
 });
 const ConfigSchemaRaw = Schema.object({
@@ -403,6 +404,7 @@ const ConfigSchemaRaw = Schema.object({
     approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请超时(ms), 超时自动拒绝'),
     questionsMode: Schema.union(['async', 'blocking']).default('async').description('提问卡片怎么等答案: 后台(async, 默认)=卡片发出后工具立刻返回, 她能继续聊天/干活, 对方答完的答案会自动作为一条回执消息送回来(她忙就插进当前回合、空闲就唤醒她处理); 阻塞(blocking)=旧行为, 工具一直挂到对方作答或超时才继续(期间她动不了)'),
     outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(连发不受限); 详细主动=同适配主动 + 额外推送工具调用/工具结果到QQ(看进度, 消息更多); 被动=携带msg_id回复(连发受QQ回复同一消息上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM, 仅记录上下文(仅设置页可配, 防机器人自锁)'),
+    webTurnSilent: Schema.boolean().default(false).description('web 回合静默(出站模式的附加开关): 勾上后, 在 DSH 界面里发起的回合其正文块不发到 QQ(留在 DSH); 该回合中途 QQ 有人插话则从此全部放行; 图片/文件/视频/语音与工具调用不受影响'),
     botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS).description('botplay 互动事件(装配器编辑; /botplay 触发发卡)'),
 });
 /**

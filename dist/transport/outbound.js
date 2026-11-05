@@ -574,11 +574,33 @@ class OutboundRouter {
         }
         this.gateSilenced.delete(_record.sessionKey);
         this.deliveredFiles.delete(_record.sessionKey);
+        // ★ 2026-11-05：回合结束 → 清掉"来源/因插话解除静默"两个标记，
+        //   下一回合重新判定（web 回合继续静默，QQ 入站回合由 handleInbound 重新置 'qq'）。
+        _record.turnOrigin = undefined;
+        _record.interjectLifted = false;
         this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}${silenced ? ' (闸门静默回合)' : ''}`);
     }
     /** 统一发送：逐条自适应目标(适配主动) + 富媒体感知分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
     async send(_record, text, tag) {
         try {
+            // ★★ 2026-11-05（主人定）：**web 回合静默**
+            //   设置项 `webTurnSilent` 勾上后：不是由 QQ 入站触发的回合（`turnOrigin !== 'qq'`，
+            //   即用户是在 DSH 的 web/桌面界面里打的字），它的**正文块不发到 QQ**。
+            //   两个例外：
+            //     ① 该回合中途**插话**了（QQ 里有人插话）⇒ `interjectLifted` 置位，
+            //        从此**全部放行**直到回合结束（主人明确："插话后全部放行"）。
+            //     ② 这一块**带媒体标记**（[MEDIA:image/file/video/voice]）⇒ 照常发，
+            //        工具调用/图片/文件不受本开关影响（主人："工具调用不影响"）。
+            if (this.config.webTurnSilent === true) {
+                const fromQq = _record.turnOrigin === 'qq';
+                if (!fromQq && _record.interjectLifted !== true) {
+                    const hasMedia = /\[MEDIA:(image|file|video|voice)\|/i.test(text);
+                    if (!hasMedia) {
+                        this.logger.debug(`im-qqbot: [web静默] 跳过正文块 tag=${tag} key=${_record.sessionKey} len=${text.length}`);
+                        return;
+                    }
+                }
+            }
             // 2026-10-27: 已被 present 直发的文件，正文里同路径的 [MEDIA:file|…] 标记剔除，避免一份文件发两遍
             const deduped = stripDeliveredFileMarkers(text, this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
             if (deduped.trim() === '')

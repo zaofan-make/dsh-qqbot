@@ -103,6 +103,21 @@ export interface SessionRecord {
   agentCtx?: unknown;
   /** 通道工具是否已确认装载(自愈幂等标记) */
   channelToolsReady?: boolean;
+  /**
+   * 本回合的**输入来源**（2026-11-05 加，配合设置项 `webTurnSilent`）。
+   *
+   * - `'qq'`：这一回合由 QQ 入站触发（含定时任务/面板任务那种伪造入站）→ 正常发 QQ
+   * - `undefined`：没有 QQ 入站 → 视为 **web/外部界面发起的回合**
+   *
+   * 用途：勾了「web 回合静默」后，`undefined` 的回合**正文块不发 QQ**（见 outbound.send）。
+   * 回合结束（turn/end）时清空。
+   */
+  turnOrigin?: 'qq' | 'external';
+  /**
+   * 本回合是否**因插话而解除静默**（2026-11-05 主人定：插话后**全部放行**，不是只放一块）。
+   * `interjectBatch` 注入成功时置 true，turn/end 清零。
+   */
+  interjectLifted?: boolean;
 }
 
 /** 会话状态信息（/status 用） */

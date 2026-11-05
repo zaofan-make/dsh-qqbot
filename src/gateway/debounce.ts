@@ -369,6 +369,10 @@ function interjectBatch(
       source: { kind: 'user' as const },
     }));
     rec.interjectSeq = seq + 1;
+    // ★ 2026-11-05（主人定）：插话成功 = 这一回合**解除 web 静默**，从此**全部放行**直到回合结束。
+    //   （场景：用户在 DSH 界面里发起回合 → 正文本来不发 QQ；但 QQ 群里有人插话，
+    //     说明那边有人在等回复 ⇒ 后面所有正文块都要发出去。）
+    (rec as { interjectLifted?: boolean }).interjectLifted = true;
     return true;
   } catch (err) {
     logger.warn?.(`[debounce] 插话注入失败(回落排队): ${err instanceof Error ? err.message : String(err)}`);

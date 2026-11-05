@@ -904,6 +904,12 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     record.lastInboundAt = Date.now();
     // 置回合活跃(消息聚合, 2026-09-07): followup 发出即算回合开始, debounce 见忙攒消息; turn/end 由 outbound 复位
     record.turnActive = true;
+    // ★ 2026-11-05：标记**本回合由 QQ 入站触发**（配合设置项 `webTurnSilent`：
+    //   只有 `turnOrigin==='qq'` 的回合正文块才发 QQ；web/桌面界面发起的回合没有这一步 → 静默）。
+    //   定时任务/面板任务那种伪造入站也走这里 ⇒ 它们照常发 QQ（不是"web 回合"）。
+    //   顺手清掉"因插话解除静默"的标记 —— 新回合重新开始算。
+    record.turnOrigin = 'qq';
+    record.interjectLifted = false;
     record.agent.followup(message);
     logger.debug(`→ followup sent: key=${scope}:${peerId}`);
     // 群消息回复后清空历史缓存（避免下次 @ 时重复组包，对齐 openclaw-qqbot dispatch）

@@ -312,6 +312,16 @@ export interface EditableConfig {
     approvalTimeoutMs?: number;
     /** 出站模式: adaptive=适配主动(默认; 前5次带msg_id被动回复后自动转主动), detail=详细主动(adaptive 发送行为 + 额外推送工具调用/结果), passive=全被动回复, silent=完全不出站(思考但不发), nothink=完全不思考(QQ入站不唤醒LLM, 仅记录; 仅设置页可配防自锁) */
     outboundMode?: 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
+    /**
+     * web 回合静默（2026-11-05 主人定，出站模式那一栏的附加勾选）：
+     *
+     * 勾上后，**不管出站模式是什么**，只要这一回合是用户在 DSH 的 web/桌面界面里发起的
+     * （`record.turnOrigin !== 'qq'`），它的**正文块就不到 QQ**（只留在 DSH 里）。
+     * 两个例外：
+     *  - 该回合中途**插话**了（QQ 里有人插话）⇒ 从此**全部放行**直到回合结束；
+     *  - 这一块带媒体标记（图片/文件/视频/语音）⇒ 照常发；工具调用也不受影响。
+     */
+    webTurnSilent?: boolean;
     /** botplay 互动事件列表(dock「🎮 互动事件」装配器编辑; live 热更, 无需重启) */
     botplayEvents: BotplayEventConfig[];
 }
@@ -474,6 +484,12 @@ export interface ImQQBotConfig {
     questionsMode?: 'async' | 'blocking';
     /** 出站模式: adaptive=适配主动(默认) / detail=详细主动(adaptive + 工具调用/结果推送) / active=旧全主动(兼容) / passive=全被动回复 / silent=完全不出站 / nothink=完全不思考(仅设置页可配) */
     outboundMode?: 'adaptive' | 'active' | 'passive' | 'detail' | 'silent' | 'nothink';
+    /**
+     * web 回合静默（2026-11-05 主人定，出站模式的附加勾选）：
+     * 在 DSH 的 web/桌面界面里发起的回合，**正文块不发到 QQ**；
+     * 该回合中途 QQ 有人插话 ⇒ 从此全部放行；图片/文件/工具调用不受影响。
+     */
+    webTurnSilent?: boolean;
     /** botplay 互动事件列表(运行时 live, 与 settings 同源) */
     botplayEvents: BotplayEventConfig[];
 }
