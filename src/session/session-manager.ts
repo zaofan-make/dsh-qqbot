@@ -726,6 +726,19 @@ export class SessionManager {
       // 2026-09-11 主人定「触发会话时反归档」: 这条消息把该会话激活了 → 顺带把它从归档里拉回可见。
       // (主人主动归档的会话保持归档, 只有真的被消息用到才回来; 幂等 + fail-soft, 不阻塞主链)
       void unarchiveSession(this.ctx, existing.sessionId, this.logger);
+      // ★★ 2026-11-06（主人实测：重启后**第一个 step** 里 vote 仍 unknown）：
+      //   这里的 `return existing` 是**早返回** —— 上一版只在新会话创建路径（末尾）await 了
+      //   `mountChannelTools`，而重启后会话是从磁盘恢复的（走这条复用路径），
+      //   于是彻底跳过了注册 ⇒ 第一个 step 又是空的。
+      //   两条路径都要 await 加载完，才能保证"会话一存在，扩展就已注册"。
+      try {
+        if (existing.agentCtx) {
+          await mountChannelTools(existing.agentCtx as never, {
+            dataRoot: this.resolveDataRootSmart(),
+            cwd: String(this.config.cwd ?? ''),
+          });
+        }
+      } catch { /* 加载失败不影响复用会话 */ }
       return existing;
     }
 
@@ -1181,15 +1194,14 @@ export class SessionManager {
         const tagC = instanceTagOfManager(this);
         // ★ 2026-11-06：内置工具（mountChannelTools）也在这里注册一次 —— 与扩展工具同待遇。
         //   幂等：重名 already registered 被内部静默跳过，和 inbound / claimed 两条路不冲突。
-        // 同上：优先用 record.agentCtx（setup 阶段注入过 qqChannel 的那个），
-        // 拿不到就**什么也不做** —— 此时 setup 还没跑完，用 agent.ctx 注册等于白做。
-        const rec0 = this.findBySessionId(String((ag as { session?: { id?: string } }).session?.id ?? '')) as
-          | { agentCtx?: unknown; sessionKey?: string }
-          | undefined;
-        if (rec0?.agentCtx) {
-          setCtxEnv(rec0.agentCtx, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(rec0.sessionKey ?? '') });
-          void mountChannelTools(rec0.agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
-        }
+        // ★★ 2026-11-06（主人实测：resource_lookup 突然调不到）：
+        //   **这里不再调 `mountChannelTools`**。
+        //   原因：agent/created 阶段 `ctx.get('qqChannel')` 往往还没注入，于是 `extRoot`
+        //   一路回退到 `channelBridges[最后一个]` → **别的实例的数据根**（实测是「测试客户端」），
+        //   而那边根本没有 resource_lookup.mjs ⇒ 加载的是错误的一批，
+        //   还和 claimed / inbound 那条**正确**的路径在同一 ctx 上互相覆盖。
+        //   现在本钩子只负责**扩展工具**（纯内存操作，不碰磁盘扫描，安全）；
+        //   内置工具（含 .mjs 加载）统一交给 claimed + inbound —— 那两条能拿到正确 ctx。
         if (!tagC) return;
         applyExtToolVisibility(ag.ctx, tagC);
       } catch { /* 注册失败不影响建 agent */ }
@@ -1240,10 +1252,21 @@ export class SessionManager {
         const recC = this.findByAgent(agent0 as never) as
           | { agentCtx?: unknown; sessionKey?: string }
           | undefined;
-        const ctxC = recC?.agentCtx ?? agC?.ctx;
+        // ★★ 2026-11-06（主人实测：好几个回合了 vote 还是 unknown）：
+        //   **必须注册到 `agent0.ctx`（当前回合 agent 的作用域）**，而不是 record.agentCtx。
+        //   因为工具表是按**当前 agent 的 ctx** 组装的：注册到 record 那个旧对象上，
+        //   本回合的 agent 根本看不到（web/桌面回合尤其如此 —— 宿主会新建 agent 对象）。
+        //   之前为了"能拿到 qqChannel"改用了 record.agentCtx，结果注册成功但用不了。
+        //   正解：注册到当前 ctx + **显式传 dataRoot**（qqChannel 解析有兜底，靠 dataRoot 就够了）；
+        //   record.agentCtx 那份也顺手注册一遍，覆盖"同一 agent 复用"的场景。
+        const ctxC = agC?.ctx;
         if (ctxC && this.nsForCwd(cwdC)) {
           setCtxEnv(ctxC, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(recC?.sessionKey ?? '') });
+          // 当前回合作用域：这是本回合快照会读的那份，必须同步完成（await 不行，这里是同步派发）
           void mountChannelTools(ctxC as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+          if (recC?.agentCtx && recC.agentCtx !== ctxC) {
+            void mountChannelTools(recC.agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+          }
         }
       } catch { /* ignore */ }
     });
