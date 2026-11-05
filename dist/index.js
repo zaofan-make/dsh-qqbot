@@ -408,6 +408,19 @@ export async function apply(ctx, config) {
                 onDisposer: (d) => { gatewayDispose = d; },
             });
             logger.info(`实例 ${ns}: 网关已启动（凭据热更新生效，无需重启）`);
+            // ★★ 2026-11-06（主人："任何开启会话的消息也该直接注册"）：**把宿主钩子提前到启动时挂**。
+            //   原来 `ensureGroupRules()` 只在**第一条 QQ 消息入站**时才挂钩子（inbound.ts:380），
+            //   而 `agent/created` 是**一次性事件** —— 等挂上时 agent 早就建完了，
+            //   永远收不到 ⇒ agent/created 那条注册路径形同虚设（实测：重启后仍要发消息才有工具）。
+            //   这里在网关起来后立刻挂一次（`ensureGroupRules` 幂等，参数本来就没用到）。
+            try {
+                const reg0 = await import('./features/session-registry.js');
+                for (const m0 of reg0.managersOf()) {
+                    void m0
+                        .ensureGroupRules?.(undefined)?.catch?.(() => { });
+                }
+            }
+            catch { /* 挂载失败不影响启动 */ }
             // ★★ 2026-11-05（issue #39 问题 1）：**启动预热已知 QQ 会话**。
             //   1.11.13 起扩展工具按 agent 作用域注册，触发点是 agent/inbox/claimed 与
             //   agent/pre-step —— 都要求"有回合"。冷启动后空闲会话从来没注册过，
