@@ -141,8 +141,59 @@ export class PrefsStore {
         return this.overrides.has(sessionKey);
     }
     // ── SessionId 操作 ──
+    /**
+     * 取 sessionKey 对应的 sessionId（**带历史兼容**，2026-11-06）。
+     *
+     * ## 为什么要兼容
+     *
+     * sessionKey 形如 `qqbot:<appId>:<scope>:<peerId>`，appId 是隔离维度（一个群多机器人靠它区分）。
+     * 但**appId 可能被改过**（换号/迁移）：历史 sessionIds 里的 key 仍是旧 appId 前缀，
+     * 而新生成的 sessionKey 用新 appId ⇒ 精确匹配查不到 ⇒ 老会话彻底失联：
+     *   · `findBySessionId` 命中不了 → web 回合里所有通道工具报「通道未就绪」
+     *   · 会话被当成新会话重建 → 历史上下文接不上
+     *
+     * ## 做法（对齐维护手册 §16「同一个概念只能有一个真源」+ 第 66 行「不许顺手归一化」）
+     *
+     * 1. **精确匹配优先** —— 绝大多数情况走这条，零副作用；
+     * 2. 不中时按 `(scope, peerId)` **兼容匹配**（忽略 appId 前缀），取**最后一个**（最新写入的）；
+     * 3. 命中后**认领迁移**：把该映射写成当前 sessionKey 的形式（旧 key 先留着，不删）。
+     *
+     * ⚠️ 兼容匹配只在本 store 自己的数据根内做 —— 每个实例一个 prefs 文件，
+     *    所以「一个群多机器人」天然隔离，绝不会把 A 机器人的会话认成 B 的。
+     * ⚠️ 不做批量改写：只迁移**真正被读到**的那一条（手册：改形式 = 改语义，不能静默批量刷）。
+     */
     getSessionId(sessionKey) {
-        return this.sessionIds.get(sessionKey);
+        const exact = this.sessionIds.get(sessionKey);
+        if (exact)
+            return exact;
+        // ── 兼容匹配：qqbot:<任意 appId>:<scope>:<peerId> ──
+        const m = /^qqbot:[^:]*:(group|c2c):(.+)$/.exec(sessionKey);
+        if (!m)
+            return undefined;
+        const tail = `:${m[1]}:${m[2]}`;
+        let hitKey;
+        let hitVal;
+        for (const [k, v] of this.sessionIds) {
+            // 只看同样以 "qqbot:" 开头、且 scope:peerId 完全一致的 key
+            if (!k.startsWith('qqbot:') || !k.endsWith(tail))
+                continue;
+            // 前缀必须是 "qqbot:<appId>" 形式（避免误匹配更长的尾部）
+            const middle = k.slice('qqbot:'.length, k.length - tail.length);
+            if (!middle || middle.includes(':'))
+                continue;
+            hitKey = k;
+            hitVal = v; // 取最后一个（Map 迭代顺序 = 写入顺序）
+        }
+        if (!hitKey || !hitVal)
+            return undefined;
+        // ── 认领迁移：写成当前 key 的形式（旧 key 保留，便于回滚/排查） ──
+        try {
+            this.sessionIds.set(sessionKey, hitVal);
+            this.deleted.sessionIds.delete(sessionKey);
+            this.write();
+        }
+        catch { /* 迁移失败不影响本次返回 */ }
+        return hitVal;
     }
     setSessionId(sessionKey, sessionId) {
         this.sessionIds.set(sessionKey, sessionId);

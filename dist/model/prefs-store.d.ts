@@ -56,6 +56,27 @@ export declare class PrefsStore {
     setOverride(sessionKey: string, route: ModelRoute): void;
     clearOverride(sessionKey: string): boolean;
     hasOverride(sessionKey: string): boolean;
+    /**
+     * 取 sessionKey 对应的 sessionId（**带历史兼容**，2026-11-06）。
+     *
+     * ## 为什么要兼容
+     *
+     * sessionKey 形如 `qqbot:<appId>:<scope>:<peerId>`，appId 是隔离维度（一个群多机器人靠它区分）。
+     * 但**appId 可能被改过**（换号/迁移）：历史 sessionIds 里的 key 仍是旧 appId 前缀，
+     * 而新生成的 sessionKey 用新 appId ⇒ 精确匹配查不到 ⇒ 老会话彻底失联：
+     *   · `findBySessionId` 命中不了 → web 回合里所有通道工具报「通道未就绪」
+     *   · 会话被当成新会话重建 → 历史上下文接不上
+     *
+     * ## 做法（对齐维护手册 §16「同一个概念只能有一个真源」+ 第 66 行「不许顺手归一化」）
+     *
+     * 1. **精确匹配优先** —— 绝大多数情况走这条，零副作用；
+     * 2. 不中时按 `(scope, peerId)` **兼容匹配**（忽略 appId 前缀），取**最后一个**（最新写入的）；
+     * 3. 命中后**认领迁移**：把该映射写成当前 sessionKey 的形式（旧 key 先留着，不删）。
+     *
+     * ⚠️ 兼容匹配只在本 store 自己的数据根内做 —— 每个实例一个 prefs 文件，
+     *    所以「一个群多机器人」天然隔离，绝不会把 A 机器人的会话认成 B 的。
+     * ⚠️ 不做批量改写：只迁移**真正被读到**的那一条（手册：改形式 = 改语义，不能静默批量刷）。
+     */
     getSessionId(sessionKey: string): string | undefined;
     setSessionId(sessionKey: string, sessionId: string): void;
     clearSessionId(sessionKey: string): boolean;
