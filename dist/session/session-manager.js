@@ -1097,6 +1097,28 @@ export class SessionManager {
         // ★ 2026-10-28：**回合开始前的工具表同步点**。宿主顺序是 claim → assemble（快照工具表）→ pre-step，
         //   所以只在 pre-step 里注册会晚一步（实测：开关关掉后第一个 step 仍拿到旧工具表，调用报 unknown tool）。
         //   claimed 是**同步**派发且 payload 自带 agent ⇒ 在这里同步注册表，本 step 立刻生效。
+        // ★★ 2026-11-06（主人："别只在启动时判，任何开启会话的消息也该直接注册——自动化就是这样"）：
+        //   `agent/created` 是**所有会话诞生的唯一收敛点** —— QQ 消息建会话、web 界面点开旧会话、
+        //   宿主恢复、子代理派生…… 都会经过它。在这里注册一次，就把「会话存在 ⇒ 工具就绪」
+        //   从"只覆盖插件自己建的会话"扩到"任何途径出现的会话"。
+        //   注意：此时 agent 的 setup 可能还没完全跑完，`agent.ctx` 也许拿不到 tools 服务 ——
+        //   `applyExtToolVisibility` 内部 fail-soft，失败不要紧：下面的 claimed / pre-step 仍会兜底重试。
+        hostCtx.on('agent/created', (payload) => {
+            try {
+                const ag = payload?.agent;
+                if (!ag)
+                    return;
+                // cwd 分流：只给"属于本实例工作区"的 agent 注册（web 普通会话拿空 tag ⇒ 不注册，零泄漏）
+                const cwdC = String(ag.session?.header?.cwd ?? '');
+                if (!this.nsForCwd(cwdC))
+                    return;
+                const tagC = instanceTagOfManager(this);
+                if (!tagC)
+                    return;
+                applyExtToolVisibility(ag.ctx, tagC);
+            }
+            catch { /* 注册失败不影响建 agent */ }
+        });
         hostCtx.on('agent/inbox/claimed', (payload) => {
             const agent0 = payload?.agent;
             // ★ 2026-10-28（主人抓到）：扩展工具的注册 + 剪枝也放这里 —— 宿主是
