@@ -308,15 +308,8 @@ window.__ModuleLoader__.load({
             ],
             hint: '适配主动=刚收到真人消息时前5条带引用回你, 第6条起自动转独立新消息(连发不被QQ吞); 一段时间没新消息的主动推送(定时等)也走独立消息。被动=始终回你那条(连发约4~5条后被QQ吞)。完全不出站=照常思考但不向QQ发任何回复(AI 可用工具切回)。完全不思考=QQ入站不唤醒AI, 消息只记录(仅本页可开; 唤醒请发 /outmode adaptive)。保存即热更新, 不用重启。',
           },
-          // ★ 2026-11-05（主人定）：出站模式的**附加勾选**
-          {
-            k: 'webTurnSilent', kw: 'web 静默 桌面 界面 不发qq 正文 插话 放行',
-            t: 'bool', label: 'web 回合静默(附加开关, 不管上面选哪种): 在 DSH 界面里发起的对话, 正文块不发到 QQ',
-            def: false,
-            hint: '勾上后: 只有"由 QQ 消息触发"的回合才会把正文发到 QQ; 你在 DSH 的 web/桌面界面里打字发起的回合, 正文只留在 DSH, 群里看不到。'
-              + '例外: ① 该回合中途 QQ 有人插话 → 从插话那步起全部放行; ② 图片/文件/视频/语音与工具调用不受影响, 照常发。'
-              + '适合"在电脑上安静地聊, 不想刷屏群"的场景。保存即热更新。',
-          },
+          // ★ 2026-11-05 主人纠正：这个开关属于**悬浮球面板**（dock 的 ⇄ 出站方式那一栏），
+          //   不该出现在「通用设置」里 ⇒ 已挪到 dock 面板（见 state.tab==='out' 那段）。
           { t: 'note', label: '延迟聚合(另一套机制,和上面冷却不冲突): 她收到消息先等一小会儿, 把连发的话攒一起综合回, 免得只回第一句。' },
           { k: 'behavior.debounce.enabled', kw: '延迟 聚合 攒 合并 一起回 开关', t: 'bool', label: '开启延迟聚合(不勾=回到来一条回一条)', def: true },
           { k: 'behavior.debounce.silenceSec', kw: '延迟 聚合 停顿 静默 等待 秒', t: 'num', label: '对方停口几秒后她才开口(默认3;0=不停顿)', def: 3 },
@@ -3696,8 +3689,50 @@ var QQS_THEME_CSS = [
       function loadOutMode() {
         if (state.tab !== 'out') return
         fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d) {
-          if (d && d.value) { state.outMode = (d.value.outboundMode === 'detail' || d.value.outboundMode === 'passive' || d.value.outboundMode === 'silent' || d.value.outboundMode === 'nothink' ? d.value.outboundMode : 'adaptive'); state.outRev = d.revision; paintBody() }
+          if (d && d.value) {
+            state.outMode = (d.value.outboundMode === 'detail' || d.value.outboundMode === 'passive' || d.value.outboundMode === 'silent' || d.value.outboundMode === 'nothink' ? d.value.outboundMode : 'adaptive');
+            // ★ 2026-11-05：web 回合静默（出站方式的附加勾选）
+            state.webSilent = d.value.webTurnSilent === true;
+            state.outRev = d.revision;
+            paintBody()
+          }
         }).catch(function () {})
+      }
+      /**
+       * ★ 2026-11-05：保存「web 回合静默」勾选。
+       *   与 saveOutMode 同款流程（先读最新 revision 再全量 patch，避免 stale revision）。
+       */
+      function saveWebSilent(on) {
+        var hintOf = function () { return panel ? panel.querySelector('#dk-out-hint') : null }
+        var trySave = function (curVal, curRev) {
+          var h = hintOf(); if (h) h.textContent = '保存中…'
+          var patch = Object.assign({}, curVal || {}, { webTurnSilent: !!on })
+          return fetch(UPDATE, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ns: state.ns || undefined, patch: patch, expectedRevision: curRev }),
+          }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (d) {
+            if (d && d.value) {
+              state.webSilent = d.value.webTurnSilent === true
+              state.outRev = d.revision
+              var h2 = hintOf(); if (h2) h2.textContent = '已保存 ✓ live 热更新已生效(不用重启)'
+              paintBody()
+            } else {
+              var conflicted = !!(d && d.error && String(d.error).indexOf('changed since it was read') >= 0)
+              if (conflicted) {
+                fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (dd) {
+                  if (dd && dd.value) trySave(dd.value, dd.revision)
+                  else { var h3 = hintOf(); if (h3) h3.textContent = '保存失败: 无法重新读取最新设置' }
+                }).catch(function () { var h4 = hintOf(); if (h4) h4.textContent = '保存失败: 读取异常' })
+              } else {
+                var h5 = hintOf(); if (h5) h5.textContent = '保存失败: ' + ((d && d.error) || '未知错误')
+              }
+            }
+          }).catch(function () { var h6 = hintOf(); if (h6) h6.textContent = '保存异常' })
+        }
+        fetch(READ + (state.ns ? '?' + outNsQ() : '')).then(function (r) { return r.json() }).then(function (d0) {
+          if (d0 && d0.value) trySave(d0.value, d0.revision)
+          else { var h7 = hintOf(); if (h7) h7.textContent = '保存失败: 无法读取当前设置' }
+        }).catch(function () { var h8 = hintOf(); if (h8) h8.textContent = '保存失败: 读取异常' })
       }
       // ⚙️ 出站方式: 保存(全量 patch 只带 outboundMode; settings.update 部分合并)
       function saveOutMode(m, attempt) {
@@ -4882,6 +4917,14 @@ var QQS_THEME_CSS = [
           body += '<div class="dk-msg" style="line-height:1.6">适配主动=和QQ有关的会话回复都发到QQ: 刚收到真人消息时前5条带引用回你(能看到回的是哪句), 第6条起自动转独立新消息, 连发不被QQ吞; 定时/后台等没有新真人消息的主动推送也走独立消息。'
           body += '详细主动=聊天行为与适配主动完全一样, 但额外把 AI 的工具调用(🔧 工具调用)与工具结果也推到 QQ —— 能在 QQ 上看她正在干什么; 消息会明显变多, 看完记得切回适配主动。'
           body += '被动=始终以「回复你那条」发出, 连发约4~5条后会被QQ吞掉。完全不出站=本机静默, 不向QQ发任何回复(AI 可用工具随时切回)。本开关对纯web(没绑QQ)的会话不生效。</div>'
+          // ★ 2026-11-05（主人定）：**web 回合静默**（出站方式的附加勾选，只放这里）
+          body += '<div class="dk-row" style="margin-top:8px;padding-top:6px;border-top:1px dashed #e3e6ea">'
+            + '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#333">'
+            + '<input type="checkbox" id="dk-websilent"' + (state.webSilent ? ' checked' : '') + '> '
+            + '<b>web 回合静默</b>（附加开关，不管上面选哪种）</label>'
+            + '</div>'
+          body += '<div class="dk-msg" style="line-height:1.6;color:#666">勾上后：只有「由 QQ 消息触发」的回合才把正文发到 QQ；你在 web／桌面界面里打的字，正文只留在 DSH，群里看不到。'
+            + '例外：① 该回合中途 QQ 有人<b>插话</b> → 从插话那步起<b>全部放行</b>直到回合结束；② <b>图片／文件／视频／语音与工具调用不受影响</b>，照常发。</div>'
           body += '<span class="dk-msg" id="dk-out-hint" style="color:#2f9e44;margin:4px 0"></span>'
         } else if (String(state.tab || '').indexOf('ext:') === 0) {
           // ★ 2026-10-26 扩展页签（slot=dock）：把卡片用 Shadow DOM 挂进面板，
@@ -5524,6 +5567,9 @@ var QQS_THEME_CSS = [
         if (ins) { ins.onchange = function (e) { state.insertCtx = !!e.target.checked } }
         var omrad = panel.querySelectorAll('input[name="dk-outmode"]')
         if (omrad) omrad.forEach(function (r2) { r2.onchange = function () { saveOutMode(r2.value) } })
+        // ★ 2026-11-05：web 回合静默勾选框（出站方式的附加开关）
+        var wsb = panel.querySelector('#dk-websilent')
+        if (wsb) wsb.onchange = function () { saveWebSilent(wsb.checked) }
         var snd = panel.querySelector('#dk-send')
         if (snd) snd.onclick = sendNow
         var rj = panel.querySelector('#dk-refresh-join')
