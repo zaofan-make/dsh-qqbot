@@ -4,7 +4,7 @@
  * Cordis 插件入口。将 QQ 消息平台作为 dsh 的前端协议驱动。
  * 网关组装（中间件编排 + 事件 + 出站 + 生命周期）见 src/gateway/。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -623,18 +623,58 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
     // ②尽力经 settings 服务 update 持久化 —— dock/设置面板与 live 同一数据源, 三方一致(重启不丢)。
     // ⚠️ 按 ns 注册: 多实例(多个实例)各自 apply 时不能共用一个 writer,
     //    否则切换会落到最后注册的那个实例(config 改错对象, dock 显示与实测不符)。修复于 2026-09-11。
+    /**
+     * ★ 2026-11-05（主人实测 bug）：`/outmode` 与 `outbound_mode` 工具切换后，**面板仍显示旧模式**。
+     *   根因：这条路径只改了 `live`（内存），`svc.update()` 要么拿不到 settings 服务、要么抛错，
+     *   两种情况都只留内存 ⇒ 磁盘上的 `outboundMode` 没变 ⇒ dock 面板读文件就显示旧值（三方不一致）。
+     *
+     *   这里加一层兜底：**直接按 settings-host 同一套路径规则写文件**
+     *   （`{DSH_HOME}/qqbot-settings/{profile}/{ns}.json`，profile 取 apply 回写的 DSH_PROFILE）。
+     *   读 → 只改 outboundMode → 写回，其它字段原样保留。返回是否写成功。
+     */
+    const writeOutboundModeFile = (nsKey, mode) => {
+        try {
+            const dshHome = String(process.env.DSH_HOME || '').trim() || join(homedir(), '.dsh');
+            const prof = String(resolveProfileName() || '').trim().replace(/[^A-Za-z0-9_-]/g, '_') || '_default';
+            const safeNs = String(nsKey || 'im-qqbot').replace(/[^A-Za-z0-9_-]/g, '_') || 'im-qqbot';
+            const dir = join(dshHome, 'qqbot-settings', prof);
+            const f = join(dir, safeNs + '.json');
+            mkdirSync(dir, { recursive: true });
+            let cur = {};
+            try {
+                const raw = readFileSync(f, 'utf8');
+                const o = JSON.parse(raw);
+                if (o && typeof o === 'object')
+                    cur = o;
+            }
+            catch { /* 首次/损坏 → 空对象起步 */ }
+            cur.outboundMode = mode;
+            writeFileSync(f, JSON.stringify(cur, null, 2), 'utf8');
+            logger.info?.(`im-qqbot: 出站模式已写入 settings 文件 ${f} → ${mode}`);
+            return true;
+        }
+        catch (err) {
+            logger.warn?.(`im-qqbot: 出站模式写 settings 文件失败: ${err instanceof Error ? err.message : String(err)}`);
+            return false;
+        }
+    };
     setOutboundModeWriter(ns, async (mode) => {
         live.outboundMode = mode;
+        let persisted = false;
         const svc = getSettingsService();
         if (svc && typeof svc.update === 'function') {
             try {
                 await svc.update(ns, { outboundMode: mode });
+                persisted = true;
             }
             catch (err) {
-                logger.warn?.(`im-qqbot: 出站模式已热更新(live), 但 settings 持久化失败: ${err instanceof Error ? err.message : String(err)}`);
+                logger.warn?.(`im-qqbot: 出站模式 settings.update 失败，改用直写文件: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
-        return { ok: true, msg: '已切换: ' + mode, mode };
+        // ★ 兜底：settings 服务拿不到 / update 抛错 → 直接写配置文件，保证面板与 live 一致
+        if (!persisted)
+            persisted = writeOutboundModeFile(ns, mode);
+        return { ok: true, msg: '已切换: ' + mode + (persisted ? '' : '（⚠️ 配置文件写入失败，重启后会回退）'), mode };
     });
 }
 /** settings 服务引用(registerSettingsSection 注入时保存; 无 settings 服务时为 undefined) */
