@@ -19,6 +19,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { takePendingMemoText } from '../features/people-memo.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
+import { contextlessSegmentOf, contextlessSegmentKeepOf } from '../features/contextless-store.js';
 import { trimHistoryForContextless } from '../features/contextless-trim.js';
 import { memoTextForInject, setMemoMaxItems } from '../features/context-memo.js';
 import { traceContextless } from '../features/contextless-store.js';
@@ -1362,7 +1363,71 @@ export class SessionManager {
                     }
                     const ctxKey0 = sk0 || '__global__';
                     // ⚠️ 2026-10-01：智能判断开启时，固定 N 条**让位**（否则两条路同时压 —— 实测"界面显示已压缩 11 条"）
-                    if (!ctxSmartOn && isContextlessActive(ctxKey0, this.config.contextlessMode)) {
+                    // ★ 2026-11-06 分段压缩：与 window / smart 互斥（三者选一）
+                    let segOn0 = false;
+                    try {
+                        segOn0 = isContextlessActive(ctxKey0, this.config.contextlessMode) && contextlessSegmentOf(sk0);
+                    }
+                    catch { /* ignore */ }
+                    if (segOn0) {
+                        // ── 分段压缩：只压「上回合结束 → 本回合开始」这一段，更早的前缀一个字都不动 ──
+                        //    为什么这么做：dsh 每轮把整段上下文发出去，前缀不变才有缓存；只动尾巴才不会把缓存打掉。
+                        try {
+                            if (!Number.isFinite(currentStep) || currentStep <= 1) {
+                                const sessSeg = agent?.session;
+                                const nodesSeg = sessSeg?.surface?.nodes;
+                                if (sessSeg && Array.isArray(nodesSeg) && nodesSeg.length > 2) {
+                                    const keepSeg = contextlessSegmentKeepOf(sk0);
+                                    // ★ 2026-11-06 主人实测纠正：边界**不能靠自记的位置**（第一次跑时它不是"上回合结束"，
+                                    //   而是 surface 开头 ⇒ 会从第 1 个节点开始扫，撞上一条很老的 @ 就被保护挡住，等于白跑）。
+                                    //   正解：边界 = **最后一条 assistant/message 之后** —— 那正好就是"上回合结束"。
+                                    //   每次都现算，天然自愈，也不怕重启丢状态。
+                                    let boundary = 1;
+                                    for (let i = nodesSeg.length - 1; i >= 1; i--) {
+                                        const sq = nodesSeg[i];
+                                        if (sq === undefined)
+                                            continue;
+                                        const ev = sessSeg.eventAt?.(sq);
+                                        if (ev && ev.type === 'assistant/message') {
+                                            boundary = i + 1;
+                                            break;
+                                        }
+                                    }
+                                    if (boundary >= nodesSeg.length) {
+                                        this.logger?.debug?.('[contextless] 分段压缩: 上回合之后没有新消息，跳过');
+                                    }
+                                    // 受保护：@ 我 的入站消息永不压（扩展 forceWake 同理，内容里带标记）
+                                    const protect = new Set();
+                                    const from = Math.max(1, Math.min(boundary, nodesSeg.length));
+                                    for (let i = from; i < nodesSeg.length; i++) {
+                                        const sq = nodesSeg[i];
+                                        if (sq === undefined)
+                                            continue;
+                                        const ev = sessSeg.eventAt?.(sq);
+                                        if (!ev || ev.type !== 'user/message')
+                                            continue;
+                                        const txt = JSON.stringify(ev.data ?? '');
+                                        if (txt.includes('(@you)') || txt.includes('"@you"'))
+                                            protect.add(sq);
+                                    }
+                                    const okSeg = await trimHistoryForContextless(agent, keepSeg, this.logger, (() => { try {
+                                        return this.ctx;
+                                    }
+                                    catch {
+                                        return undefined;
+                                    } })(), Number.isFinite(currentTurn) ? currentTurn : undefined, { startIdxOverride: boundary, protectSeqs: protect });
+                                    // 压成功：替身节点落在 boundary 位置，稳定前缀推进到它后面一条；
+                                    // 没压（条数还不够 / 受保护节点挡着）：边界**不动**，让消息继续攒着。
+                                    // 边界每次现算（见上），这里不再记账；segBoundary 只留作诊断。
+                                    this.logger?.debug?.('[contextless] 分段压缩 ' + (okSeg ? '已执行' : '本轮无需') + ' (boundary=' + boundary + ', keep=' + keepSeg + ', 受保护=' + protect.size + ')');
+                                }
+                            }
+                        }
+                        catch (e) {
+                            this.logger?.debug?.('[contextless] 分段压缩异常(已忽略): ' + (e instanceof Error ? e.message : String(e)));
+                        }
+                    }
+                    if (!ctxSmartOn && !segOn0 && isContextlessActive(ctxKey0, this.config.contextlessMode)) {
                         const win0 = contextlessWindowOf(sk0, this.config.contextlessWindow ?? 5);
                         this.logger?.info?.('[contextless] 登记: 会话 ' + sk0 + ' 开启中, 带 @ 前 ' + win0 + ' 条 → 本轮内清理');
                         // ⚠️ 2026-09-27 照宿主做法：dsh-compaction-basic 自己就是在 agent/pre-step 里

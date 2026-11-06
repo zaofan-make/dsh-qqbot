@@ -37,7 +37,18 @@ export declare function trimHistoryForContextless(agent: TrimAgentLike | undefin
  *  ⚠️ 绝不能传 undefined/null：我们在 pre-step 里执行，回合是开着的，
  *  而 compaction/start、compaction/end 的 turn 必须与"开着的那个 turn"一致，
  *  否则会话日志会以 SessionFormatError 写坏（实测把两个群的会话都写崩了）。 */
-turn?: number): Promise<boolean>;
+turn?: number, 
+/**
+ * **分段压缩**用（2026-11-06）：显式指定从 surface 的第几个节点开始压。
+ * 不给 = 老行为（从 node1 起、保留全局最后 keep 条）。
+ * 给了 = 只压 [startIdx, ...) 这一段，**更早的前缀一个字都不动**（缓存不受影响）。
+ *
+ * `protectSeqs`：这些 seq 永不进替换区间（@ 我 / 扩展 forceWake 的入站消息）。
+ */
+opts?: {
+    startIdxOverride?: number;
+    protectSeqs?: Set<number>;
+}): Promise<boolean>;
 /**
  * 回合空闲后执行清理（插件硬约束：回合中 append 会坏记录 —— inject.ts 的既有约定）。
  * fire-and-forget，不阻塞调用方。

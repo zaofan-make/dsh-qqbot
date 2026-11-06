@@ -12,6 +12,14 @@ export interface ContextlessSetting {
      * ⚠️ 互斥在**读取侧**保证：smart=true 时 window 不生效（见 keepWindowOf()），UI 也做成二选一。
      */
     smart?: boolean;
+    /**
+     * **分段压缩**（2026-11-06 主人定）：只压「上回合结束 → 本回合开始」这一段，
+     * 更早的历史一个字都不动（前缀不变 ⇒ 缓存照样命中）。
+     * 与 smart 互斥；与 window 也互斥（window 是"每轮只带 N 条"，分段压缩是"只压新的那段"）。
+     */
+    segment?: boolean;
+    /** 分段压缩保留条数：这段里最后 N 条普通消息留下，更旧的压成一个占位节点 */
+    segmentKeep?: number;
     /** 备忘条数上限（面板可设；超出自动丢最旧） */
     memoMax?: number;
 }
@@ -50,4 +58,12 @@ export declare function contextlessMemoMaxOf(sessionKey: string): number | undef
 export declare function contextlessSmartOf(sessionKey: string, globalDefault?: boolean): boolean;
 /** 该会话应携带的「@ 之前」群消息条数（会话级优先，其次全局默认 5） */
 export declare function contextlessWindowOf(sessionKey: string, fallback?: number): number;
+/**
+ * 该会话是否开启**分段压缩**（2026-11-06）。与 smart / window 互斥 ——
+ * 它不改变"每轮带多少条历史"，只把「上回合结束 → 本回合开始」这段里的旧消息压成一行占位，
+ * 更早的（缓存前缀）一个字都不动。
+ */
+export declare function contextlessSegmentOf(sessionKey: string): boolean;
+/** 分段压缩保留的条数（默认 3） */
+export declare function contextlessSegmentKeepOf(sessionKey: string, fallback?: number): number;
 //# sourceMappingURL=contextless-store.d.ts.map

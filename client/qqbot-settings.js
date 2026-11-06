@@ -3221,12 +3221,15 @@ var QQS_THEME_CSS = [
         var _modeEl = document.querySelector('input[name="dk-ctxless-mode"]:checked')
         var _mode = _modeEl ? String(_modeEl.value) : 'window'
         var _mmEl2 = document.getElementById('dk-ctxless-memomax')
-        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _mode === 'smart', memoMax: _mmEl2 ? (parseInt(_mmEl2.value, 10) || 20) : 20 }
+        var _segEl = document.getElementById('dk-ctxless-segkeep')
+        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _mode === 'smart', memoMax: _mmEl2 ? (parseInt(_mmEl2.value, 10) || 20) : 20, segment: _mode === 'segment', segmentKeep: _segEl ? (parseInt(_segEl.value, 10) || 3) : 3 }
         // radio 切换：智能判断时条数框禁用（互斥的视觉提示）
         Array.prototype.forEach.call(document.querySelectorAll('input[name="dk-ctxless-mode"]'), function (r) {
           r.onchange = function () {
             var w = document.getElementById('dk-ctxless-win')
-            if (w) w.disabled = (r.value === 'smart')
+            if (w) w.disabled = (r.value === 'smart' || r.value === 'segment')
+            var sk = document.getElementById('dk-ctxless-segkeep')
+            if (sk) sk.disabled = (r.value !== 'segment')
           }
         })
         if (hint) hint.textContent = '保存中…'
@@ -3236,10 +3239,12 @@ var QQS_THEME_CSS = [
           api('contextless?sessionKey=' + encodeURIComponent(key)).then(function (back) {
             var same = back && back.enabled === body.enabled && Number(back.window) === Number(body.window)
               && (back.smart === true) === (body.smart === true)
+              && (back.segment === true) === (body.segment === true)
+              && Number(back.segmentKeep || 3) === Number(body.segmentKeep || 3)
               && Number(back.memoMax || 20) === Number(body.memoMax || 20)
             if (hint) {
               hint.textContent = same
-                ? ('✅ 已保存并回读确认: ' + (back.enabled ? '开启' : '关闭') + ' / 带 ' + back.window + ' 条')
+                ? ('✅ 已保存并回读确认: ' + (back.enabled ? '开启' : '关闭') + ' / ' + (back.segment ? ('分段压缩·留 ' + (back.segmentKeep || 3) + ' 条') : (back.smart ? '智能判断' : ('带 ' + back.window + ' 条'))))
                 : ('⚠️ 返回 ok 但回读不一致: ' + JSON.stringify(back) + ' (提交: ' + JSON.stringify(body) + ')')
             }
             if (same) { state.ctxless = back }
@@ -4950,6 +4955,8 @@ var QQS_THEME_CSS = [
             body += '<div class="dk-msg" style="line-height:1.6">开启后, 本会话每轮<b>不继承历史对话</b>(系统规则照旧), 只带上「@ 之前 N 条群消息」—— 群聊省 token 的利器。</div>'
             body += '<div class="dk-msg" style="color:#888;font-size:12px;margin:2px 0 6px">作用对象: <b>' + (ctxHit || '（当前会话不是 QQ 会话）') + '</b></div>'
             var _smartOn = !!(state.ctxless && state.ctxless.smart === true)
+            var _segOn = !!(state.ctxless && state.ctxless.segment === true)
+            var _segKeep = (state.ctxless && typeof state.ctxless.segmentKeep === 'number') ? state.ctxless.segmentKeep : 3
             var _winVal = (state.ctxless && typeof state.ctxless.window === 'number') ? state.ctxless.window : 5
             body += '<div class="dk-row" style="gap:8px;flex-wrap:wrap;align-items:center">'
               + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:13px"><input type="checkbox" id="dk-ctxless-on"' + (state.ctxless && state.ctxless.enabled ? ' checked' : '') + '>无上下文模式</label>'
@@ -4958,13 +4965,17 @@ var QQS_THEME_CSS = [
             // 2026-10-01: 两种模式**互斥**（单参数是死参数、智能判断交给 AI），所以做成单选
             body += '<div style="margin:4px 0 0 22px;display:flex;flex-direction:column;gap:8px">'
               + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
-                + '<input type="radio" name="dk-ctxless-mode" value="window"' + (_smartOn ? '' : ' checked') + ' style="margin-top:3px">'
-                + '<span>按条数保留&nbsp;<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + _winVal + '"' + (_smartOn ? ' disabled' : '') + ' style="width:56px"> 条</span>'
+                + '<input type="radio" name="dk-ctxless-mode" value="window"' + ((_smartOn || _segOn) ? '' : ' checked') + ' style="margin-top:3px">'
+                + '<span>按条数保留&nbsp;<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + _winVal + '"' + ((_smartOn || _segOn) ? ' disabled' : '') + ' style="width:56px"> 条</span>'
                 + '<div style="font-size:12px;color:#888;line-height:1.4">不管在聊什么，每轮都只带「@ 前 N 条」。简单、可预期；但<b>同一话题接着聊可能断片</b>，<b>换了话题又会多带</b>。</div></span></label>'
               + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
-                + '<input type="radio" name="dk-ctxless-mode" value="smart"' + (_smartOn ? ' checked' : '') + ' style="margin-top:3px">'
+                + '<input type="radio" name="dk-ctxless-mode" value="smart"' + (_smartOn && !_segOn ? ' checked' : '') + ' style="margin-top:3px">'
                 + '<span>智能判断（推荐）'
                 + '<div style="font-size:12px;color:#888;line-height:1.4">由 AI <b>每轮自己判断话题是否结束</b>：结束了它就压缩旧历史（可留最近几条）或整段丢弃，<b>只留下自己总结的要点</b> —— 省 token 最狠，也不容易断片。要点存在独立文件里，<b>压缩永远碰不到</b>。</div></span></label>'
+              + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
+                + '<input type="radio" name="dk-ctxless-mode" value="segment"' + (_segOn ? ' checked' : '') + ' style="margin-top:3px">'
+                + '<span>分段压缩（保住缓存）'
+                + '<div style="font-size:12px;color:#888;line-height:1.4">消息照常入站，<b>只压「上回合结束 → 本回合开始」这一段</b>：保留最近 <input type="number" id="dk-ctxless-segkeep" min="1" max="50" value="' + _segKeep + '"' + (_segOn ? '' : ' disabled') + ' style="width:56px"> 条，更旧的压成一行占位。<b>更早的历史一个字都不动</b> —— 前缀不变，缓存照样命中，这才是真省。</div></span></label>'
               + '</div>'
             // 备忘条数上限（面板可设；超出自动丢最旧）
             body += '<div class="dk-row" style="gap:6px;align-items:center;margin:4px 0 2px 22px;font-size:13px">'

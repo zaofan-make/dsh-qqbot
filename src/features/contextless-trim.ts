@@ -136,6 +136,14 @@ export async function trimHistoryForContextless(
    *  而 compaction/start、compaction/end 的 turn 必须与"开着的那个 turn"一致，
    *  否则会话日志会以 SessionFormatError 写坏（实测把两个群的会话都写崩了）。 */
   turn?: number,
+  /**
+   * **分段压缩**用（2026-11-06）：显式指定从 surface 的第几个节点开始压。
+   * 不给 = 老行为（从 node1 起、保留全局最后 keep 条）。
+   * 给了 = 只压 [startIdx, ...) 这一段，**更早的前缀一个字都不动**（缓存不受影响）。
+   *
+   * `protectSeqs`：这些 seq 永不进替换区间（@ 我 / 扩展 forceWake 的入站消息）。
+   */
+  opts?: { startIdxOverride?: number; protectSeqs?: Set<number> },
 ): Promise<boolean> {
   const sess = agent?.session;
   traceContextless('trim 被调用: keep=' + keepRecent + ' turn=' + String(turn) + ' agent=' + (agent ? 'yes' : 'no') + ' session=' + (sess ? 'yes' : 'no'));
@@ -162,7 +170,12 @@ export async function trimHistoryForContextless(
     //      SessionFormatError: system/message requires a protected first surface head
     //    实测把"月饼群"的会话写坏 5 次。现在无条件从 1 起，宁可少压一个节点，也绝不碰 node0。
     const _headIsSystem = headEv?.type === 'system/message';
-    const firstIdx = 1;
+    // 分段压缩：从调用方给的边界起压；否则沿用"从 1 起"的老行为。
+    // 注意必须先夹到 [1, nodes.length]，否则会把 node0 也压掉（SessionFormatError）。
+    let firstIdx = 1;
+    if (typeof opts?.startIdxOverride === 'number' && Number.isFinite(opts.startIdxOverride)) {
+      firstIdx = Math.max(1, Math.min(nodes.length, Math.trunc(opts.startIdxOverride)));
+    }
     if (!_headIsSystem && headSeq !== undefined) {
       log?.debug?.('[contextless] 注意: node0 不是 system/message(而是 ' + String(headEv?.type) + ')，仍从 1 起以保护 head');
     }
@@ -184,6 +197,17 @@ export async function trimHistoryForContextless(
       const keepFromRaw = msgIdx[msgIdx.length - keep];
       if (keepFromRaw === undefined) return false;
       keepIdxInNodes = keepFromRaw;
+    }
+
+    // ②.5 保护段（分段压缩）：@ 我 / forceWake 的节点一律不压 ——
+    //   做法是把保留段起点**往前挪到最早的那个受保护节点**，后面的就全留下了。
+    if (opts?.protectSeqs && opts.protectSeqs.size > 0) {
+      for (let i = firstIdx; i < keepIdxInNodes; i++) {
+        const sq = nodes[i];
+        if (sq === undefined) continue;
+        if (opts.protectSeqs.has(sq)) { keepIdxInNodes = i; break; }
+      }
+      if (keepIdxInNodes <= firstIdx) { log?.debug?.('[contextless] 跳过: 受保护节点就在区间开头'); return false; }
     }
 
     // ③ 回退到 tool 配对平衡的边界（surface 层不查，但 provider 会因孤立 tool 调用报错）

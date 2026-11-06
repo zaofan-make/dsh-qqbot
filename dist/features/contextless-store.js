@@ -80,6 +80,8 @@ function loadFrom(p) {
             table.set(key, {
                 enabled: o?.enabled === true,
                 smart: o?.smart === true,
+                segment: o?.segment === true,
+                segmentKeep: Number(o?.segmentKeep) > 0 ? Math.max(1, Math.trunc(Number(o.segmentKeep))) : undefined,
                 memoMax: Number(o?.memoMax) > 0 ? Number(o.memoMax) : undefined,
                 window: Number.isFinite(Number(o?.window)) ? Math.max(0, Math.trunc(Number(o.window))) : DEFAULT_SETTING.window,
             });
@@ -175,6 +177,10 @@ export function setContextless(sessionKey, patch) {
         //   这里只**存值、不互斥清零**，这样主人在 UI 上来回切换时 window 的旧值不会丢；
         //   真正的互斥由读取侧（contextlessSmartOf / keepWindowOf）与面板单选一起保证。
         smart: patch.smart === undefined ? (cur.smart === true) : patch.smart === true,
+        segment: patch.segment === undefined ? (cur.segment === true) : patch.segment === true,
+        segmentKeep: patch.segmentKeep === undefined
+            ? cur.segmentKeep
+            : (Number.isFinite(Number(patch.segmentKeep)) ? Math.max(1, Math.trunc(Number(patch.segmentKeep))) : undefined),
     };
     table.set(sessionKey, next);
     if (!keyOwner.has(sessionKey)) {
@@ -244,5 +250,28 @@ export function contextlessWindowOf(sessionKey, fallback = 5) {
     if (s.enabled)
         return s.window;
     return Math.max(0, Math.trunc(fallback) || 0);
+}
+/**
+ * 该会话是否开启**分段压缩**（2026-11-06）。与 smart / window 互斥 ——
+ * 它不改变"每轮带多少条历史"，只把「上回合结束 → 本回合开始」这段里的旧消息压成一行占位，
+ * 更早的（缓存前缀）一个字都不动。
+ */
+export function contextlessSegmentOf(sessionKey) {
+    try {
+        return getContextless(sessionKey).segment === true;
+    }
+    catch {
+        return false;
+    }
+}
+/** 分段压缩保留的条数（默认 3） */
+export function contextlessSegmentKeepOf(sessionKey, fallback = 3) {
+    try {
+        const v = getContextless(sessionKey).segmentKeep;
+        return Number(v) > 0 ? Math.max(1, Math.trunc(Number(v))) : Math.max(1, Math.trunc(fallback) || 3);
+    }
+    catch {
+        return Math.max(1, Math.trunc(fallback) || 3);
+    }
 }
 //# sourceMappingURL=contextless-store.js.map
