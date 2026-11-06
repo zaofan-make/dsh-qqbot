@@ -168,28 +168,56 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
             const _aggMax = typeof config.imageAggregate.max === 'number' ? config.imageAggregate.max : 4;
             const _aggSender = String(msg.senderName || msg.senderId || '某人');
             const _stickerDir = stickerDirOf(config);
-            const _paths = [];
+            const _items = [];
+            const _seen = new Set();
+            const _add = (p, by) => {
+                if (!p || _seen.has(p) || !existsSync(p))
+                    return;
+                _seen.add(p);
+                _items.push({ p, by });
+            };
+            // ★★ 先补录"聚合窗口里更早那些消息"的图（2026-11-06 实测踩到的坑）：
+            //   主人连发 4 张图，QQ/中间件把它们并成**一条**入站 —— `msg.attachments` 只带最后那张，
+            //   前 3 张只剩 `[图片: xxx]` 躺在 history 里 ⇒ 不补录就永远只拼到 1 张。
+            //   历史条目自己带 senderName，逐张按原主分别记。
+            for (const _h of (mwState.history ?? [])) {
+                if (!_h.content || _h.messageId === msg.messageId)
+                    continue;
+                const _txt = String(_h.content);
+                if (_txt.indexOf('[图片') < 0)
+                    continue;
+                const _re = /\[图片:\s*([^\]\s]+)\]/g;
+                let _m;
+                while ((_m = _re.exec(_txt))) {
+                    const _raw = _m[1].trim();
+                    const _by = String(_h.senderName || _h.senderId || _aggSender);
+                    if (/^https?:\/\//i.test(_raw))
+                        _add(resolveImageLocalPath(_raw, _stickerDir), _by);
+                    else
+                        _add(_raw, _by);
+                }
+            }
+            // 再录本条消息自己的图
             for (const _a of (Array.isArray(msg.attachments) ? msg.attachments : [])) {
                 const _ct = String(_a?.content_type ?? '').toLowerCase();
                 if (!/image/.test(_ct))
                     continue;
                 const _url = String(_a?.url ?? '').trim();
-                let _p;
                 // ① 中间件已经下载到本地的（按 filename 对上号）
                 const _fn = String(_a?.filename ?? '');
                 const _d = _fn ? downloaded.find((x) => x.filename === _fn) : undefined;
-                if (_d?.localPath && existsSync(_d.localPath))
-                    _p = _d.localPath;
+                if (_d?.localPath && existsSync(_d.localPath)) {
+                    _add(_d.localPath, _aggSender);
+                    continue;
+                }
                 // ② 图库台账反查（表情包/历史图都走这条路）
-                if (!_p && _url)
-                    _p = resolveImageLocalPath(_url, _stickerDir);
-                if (_p && existsSync(_p) && !_paths.includes(_p))
-                    _paths.push(_p);
+                if (_url)
+                    _add(resolveImageLocalPath(_url, _stickerDir), _aggSender);
             }
-            for (const _p of _paths)
-                pushAggImage(_aggKey, _p, _aggSender, _aggMax);
-            if (_paths.length > 0)
-                logger.debug(`[图片聚合] 入缓冲 ${_paths.length} 张: key=${_aggKey}`);
+            for (const _it of _items)
+                pushAggImage(_aggKey, _it.p, _it.by, _aggMax);
+            if (_items.length > 0)
+                logger.info(`[图片聚合] 入缓冲 ${_items.length} 张: key=${_aggKey}`);
         }
     }
     catch (e) {

@@ -13,7 +13,7 @@ export interface AggImage {
 /** 宿主注入：判断当前 agent 走的模型是否支持 image 输入 */
 type ImageProbe = (agent: unknown) => Promise<boolean | undefined>;
 /** 宿主注入：把合成图存成附件 */
-type ImageSaver = (data: Uint8Array, mediaType: 'image/jpeg') => Promise<{
+type ImageSaver = (data: Uint8Array, mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif') => Promise<{
     attachment: unknown;
     width?: number;
     height?: number;
@@ -37,6 +37,8 @@ export declare function pushAggImage(key: string, path: string, sender: string, 
 export declare function pendingAggImages(key: string): AggImage[];
 /** 把这几张标成"已聚合"，之后不再重复进长图 */
 export declare function markAggSent(items: AggImage[]): void;
+/** 记住这些路径已经拼过（缓冲被挤出去以后也照样不让它们回来） */
+export declare function rememberAggSentPaths(key: string, paths: string[]): void;
 /** 清空某会话的缓冲（重启/清屏用；正常流程不调） */
 export declare function clearAggImages(key: string): void;
 /**

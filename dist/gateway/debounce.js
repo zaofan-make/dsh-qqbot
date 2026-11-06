@@ -3,6 +3,7 @@ import { dataRootOf, stickerDirOf } from './data-root.js';
 import { handleInbound, buildQuotePart } from '../transport/inbound.js';
 import { getHistoryStore, historyGroupKey, clearGroupHistory } from '../features/history-store.js';
 import { lookupImagePath } from '../features/image-path-cache.js';
+import { pushAggImage } from '../features/image-aggregate.js';
 import { appendFileSync } from 'node:fs';
 import { stripLeadingMentions } from '../shared/mention-clean.js';
 import { join } from 'node:path';
@@ -247,7 +248,7 @@ function buildInterjectText(entries, note, quoteByMsg, stickerDir = '') {
  * (不唤醒、不拆 tool_calls → 宿主在下个 step 组包时带上, 她本轮就读到了)。
  * @returns true=已插进去(调用方清窗口); false=没有注入能力 / 注入抛错(调用方回落原排队逻辑, 消息不丢)
  */
-function interjectBatch(rec, entries, logger, quoteByMsg, stickerDir = '') {
+function interjectBatch(rec, entries, logger, quoteByMsg, stickerDir = '', agg) {
     const a = rec.agent;
     if (!a || typeof a.inject !== 'function')
         return false;
@@ -257,6 +258,38 @@ function interjectBatch(rec, entries, logger, quoteByMsg, stickerDir = '') {
     const text = buildInterjectText(entries, interjectNoteFor(seq, rec.sessionId), quoteByMsg, stickerDir);
     if (!text)
         return false;
+    // ★ 2026-11-06（主人指出）：插话正文里明明已经带了 `[图片: 本地路径]`，那张图却进不了聚合缓冲 ——
+    //   因为插话这条路**不经过 handleInbound**，环形缓冲只在那边入料。
+    //   这里补一手：插话的图同样落进缓冲，等下一次正常唤醒时跟着长图一起进上下文（不会丢）。
+    try {
+        if (agg?.enabled) {
+            for (const e of entries) {
+                const m = e.msg;
+                const key = m.kind === 'group' ? `group:${String(m.groupOpenid ?? '')}` : `c2c:${String(m.senderId ?? '')}`;
+                const by = String(m.senderName || m.senderId || '某人');
+                const atts = Array.isArray(m.attachments) ? m.attachments : [];
+                for (const raw of atts) {
+                    const a = raw;
+                    const t = String(a?.content_type ?? a?.contentType ?? a?.type ?? '');
+                    if (!t.includes('image'))
+                        continue;
+                    const url = String(a?.url ?? '');
+                    let p = url ? lookupImagePath(url) : undefined;
+                    // 兜底：缓存没命中时，从「附件摘要」同款逻辑再解析一次（那条路会走图库台账反查）
+                    if (!p) {
+                        const note = attachmentNote([raw], e.processed);
+                        const mm = /\[图片:\s*([^\]]+)\]/.exec(note);
+                        const cand = mm?.[1]?.trim();
+                        if (cand && /[\\/]/.test(cand))
+                            p = cand;
+                    }
+                    if (p)
+                        pushAggImage(key, p, by, agg.max);
+                }
+            }
+        }
+    }
+    catch { /* 聚合缓冲失败不影响插话 */ }
     try {
         a.inject(createUserMessage({
             content: [{ type: 'text', text }],
@@ -350,12 +383,16 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
                     //      效果等同排队 —— 这是宿主 inject 的固有语义, 不是 bug。
                     //   ⚠️ 插话是"即时补料"不是"派发回复": 不唤醒 ⇒ 不消耗群冷却, 也不在这里走冷却判断。
                     if (busySendModeOf(config) === 'interject') {
+                        const _aggCfg = config.imageAggregate;
                         if (interjectBatch(busyRec, pre, logger, w.quoteByMsg, (() => { try {
                             return stickerDirOf(config);
                         }
                         catch {
                             return '';
-                        } })())) {
+                        } })(), {
+                            enabled: _aggCfg?.enabled === true,
+                            max: typeof _aggCfg?.max === 'number' ? _aggCfg.max : 4,
+                        })) {
                             clearTimer(w);
                             windows.delete(key);
                             // 与正常派发同款: 清群历史缓存 —— 免得这批消息这轮插过、下轮又被当 [历史] 打包一遍

@@ -249,12 +249,12 @@ export async function bootstrapGateway(
         const info = await llm.resolveModelInfo(provider, model);
         return info?.inputModalities?.includes('image') === true;
       },
-      saveImage: async (data: Uint8Array) => {
+      saveImage: async (data: Uint8Array, mediaType: string) => {
         const att = ctx.get('attachments') as
           | { saveImages?: (inputs: unknown[]) => Promise<Array<Record<string, unknown>>> }
           | undefined;
         if (!att?.saveImages) return undefined;
-        const refs = await att.saveImages([{ data, mediaType: 'image/jpeg', name: 'aggregate.jpg' }]);
+        const refs = await att.saveImages([{ data, mediaType, name: 'aggregate.jpg' }]);
         const ref = refs?.[0];
         return ref ? { attachment: ref } : undefined;
       },
