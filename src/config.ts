@@ -281,6 +281,13 @@ export interface EditableConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /** 图片聚合(issue #40): 把连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
+  imageAggregate?: {
+    /** 总开关(默认关) */
+    enabled?: boolean;
+    /** 聚合数量上限(1~8, 默认 4): 环形缓冲, 最新的排最下面, 旧的排最上面 */
+    max?: number;
+  };
   /** 引用消息总开关(默认 true): 开=入站消息带短消息号(台账索引) + 引用消息附原文 + 注入引用指令, 出站支持 [rf:短号] 标签 */
   messageReference?: boolean;
   /** 本地小模型(省 token; 2026-09-13 主人定): 开=本地先筛(价值评分/语义搜索), 模型缺失/加载失败则静默关闭 */
@@ -667,6 +674,10 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+  imageAggregate: Schema.object({
+    enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
+    max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),
+  }).description('图片聚合(issue #40): 多图 → 一张长图, 省 token 又让 AI 一次看全'),
   messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
   localModel: localModelSchema,
   groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
@@ -746,6 +757,13 @@ export interface ImQQBotConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
+  imageAggregate?: {
+    /** 总开关(默认关) */
+    enabled?: boolean;
+    /** 聚合数量上限(1~8, 默认 4) */
+    max?: number;
+  };
   /** 引用消息总开关(默认 true): 开=入站消息带短消息号(台账索引) + 引用消息附原文 + 注入引用指令, 出站支持 [rf:短号] 标签 */
   messageReference?: boolean;
   /** 本地小模型(省 token): 开=本地先筛(价值评分/语义搜索), 模型缺失自动关闭 */
@@ -902,6 +920,10 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+  imageAggregate: Schema.object({
+    enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
+    max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),
+  }).description('图片聚合(issue #40): 多图 → 一张长图, 省 token 又让 AI 一次看全'),
   messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
   localModel: localModelSchema,
   schedule: scheduleSchema,

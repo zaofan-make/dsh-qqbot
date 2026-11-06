@@ -1,6 +1,6 @@
 {
   "name": "@zaofan/dsh-qqbot",
-  "version": "1.12.2",
+  "version": "1.12.3",
   "description": "QQ Bot IM channel plugin for deepseek-harness (dsh)",
   "type": "module",
   "main": "./entry.js",
@@ -97,6 +97,7 @@
     "@deepseek-ai/schemastery": "3.18.4",
     "@tencent-connect/qqbot-connector": "1.2.0",
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
+    "jimp": "^1.6.1",
     "js-yaml": "^4.1.0",
     "lamejs-fixed": "^1.2.2",
     "silk-wasm": "^3.7.1"

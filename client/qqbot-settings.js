@@ -373,6 +373,8 @@ window.__ModuleLoader__.load({
             }
           },
           { k: 'imageHint', kw: '图片 看图 提示 识图 注入', t: 'bool', label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', def: true },
+          { k: 'imageAggregate.enabled', kw: '图片 聚合 拼接 多图 长图 缩略', t: 'bool', label: '图片聚合(默认关): 连续收到的几张图竖向拼成一张长图, 随那条唤醒的消息一起进上下文(只对能读图的模型生效)', def: false },
+          { k: 'imageAggregate.max', kw: '图片 聚合 数量 上限 几张', t: 'num', label: '聚合数量上限(1~8): 环形缓冲, 最新的排最下面、最旧的排最上面; 已经聚合过的图不再重复聚合', def: 4 },
           { k: 'messageReference', kw: '引用 消息号 原文 rf 回复某条', t: 'bool', label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', def: true },
         ],
       },
@@ -1880,6 +1882,10 @@ window.__ModuleLoader__.load({
           },
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
+          imageAggregate: {
+            enabled: !!(v.imageAggregate && v.imageAggregate.enabled),
+            max: (v.imageAggregate && typeof v.imageAggregate.max === 'number') ? v.imageAggregate.max : 4,
+          },
           messageReference: v.messageReference !== false,
               diagLog: v.diagLog === true,
           schedule: { targets: targets() },

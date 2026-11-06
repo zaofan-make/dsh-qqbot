@@ -10,6 +10,7 @@ import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
 import { setAvatarFetcher, kickAvatarRefresh } from '../features/bot-avatar.js';
+import { setImageAggregateHooks } from '../features/image-aggregate.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
@@ -192,6 +193,34 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         }
     }
     catch { /* 注入失败不影响运行 */ }
+    // ★ 2026-11-06（issue #40 图片聚合）：把"模型是否支持读图"和"存图成附件"两件宿主能力交出去。
+    //   探测口径与宿主 fs/tool-fs 的 read_image 完全一致：**必须由解析后的路由显式声明 image 输入**
+    //   （undefined = 老模型没声明 ⇒ 当作不支持，宁可不聚合，也别把图塞进纯文本模型报错）。
+    try {
+        setImageAggregateHooks({
+            probeImageInput: async (agent) => {
+                const llm = ctx.get('llm');
+                const a = agent;
+                const routed = a?.session?.requestHeader?.()?.config;
+                const provider = routed?.provider ?? a?.options?.provider;
+                const model = routed?.model ?? a?.options?.model;
+                if (!llm?.resolveModelInfo || !provider || !model)
+                    return undefined;
+                const info = await llm.resolveModelInfo(provider, model);
+                return info?.inputModalities?.includes('image') === true;
+            },
+            saveImage: async (data) => {
+                const att = ctx.get('attachments');
+                if (!att?.saveImages)
+                    return undefined;
+                const refs = await att.saveImages([{ data, mediaType: 'image/jpeg', name: 'aggregate.jpg' }]);
+                const ref = refs?.[0];
+                return ref ? { attachment: ref } : undefined;
+            },
+        });
+        logger.info?.('im-qqbot: 已注入图片聚合的模型探测/存图能力');
+    }
+    catch { /* 注入失败 = 聚合功能静默不可用，不影响运行 */ }
     void (async () => {
         try {
             await new Promise((r) => setTimeout(r, 1500));

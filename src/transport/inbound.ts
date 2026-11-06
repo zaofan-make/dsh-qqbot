@@ -30,6 +30,7 @@ import { registerMsgIndex } from './msg-index.js';
 import { createValueScorer, appendScoreLog, OTHER_MENTION_PENALTY } from '../features/value-score.js';
 import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
+import { pushAggImage, buildAggregateBlocks } from '../features/image-aggregate.js';
 import { extractFaceImageUrls, slimQuoteText } from './quote-text.js';
 import { lookupMsgContent, rememberMsgContent } from './msg-content-cache.js';
 import { appendMsgHistory } from '../features/msg-history.js';
@@ -257,6 +258,36 @@ export async function handleInbound(
     }
   } catch (e) {
     logger.warn(`im-qqbot: 拼消息前的图片预检失败(不影响主流程): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // ── 图片聚合：把本条消息里**已落地到本地**的图片塞进环形缓冲（issue #40, 2026-11-06）──
+  //   放在这里的理由：前面那次预检已经把 URL→本地路径 的缓存填好了，此刻才查得到路径。
+  //   这一步**只入缓冲**，不碰消息；真正拼图+注入在"确定要唤醒"之后（见 followup 前那段）。
+  try {
+    if (config.imageAggregate?.enabled === true) {
+      const _aggKey = `${scope}:${peerId}`;
+      const _aggMax = typeof config.imageAggregate.max === 'number' ? config.imageAggregate.max : 4;
+      const _aggSender = String(msg.senderName || msg.senderId || '某人');
+      const _stickerDir = stickerDirOf(config);
+      const _paths: string[] = [];
+      for (const _a of (Array.isArray(msg.attachments) ? msg.attachments : [])) {
+        const _ct = String((_a as { content_type?: string })?.content_type ?? '').toLowerCase();
+        if (!/image/.test(_ct)) continue;
+        const _url = String((_a as { url?: string })?.url ?? '').trim();
+        let _p: string | undefined;
+        // ① 中间件已经下载到本地的（按 filename 对上号）
+        const _fn = String((_a as { filename?: string })?.filename ?? '');
+        const _d = _fn ? downloaded.find((x) => x.filename === _fn) : undefined;
+        if (_d?.localPath && existsSync(_d.localPath)) _p = _d.localPath;
+        // ② 图库台账反查（表情包/历史图都走这条路）
+        if (!_p && _url) _p = resolveImageLocalPath(_url, _stickerDir);
+        if (_p && existsSync(_p) && !_paths.includes(_p)) _paths.push(_p);
+      }
+      for (const _p of _paths) pushAggImage(_aggKey, _p, _aggSender, _aggMax);
+      if (_paths.length > 0) logger.debug(`[图片聚合] 入缓冲 ${_paths.length} 张: key=${_aggKey}`);
+    }
+  } catch (e) {
+    logger.debug(`[图片聚合] 入缓冲失败(忽略): ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // 2026-10-01: 登记"这条消息的文本 + 图片本地路径"，供**别人引用它**时还原
@@ -981,6 +1012,24 @@ export async function handleInbound(
   record.turnOrigin = 'qq';
   record.interjectLifted = false;
   record.turnStartAt = Date.now();
+
+  // ── 图片聚合注入（issue #40, 2026-11-06）──
+  //   只在这里做：① 已经过了价值评分/各条早退分支（这条**确实要唤醒**），
+  //   ② 还没 followup（能改 message）。nothink / 低分 append 那几条路都不碰 ——
+  //   它们没唤醒，塞图纯属白烧 token。
+  try {
+    if (config.imageAggregate?.enabled === true) {
+      const aggBlocks = await buildAggregateBlocks(`${scope}:${peerId}`, record.agent, logger);
+      if (aggBlocks && aggBlocks.length > 0) {
+        const prev = (message as unknown as { content?: ContentBlock[] }).content ?? content;
+        message = createUserMessage({ content: [...prev, ...aggBlocks], source: { kind: 'user' as const } });
+        logger.info(`[图片聚合] 已随本条消息注入长图: key=${scope}:${peerId} 块数=${aggBlocks.length}`);
+      }
+    }
+  } catch (e) {
+    logger.warn(`[图片聚合] 注入失败(不影响唤醒): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   record.agent.followup(message);
   logger.debug(`→ followup sent: key=${scope}:${peerId}`);
 

@@ -315,6 +315,10 @@ export const EditableConfigSchema = Schema.object({
     }).description('表情包图库'),
     injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
     imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+    imageAggregate: Schema.object({
+        enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
+        max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),
+    }).description('图片聚合(issue #40): 多图 → 一张长图, 省 token 又让 AI 一次看全'),
     messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
     localModel: localModelSchema,
     groupPrompt: Schema.string().default(DEFAULT_GROUP_PROMPT).description('群聊常驻守则(默认含表情包礼仪;可清空关闭)'),
@@ -389,6 +393,10 @@ const ConfigSchemaRaw = Schema.object({
     }).description('表情包图库'),
     injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
     imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+    imageAggregate: Schema.object({
+        enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
+        max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),
+    }).description('图片聚合(issue #40): 多图 → 一张长图, 省 token 又让 AI 一次看全'),
     messageReference: Schema.boolean().default(true).description('引用消息(默认开): 入站消息带短消息号 + 引用消息附原文 + 注入引用指令; 出站支持 [rf:短号] 标签引用对方消息'),
     localModel: localModelSchema,
     schedule: scheduleSchema,
