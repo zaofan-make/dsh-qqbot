@@ -275,7 +275,15 @@ export class OutboundBuffer {
     private readonly refLookup?: (index: string) => string | undefined,
   ) {
     this.writer = streamingEnabled
-      ? new StreamingWriter({ bot, target: record.replyTarget, logger, throttleMs: STREAM_THROTTLE_MS })
+      ? new StreamingWriter({
+          bot,
+          target: record.replyTarget,
+          // ★ 2026-11-06：把"逐条现算目标"也交给流式通道，
+          //   否则它会一直拿 record.replyTarget 里那个可能早已过期的 msg_id 去被动回复。
+          ...(resolveTarget ? { resolveTarget } : {}),
+          logger,
+          throttleMs: STREAM_THROTTLE_MS,
+        })
       : null;
   }
 

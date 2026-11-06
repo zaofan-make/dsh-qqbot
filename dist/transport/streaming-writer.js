@@ -87,7 +87,9 @@ export class StreamingWriter {
             return;
         if (!this.session) {
             try {
-                this.session = this.deps.bot.openStream(this.deps.target);
+                // 开流前现算目标（适配主动会把"过期的 msg_id"去掉，转成主动消息）
+                const tgt = this.deps.resolveTarget ? this.deps.resolveTarget() : this.deps.target;
+                this.session = this.deps.bot.openStream(tgt);
                 this.deps.logger.debug(`im-qqbot: stream opened (chars=${this.fullText.length})`);
             }
             catch (err) {

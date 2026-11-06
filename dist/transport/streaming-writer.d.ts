@@ -14,6 +14,13 @@ import type { QQBotSender } from './outbound-buffer.js';
 export interface StreamingWriterDeps {
     bot: QQBotSender;
     target: ReplyTarget;
+    /**
+     * ★ 2026-11-06 主人实测抓到的 bug：流式通道**直接用固定的 target**（里面带着入站 msg_id），
+     *   绕过了上层"适配主动"的判定 —— 于是重启 dsh 后过很久再说话时，
+     *   仍拿几小时前的 msg_id 去被动回复 ⇒ QQ 直接丢弃 ⇒ **正文没到群，工具消息却到了**。
+     *   给了这个解析器就每次开流前现算（走 resolveTarget，会把过期 msg_id 去掉转主动）。
+     */
+    resolveTarget?: () => ReplyTarget;
     logger: Logger;
     /** 节流间隔（ms）：连续 append 累积后，停顿该间隔才 update */
     throttleMs: number;
