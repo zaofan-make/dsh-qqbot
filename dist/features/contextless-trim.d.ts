@@ -48,6 +48,16 @@ turn?: number,
 opts?: {
     startIdxOverride?: number;
     protectSeqs?: Set<number>;
+    /**
+     * **精确区段**（按 surface 节点下标，闭区间）：给定时跳过"保留最近 N 条"的推算，
+     * 直接压这一段。用于"价值分够高的消息要留着，所以一次要压好几段"的场景。
+     */
+    forceRange?: {
+        startIdx: number;
+        endIdx: number;
+    };
+    /** 允许同一 turn 内多次压缩（多段替换时用） */
+    allowRepeat?: boolean;
 }): Promise<boolean>;
 /**
  * 回合空闲后执行清理（插件硬约束：回合中 append 会坏记录 —— inject.ts 的既有约定）。

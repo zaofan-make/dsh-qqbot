@@ -74,7 +74,14 @@ interface TrimContextLike {
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message', 'system/message', 'developer/message']);
 
 /** 替身文本（摘要器输出；web 的「上下文已压缩」折叠块显示它） */
-const FIXED_SUMMARY_TEXT = '（更早的对话已按「无上下文模式」省略，仅保留最近若干条）';
+/**
+ * 替身文本由固定长句改成**极短 + 带条数**（2026-11-06 主人提的）：
+ * 原来那句 30 来字，而且每压一次就多一个替身 ⇒ 对话越久，光"占位"就吃掉不少 token。
+ * 现在 ≈「〔已省略 7 条〕」，一眼看懂压了什么，成本也几乎为零。
+ */
+function summaryTextOf(count: number): string {
+  return `〔已省略 ${count} 条〕`;
+}
 
 /**
  * 幂等标记（2026-09-27 修）：记住每个 session **已压到哪个 seq**。
@@ -143,7 +150,17 @@ export async function trimHistoryForContextless(
    *
    * `protectSeqs`：这些 seq 永不进替换区间（@ 我 / 扩展 forceWake 的入站消息）。
    */
-  opts?: { startIdxOverride?: number; protectSeqs?: Set<number> },
+  opts?: {
+    startIdxOverride?: number;
+    protectSeqs?: Set<number>;
+    /**
+     * **精确区段**（按 surface 节点下标，闭区间）：给定时跳过"保留最近 N 条"的推算，
+     * 直接压这一段。用于"价值分够高的消息要留着，所以一次要压好几段"的场景。
+     */
+    forceRange?: { startIdx: number; endIdx: number };
+    /** 允许同一 turn 内多次压缩（多段替换时用） */
+    allowRepeat?: boolean;
+  },
 ): Promise<boolean> {
   const sess = agent?.session;
   traceContextless('trim 被调用: keep=' + keepRecent + ' turn=' + String(turn) + ' agent=' + (agent ? 'yes' : 'no') + ' session=' + (sess ? 'yes' : 'no'));
@@ -182,7 +199,12 @@ export async function trimHistoryForContextless(
 
     // ② 定位保留段起点（从尾往前数最近 keep 条对话消息）
     let keepIdxInNodes: number;
-    if (keep <= 0) {
+    if (opts?.forceRange) {
+      // 精确区段：调用方已经算好要压哪一段，这里不再推算
+      keepIdxInNodes = Math.min(nodes.length, opts.forceRange.endIdx + 1);
+      firstIdx = Math.max(1, Math.min(nodes.length, opts.forceRange.startIdx));
+      if (keepIdxInNodes <= firstIdx) return false;
+    } else if (keep <= 0) {
       if (nodes.length <= firstIdx + 1) { log?.debug?.('[contextless] 跳过: 节点数不足(' + nodes.length + ')'); traceContextless('跳过: 节点数不足 ' + nodes.length); return false; }
       keepIdxInNodes = nodes.length;                          // 全清（只留替身）
     } else {
@@ -227,7 +249,7 @@ export async function trimHistoryForContextless(
     if (shadowedSeqs.length === 0) return false;
 
     // ③.5 双保险：同一 turn 只压一次
-    if (typeof turn === 'number') {
+    if (typeof turn === 'number' && opts?.allowRepeat !== true) {
       const prevTurn = lastTrimmedTurn.get(sess as object);
       if (typeof prevTurn === 'number' && prevTurn === turn) {
         traceContextless('跳过: 同一 turn(' + turn + ') 已压缩过');
@@ -238,7 +260,7 @@ export async function trimHistoryForContextless(
     // ④ 幂等（按 seq）：本次要压到的 end 不晚于"上次压到的"→ 说明没有新历史 → 跳过。
     //    有新消息时 end 会变大 → 允许再压（这正是原 replaceGeneration 写法漏掉的情况）。
     const trimmedTo = lastTrimmedEndSeq.get(sess as object);
-    if (typeof trimmedTo === 'number' && end <= trimmedTo) {
+    if (opts?.allowRepeat !== true && typeof trimmedTo === 'number' && end <= trimmedTo) {
       traceContextless('跳过: 已压到 seq ' + trimmedTo + '，本次 end=' + end + ' 没有更新的历史');
       return false;
     }
@@ -272,9 +294,10 @@ export async function trimHistoryForContextless(
     started = true;
 
     // ⑦ ② 计费事件
+    const summaryText = summaryTextOf(shadowedSeqs.length);
     const summaryEvent = sess.append('compaction/summary', {
       compactionId,
-      summary: [{ type: 'text', text: FIXED_SUMMARY_TEXT }],
+      summary: [{ type: 'text', text: summaryText }],
       shadowedRange: { start, end },
       shadowedSeqs: [...shadowedSeqs],
       shadowedTokenCount,
@@ -288,7 +311,7 @@ export async function trimHistoryForContextless(
     sess.append('user/message', {
       id: newId(),
       role: 'user',
-      content: [{ type: 'text', text: FIXED_SUMMARY_TEXT }],
+      content: [{ type: 'text', text: summaryText }],
       source: { kind: 'compact-checkpoint', compactionId },
     }, {
       surfaceOp: { op: 'replace', startSeq: start, endSeq: end },

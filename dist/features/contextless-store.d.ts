@@ -20,6 +20,11 @@ export interface ContextlessSetting {
     segment?: boolean;
     /** 分段压缩保留条数：这段里最后 N 条普通消息留下，更旧的压成一个占位节点 */
     segmentKeep?: number;
+    /**
+     * 分段压缩·**价值分保命门槛**（0 = 关闭）：入站时本地小模型给每条消息打过分（0~1），
+     * 分数 ≥ 这个值的消息**即使排在 N 条之外也保留**。主人举例：填 0.78，那 0.99 和 0.79 两个都留。
+     */
+    segmentScoreMin?: number;
     /** 备忘条数上限（面板可设；超出自动丢最旧） */
     memoMax?: number;
 }
@@ -66,4 +71,9 @@ export declare function contextlessWindowOf(sessionKey: string, fallback?: numbe
 export declare function contextlessSegmentOf(sessionKey: string): boolean;
 /** 分段压缩保留的条数（默认 3） */
 export declare function contextlessSegmentKeepOf(sessionKey: string, fallback?: number): number;
+/**
+ * 分段压缩的**价值分保命门槛**（2026-11-06 主人定）：0/未设 = 关闭。
+ * 分数 ≥ 门槛的消息即使排在"最近 N 条"之外也保留。
+ */
+export declare function contextlessSegmentScoreMinOf(sessionKey: string): number | undefined;
 //# sourceMappingURL=contextless-store.d.ts.map

@@ -48,7 +48,14 @@ import { traceContextless } from './contextless-store.js';
 /** 参与"保留最近 N 条"计数的消息型事件（与 dsh 的 SurfaceEventType 对齐） */
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message', 'system/message', 'developer/message']);
 /** 替身文本（摘要器输出；web 的「上下文已压缩」折叠块显示它） */
-const FIXED_SUMMARY_TEXT = '（更早的对话已按「无上下文模式」省略，仅保留最近若干条）';
+/**
+ * 替身文本由固定长句改成**极短 + 带条数**（2026-11-06 主人提的）：
+ * 原来那句 30 来字，而且每压一次就多一个替身 ⇒ 对话越久，光"占位"就吃掉不少 token。
+ * 现在 ≈「〔已省略 7 条〕」，一眼看懂压了什么，成本也几乎为零。
+ */
+function summaryTextOf(count) {
+    return `〔已省略 ${count} 条〕`;
+}
 /**
  * 幂等标记（2026-09-27 修）：记住每个 session **已压到哪个 seq**。
  *
@@ -158,7 +165,14 @@ opts) {
         }
         // ② 定位保留段起点（从尾往前数最近 keep 条对话消息）
         let keepIdxInNodes;
-        if (keep <= 0) {
+        if (opts?.forceRange) {
+            // 精确区段：调用方已经算好要压哪一段，这里不再推算
+            keepIdxInNodes = Math.min(nodes.length, opts.forceRange.endIdx + 1);
+            firstIdx = Math.max(1, Math.min(nodes.length, opts.forceRange.startIdx));
+            if (keepIdxInNodes <= firstIdx)
+                return false;
+        }
+        else if (keep <= 0) {
             if (nodes.length <= firstIdx + 1) {
                 log?.debug?.('[contextless] 跳过: 节点数不足(' + nodes.length + ')');
                 traceContextless('跳过: 节点数不足 ' + nodes.length);
@@ -225,7 +239,7 @@ opts) {
         if (shadowedSeqs.length === 0)
             return false;
         // ③.5 双保险：同一 turn 只压一次
-        if (typeof turn === 'number') {
+        if (typeof turn === 'number' && opts?.allowRepeat !== true) {
             const prevTurn = lastTrimmedTurn.get(sess);
             if (typeof prevTurn === 'number' && prevTurn === turn) {
                 traceContextless('跳过: 同一 turn(' + turn + ') 已压缩过');
@@ -235,7 +249,7 @@ opts) {
         // ④ 幂等（按 seq）：本次要压到的 end 不晚于"上次压到的"→ 说明没有新历史 → 跳过。
         //    有新消息时 end 会变大 → 允许再压（这正是原 replaceGeneration 写法漏掉的情况）。
         const trimmedTo = lastTrimmedEndSeq.get(sess);
-        if (typeof trimmedTo === 'number' && end <= trimmedTo) {
+        if (opts?.allowRepeat !== true && typeof trimmedTo === 'number' && end <= trimmedTo) {
             traceContextless('跳过: 已压到 seq ' + trimmedTo + '，本次 end=' + end + ' 没有更新的历史');
             return false;
         }
@@ -276,9 +290,10 @@ opts) {
         });
         started = true;
         // ⑦ ② 计费事件
+        const summaryText = summaryTextOf(shadowedSeqs.length);
         const summaryEvent = sess.append('compaction/summary', {
             compactionId,
-            summary: [{ type: 'text', text: FIXED_SUMMARY_TEXT }],
+            summary: [{ type: 'text', text: summaryText }],
             shadowedRange: { start, end },
             shadowedSeqs: [...shadowedSeqs],
             shadowedTokenCount,
@@ -291,7 +306,7 @@ opts) {
         sess.append('user/message', {
             id: newId(),
             role: 'user',
-            content: [{ type: 'text', text: FIXED_SUMMARY_TEXT }],
+            content: [{ type: 'text', text: summaryText }],
             source: { kind: 'compact-checkpoint', compactionId },
         }, {
             surfaceOp: { op: 'replace', startSeq: start, endSeq: end },

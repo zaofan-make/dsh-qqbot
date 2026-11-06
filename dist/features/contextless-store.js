@@ -82,6 +82,7 @@ function loadFrom(p) {
                 smart: o?.smart === true,
                 segment: o?.segment === true,
                 segmentKeep: Number(o?.segmentKeep) > 0 ? Math.max(1, Math.trunc(Number(o.segmentKeep))) : undefined,
+                segmentScoreMin: Number(o?.segmentScoreMin) > 0 ? Math.min(1, Number(o.segmentScoreMin)) : undefined,
                 memoMax: Number(o?.memoMax) > 0 ? Number(o.memoMax) : undefined,
                 window: Number.isFinite(Number(o?.window)) ? Math.max(0, Math.trunc(Number(o.window))) : DEFAULT_SETTING.window,
             });
@@ -181,6 +182,9 @@ export function setContextless(sessionKey, patch) {
         segmentKeep: patch.segmentKeep === undefined
             ? cur.segmentKeep
             : (Number.isFinite(Number(patch.segmentKeep)) ? Math.max(1, Math.trunc(Number(patch.segmentKeep))) : undefined),
+        segmentScoreMin: patch.segmentScoreMin === undefined
+            ? cur.segmentScoreMin
+            : (Number(patch.segmentScoreMin) > 0 ? Math.min(1, Number(patch.segmentScoreMin)) : undefined),
     };
     table.set(sessionKey, next);
     if (!keyOwner.has(sessionKey)) {
@@ -272,6 +276,20 @@ export function contextlessSegmentKeepOf(sessionKey, fallback = 3) {
     }
     catch {
         return Math.max(1, Math.trunc(fallback) || 3);
+    }
+}
+/**
+ * 分段压缩的**价值分保命门槛**（2026-11-06 主人定）：0/未设 = 关闭。
+ * 分数 ≥ 门槛的消息即使排在"最近 N 条"之外也保留。
+ */
+export function contextlessSegmentScoreMinOf(sessionKey) {
+    try {
+        const v = getContextless(sessionKey).segmentScoreMin;
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.min(1, n) : undefined;
+    }
+    catch {
+        return undefined;
     }
 }
 //# sourceMappingURL=contextless-store.js.map

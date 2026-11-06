@@ -1024,7 +1024,7 @@ export function apply(ctx) {
       if (body.remove === true) { mod.clearContextless(key); return writeJson(res, 200, { ok: true, removed: true }); }
       // 2026-10-01: smart = 无上下文模式·智能判断（与 window 互斥，面板单选取值）
       // 2026-11-06: segment = 分段压缩（与 window/smart 三者互斥）
-      const next = mod.setContextless(key, { enabled: body.enabled, window: body.window, smart: body.smart, memoMax: body.memoMax, segment: body.segment, segmentKeep: body.segmentKeep });
+      const next = mod.setContextless(key, { enabled: body.enabled, window: body.window, smart: body.smart, memoMax: body.memoMax, segment: body.segment, segmentKeep: body.segmentKeep, segmentScoreMin: body.segmentScoreMin });
       return writeJson(res, 200, { ok: true, value: next });
     } catch (e) {
       return writeJson(res, 500, { error: String((e && e.message) || e) });

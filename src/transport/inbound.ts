@@ -31,6 +31,7 @@ import { createValueScorer, appendScoreLog, OTHER_MENTION_PENALTY } from '../fea
 import { getStickerStore, computeDHash } from '../features/sticker-store.js';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
 import { pushAggImage, buildAggregateBlocks } from '../features/image-aggregate.js';
+import { noteSegmentScore } from '../features/segment-score.js';
 import { extractFaceImageUrls, slimQuoteText } from './quote-text.js';
 import { lookupMsgContent, rememberMsgContent } from './msg-content-cache.js';
 import { appendMsgHistory } from '../features/msg-history.js';
@@ -218,6 +219,12 @@ export async function handleInbound(
   // 引用消息短消息号(2026-09-13 主人定): 入站登记到本地台账({dataRoot}/.qqbot/msg-index/{peer}/refs.json),
   // 注入**短号**(如 #0913a)替代长 msg_id 省 token; 出站 [rf:短号] 再查表还原完整 id。
   const refEnabled = config.messageReference !== false;
+  /**
+   * 本条消息的价值分（0~1）—— **分段压缩**要用它来"按分保命"：
+   * 分值够高的消息即使排在"最近 N 条"之外也要留着。
+   * 记在这里是因为后面两个 append 点（低分静默 / nothink）都能读到它。
+   */
+  let inboundScore: number | undefined;
   let msgRef = '';
   if (refEnabled && msg.messageId) {
     try {
@@ -787,6 +794,7 @@ export async function handleInbound(
           //   没人@她恰恰是她该主动挑话插的常态；真正该扣的是"这句 @ 的是别人"，那轮对话方向是那个人）。
           const mentionPen = mentionedOthers ? OTHER_MENTION_PENALTY : 0;
           const effScore = (aggScore !== undefined ? aggScore : (sc ? sc.score + attOff : 0)) - mentionPen;
+          try { if (sc) inboundScore = Math.round(sc.score * 1000) / 1000; } catch { /* ignore */ }
           // ── 附件唤醒开关（2026-09-15 主人定：图片/视频/语音/文件**分别**决定是否无视分数唤醒）──
           //   现状问题：原来只要是"带图"就一律放行 —— 而"图"里混着视频/语音/文件（收集时不区分格式）。
           //   新规则：
@@ -933,7 +941,8 @@ export async function handleInbound(
                 try { await Promise.race([ag.whenIdle(), new Promise((r) => setTimeout(r, 60_000))]); } catch { /* 超时继续追加 */ }
               }
               try {
-                sess.append('user/message', message, { surfaceOp: 'append' });
+                const _evA = sess.append('user/message', message, { surfaceOp: 'append' }) as { seq?: number } | undefined;
+                try { noteSegmentScore(sess, _evA?.seq, inboundScore); } catch { /* ignore */ }
                 appended = true;
               } catch (err) {
                 logger.warn(`[价值评分] 低分 append 失败(仍然不唤醒): ${err instanceof Error ? err.message : String(err)}`);
@@ -1009,7 +1018,8 @@ export async function handleInbound(
           try { await Promise.race([a.whenIdle(), new Promise((r) => setTimeout(r, 60_000))]); } catch { /* 超时/异常放弃写回 */ }
         }
         record.lastInboundAt = Date.now();
-        sess.append('user/message', message, { surfaceOp: 'append' });
+        const _evB = sess.append('user/message', message, { surfaceOp: 'append' }) as { seq?: number } | undefined;
+        try { noteSegmentScore(sess, _evB?.seq, inboundScore); } catch { /* ignore */ }
         logger.debug(`[nothink] 已 append(不唤醒): key=${scope}:${peerId}`);
         // append 后同样清群历史缓存: 避免下次真人触发时把这段再打包一遍(上下文不重复)
         if (scope === 'group') {

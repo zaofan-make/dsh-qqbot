@@ -22,7 +22,8 @@ import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { takePendingMemoText } from '../features/people-memo.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
-import { contextlessSegmentOf, contextlessSegmentKeepOf } from '../features/contextless-store.js';
+import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
+import { getSegmentScore } from '../features/segment-score.js';
 
 /**
  * 分段压缩（2026-11-06）：**边界每次现算** —— 取"最后一条 assistant/message 之后"，
@@ -1426,9 +1427,6 @@ export class SessionManager {
                     const ev = sessSeg.eventAt?.(sq) as { type?: string } | undefined;
                     if (ev && ev.type === 'assistant/message') { boundary = i + 1; break; }
                   }
-                  if (boundary >= nodesSeg.length) {
-                    this.logger?.debug?.('[contextless] 分段压缩: 上回合之后没有新消息，跳过');
-                  }
                   // 受保护：@ 我 的入站消息永不压（扩展 forceWake 同理，内容里带标记）
                   const protect = new Set<number>();
                   const from = Math.max(1, Math.min(boundary, nodesSeg.length));
@@ -1440,18 +1438,65 @@ export class SessionManager {
                     const txt = JSON.stringify(ev.data ?? '');
                     if (txt.includes('(@you)') || txt.includes('"@you"')) protect.add(sq);
                   }
-                  const okSeg = await trimHistoryForContextless(
-                    agent as unknown as { session?: { surface?: { nodes?: number[] } }; whenIdle?: () => Promise<void> },
-                    keepSeg,
-                    this.logger,
-                    (() => { try { return this.ctx as unknown as { tokenMeter?: { estimateMessage?: (m: unknown) => number }; logger?: { info?: (s: string) => void; debug?: (s: string) => void } }; } catch { return undefined; } })(),
-                    Number.isFinite(currentTurn) ? currentTurn : undefined,
-                    { startIdxOverride: boundary, protectSeqs: protect },
-                  );
-                  // 压成功：替身节点落在 boundary 位置，稳定前缀推进到它后面一条；
-                  // 没压（条数还不够 / 受保护节点挡着）：边界**不动**，让消息继续攒着。
-                  // 边界每次现算（见上），这里不再记账；segBoundary 只留作诊断。
-                  this.logger?.debug?.('[contextless] 分段压缩 ' + (okSeg ? '已执行' : '本轮无需') + ' (boundary=' + boundary + ', keep=' + keepSeg + ', 受保护=' + protect.size + ')');
+                  if (boundary < nodesSeg.length) {
+                    // ── 先算"要留住哪些"：最近 keep 条 + （可选）价值分 ≥ 门槛的 + 受保护的 ──
+                    const keepIdx = new Set<number>();
+                    let kept = 0;
+                    for (let k = nodesSeg.length - 1; k >= boundary && kept < keepSeg; k--) {
+                      const sq = nodesSeg[k];
+                      const ev = sq === undefined ? undefined : (sessSeg.eventAt?.(sq) as { type?: string } | undefined);
+                      if (!ev || String(ev.type) !== 'user/message') continue;
+                      keepIdx.add(k);
+                      kept += 1;
+                    }
+                    // ★ 2026-11-06 主人定：价值分保命 —— 分数够高的消息，就算排在 N 条之外也留着
+                    const scoreMin = contextlessSegmentScoreMinOf(sk0);
+                    let savedByScore = 0;
+                    if (typeof scoreMin === 'number' && scoreMin > 0) {
+                      for (let i = boundary; i < nodesSeg.length; i++) {
+                        const sq = nodesSeg[i];
+                        if (sq === undefined || keepIdx.has(i)) continue;
+                        const ev = sessSeg.eventAt?.(sq) as { type?: string } | undefined;
+                        if (!ev || ev.type !== 'user/message') continue;
+                        const sc = getSegmentScore(sessSeg, sq);
+                        if (typeof sc === 'number' && sc >= scoreMin) { keepIdx.add(i); savedByScore += 1; }
+                      }
+                    }
+                    for (const sq of protect) {
+                      const idx = nodesSeg.indexOf(sq);
+                      if (idx >= boundary) keepIdx.add(idx);
+                    }
+                    // ── 剩下的切成"连续段"（只压 user/message，不碰 assistant/tool，天然不破坏配对）──
+                    const runs: Array<{ startIdx: number; endIdx: number }> = [];
+                    let cur: { startIdx: number; endIdx: number } | undefined;
+                    for (let i = boundary; i < nodesSeg.length; i++) {
+                      const sq = nodesSeg[i];
+                      const ev = sq === undefined ? undefined : (sessSeg.eventAt?.(sq) as { type?: string } | undefined);
+                      const droppable = !keepIdx.has(i) && !!ev && String(ev.type) === 'user/message';
+                      if (!droppable) { if (cur) { runs.push(cur); cur = undefined; } continue; }
+                      cur = cur ? { startIdx: cur.startIdx, endIdx: i } : { startIdx: i, endIdx: i };
+                    }
+                    if (cur) runs.push(cur);
+                    // ⚠️ **倒着压**：后面的段先压，前面段的下标才不会失效
+                    let okCount = 0;
+                    for (const r of runs.slice().sort((a, b) => b.startIdx - a.startIdx)) {
+                      // eslint-disable-next-line no-await-in-loop
+                      const okRun = await trimHistoryForContextless(
+                        agent as unknown as { session?: { surface?: { nodes?: number[] } }; whenIdle?: () => Promise<void> },
+                        keepSeg,
+                        this.logger,
+                        (() => { try { return this.ctx as unknown as { tokenMeter?: { estimateMessage?: (m: unknown) => number }; logger?: { info?: (s: string) => void; debug?: (s: string) => void } }; } catch { return undefined; } })(),
+                        Number.isFinite(currentTurn) ? currentTurn : undefined,
+                        { forceRange: r, allowRepeat: true, protectSeqs: protect },
+                      );
+                      if (okRun) okCount += 1;
+                    }
+                    this.logger?.debug?.('[contextless] 分段压缩: 段数=' + runs.length + ' 成功=' + okCount
+                      + ' (boundary=' + boundary + ', keep=' + keepSeg + ', 按分保命=' + savedByScore
+                      + ', 门槛=' + String(scoreMin) + ', 受保护=' + protect.size + ')');
+                  } else {
+                    this.logger?.debug?.('[contextless] 分段压缩: 上回合之后没有新消息，跳过');
+                  }
                 }
               }
             } catch (e) { this.logger?.debug?.('[contextless] 分段压缩异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
