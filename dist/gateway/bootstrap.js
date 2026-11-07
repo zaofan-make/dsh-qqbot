@@ -10,7 +10,7 @@ import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
 import { dataRootOf, migrateLegacyData, stickerDirOf } from './data-root.js';
 import { setAvatarFetcher, kickAvatarRefresh } from '../features/bot-avatar.js';
-import { setImageAggregateHooks } from '../features/image-aggregate.js';
+import { setImageAggregateHooks, initAggregateRegistry, noteOurAttachment } from '../features/image-aggregate.js';
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
@@ -215,9 +215,20 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                     return undefined;
                 const refs = await att.saveImages([{ data, mediaType, name: 'aggregate.jpg' }]);
                 const ref = refs?.[0];
+                // 登记"这张图是我们插件做的" —— 以后只清理它，绝不误伤别的插件/功能的图片
+                try {
+                    const id = ref?.attachmentId;
+                    if (id)
+                        noteOurAttachment(id);
+                }
+                catch { /* ignore */ }
                 return ref ? { attachment: ref } : undefined;
             },
         });
+        try {
+            initAggregateRegistry(dataRootOf(config));
+        }
+        catch { /* 台账初始化失败不影响主链 */ }
         logger.info?.('im-qqbot: 已注入图片聚合的模型探测/存图能力');
     }
     catch { /* 注入失败 = 聚合功能静默不可用，不影响运行 */ }
@@ -562,17 +573,56 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                 : source.localPath
                     ? { localPath: source.localPath }
                     : {};
+            /**
+             * ★ 2026-11-07（主人问"caps.file 没有优先被动再主动吗"）：确实没有。
+             *   文本走 `sendMarkdown` 有"被动被拒 → 去掉 msgId 转主动"的降级，
+             *   但图片/语音/视频/**文件** 这条 `sendMedia` 是把 target 原样丢给 SDK ——
+             *   一旦那个 target 带着**过期/用尽的 msgId**，QQ 直接拒，媒体就悄悄没了。
+             *   扩展的 `caps.image/voice/video/file/media` 全汇到这里 ⇒ 在这里补一次降级，全覆盖。
+             */
+            let usedTarget = target;
+            const doSend = (t) => {
+                if (kind === 'image')
+                    return bot.sendImage(t, srcOpt);
+                if (kind === 'video')
+                    return bot.sendVideo(t, srcOpt);
+                if (kind === 'voice')
+                    return bot.sendVoice(t, srcOpt);
+                return bot.sendFile(t, srcOpt);
+            };
             let out;
-            if (kind === 'image')
-                out = await bot.sendImage(target, srcOpt);
-            else if (kind === 'video')
-                out = await bot.sendVideo(target, srcOpt);
-            else if (kind === 'voice')
-                out = await bot.sendVoice(target, srcOpt);
-            else
-                out = await bot.sendFile(target, srcOpt);
+            try {
+                out = await doSend(target);
+            }
+            catch (err) {
+                const firstErr = err instanceof Error ? err.message : String(err);
+                // 表情包闸门是"我们自己不放"，重试没意义
+                if (err instanceof StickerGateDenied)
+                    throw err;
+                if (!target.msgId) {
+                    // 本来就是主动：失败必须留痕（原来这里直接抛，宿主零痕迹）
+                    logger.warn?.(`媒体(主动)发送失败 kind=${kind}: ${firstErr}`);
+                    diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] sendMedia(${kind}) 主动失败 target=${String(target.targetId ?? '').slice(0, 12)}… err=${firstErr}`);
+                    throw err;
+                }
+                const act = { scope: target.scope, targetId: target.targetId };
+                logger.warn?.(`媒体被动发送失败 → 去掉 msgId 转主动重试: ${firstErr}`);
+                try {
+                    out = await doSend(act);
+                    usedTarget = act;
+                    diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] sendMedia(${kind}) 被动失败→转主动成功 target=${String(target.targetId ?? '').slice(0, 12)}…`);
+                }
+                catch (err2) {
+                    // ★ 2026-11-07（另一个窗口实测挖到）：这第二跳原来**没有 try/catch** ——
+                    //   主动也失败时异常直接往上抛，没 warn、没 diag，扩展只拿到一个 false，宿主零痕迹。
+                    const secondErr = err2 instanceof Error ? err2.message : String(err2);
+                    logger.error?.(`媒体被动+主动都失败 kind=${kind}: 被动=${firstErr} / 主动=${secondErr}`);
+                    diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] sendMedia(${kind}) 被动+主动都失败 target=${String(target.targetId ?? '').slice(0, 12)}… 被动err=${firstErr} | 主动err=${secondErr}`);
+                    throw err2;
+                }
+            }
             const id = out?.message?.id;
-            pushSent(target, id);
+            pushSent(usedTarget, id);
             // 发送成功后才记录(失败不占预算/去重); 库内图且群内才算表情包发送
             if (gateHit && id !== undefined && source.localPath) {
                 try {

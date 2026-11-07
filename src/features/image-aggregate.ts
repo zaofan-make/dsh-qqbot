@@ -13,7 +13,8 @@
  *   长图 = 一块 ImageBlock，比 N 块省得多；发送者名字**不画在图上**（省得接中文字体），
  *   改为随图附一句文字说明，模型照样知道每格是谁发的。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 
 /**
@@ -71,6 +72,45 @@ const buffers = new Map<string, AggImage[]>();
  */
 const sentPaths = new Map<string, string[]>();
 const SENT_KEEP = 64;
+
+/** 本插件**自己聚合出来**的附件 id（只认这些，别误伤别的插件/功能的图） */
+const OUR_ATTACH = new Set<string>();
+let ourAttachFile = '';
+const OUR_ATTACH_KEEP = 2000;
+
+/** 装配期调用：把我们产出的附件 id 台账绑到数据根上（跨重启也认得） */
+export function initAggregateRegistry(dataRoot: string): void {
+  try {
+    if (!dataRoot) return;
+    ourAttachFile = join(dataRoot, '.qqbot', 'aggregate-ids.json');
+    if (!existsSync(ourAttachFile)) return;
+    const arr = JSON.parse(readFileSync(ourAttachFile, 'utf8'));
+    if (Array.isArray(arr)) for (const id of arr) if (typeof id === 'string' && id) OUR_ATTACH.add(id);
+  } catch { /* 台账坏了就当空 */ }
+}
+
+/** 登记一个"我们做的"图片附件 */
+export function noteOurAttachment(id: string): void {
+  try {
+    const v = String(id ?? '');
+    if (!v) return;
+    OUR_ATTACH.add(v);
+    if (OUR_ATTACH.size > OUR_ATTACH_KEEP) {
+      const drop = OUR_ATTACH.size - OUR_ATTACH_KEEP;
+      let n = 0;
+      for (const k of OUR_ATTACH) { if (n >= drop) break; OUR_ATTACH.delete(k); n += 1; }
+    }
+    if (ourAttachFile) {
+      try { writeFileSync(ourAttachFile, JSON.stringify([...OUR_ATTACH]), 'utf8'); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+/** 这个附件是不是"我们自己拼/发"的图 */
+export function isOurAttachment(id: unknown): boolean {
+  const v = String(id ?? '');
+  return !!v && OUR_ATTACH.has(v);
+}
 
 /** 宿主注入：判断当前 agent 走的模型是否支持 image 输入 */
 type ImageProbe = (agent: unknown) => Promise<boolean | undefined>;

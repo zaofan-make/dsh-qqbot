@@ -10,6 +10,12 @@ export interface AggImage {
     /** 是否已经被聚合进过某张长图（true = 不再重复聚合） */
     sent: boolean;
 }
+/** 装配期调用：把我们产出的附件 id 台账绑到数据根上（跨重启也认得） */
+export declare function initAggregateRegistry(dataRoot: string): void;
+/** 登记一个"我们做的"图片附件 */
+export declare function noteOurAttachment(id: string): void;
+/** 这个附件是不是"我们自己拼/发"的图 */
+export declare function isOurAttachment(id: unknown): boolean;
 /** 宿主注入：判断当前 agent 走的模型是否支持 image 输入 */
 type ImageProbe = (agent: unknown) => Promise<boolean | undefined>;
 /** 宿主注入：把合成图存成附件 */

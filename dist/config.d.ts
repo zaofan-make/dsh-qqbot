@@ -263,6 +263,8 @@ export interface EditableConfig {
     /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
      *  —— 模型自己就能读图时可以关它。 */
     imageHint?: boolean;
+    /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
+    imageOffload?: boolean;
     /** 图片聚合(issue #40): 把连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
     imageAggregate?: {
         /** 总开关(默认关) */
@@ -414,6 +416,8 @@ export interface ImQQBotConfig {
     /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
      *  —— 模型自己就能读图时可以关它。 */
     imageHint?: boolean;
+    /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
+    imageOffload?: boolean;
     /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
     imageAggregate?: {
         /** 总开关(默认关) */

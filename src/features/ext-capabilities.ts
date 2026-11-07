@@ -38,7 +38,7 @@
  * `clickCount` / `reloadSelf` 等**卡片专属**成员，给工具/命令用只会让作者困惑。
  * 这里只做「三套共有」的那一层，实现上仍是同一批底层原语（sender / session / token）。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { registerExtToolCard } from './ext-tool-cards.js';
 import { dirname, join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -396,8 +396,38 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
     } catch { /* 日志失败忽略 */ }
   };
 
+  /**
+   * 发送失败时把**真实原因**留一份给扩展自己看（2026-11-07 主人要求）。
+   *
+   * 背景：`send()` 失败只返回 false，真实错误只进 logger.warn ——
+   *   宿主 diag 开关默认关的时候，扩展日志里就只剩一个 `false`，
+   *   排查"文件为什么没发出去"完全没有线索（实测踩到）。
+   * 这里额外往 `{dataRoot}/.qqbot/ext-deliver.log` 追加一行（**不改返回类型**，
+   *   扩展仍按 boolean 判断；老扩展零影响）。
+   * 文件按 2MB 轮转一份 .1，避免无限增长。
+   */
+  const noteDeliver = (what: string, ok: boolean, err?: unknown): void => {
+    try {
+      const root = String(deps.dataRoot ?? '');
+      if (!root) return;
+      const dir = join(root, '.qqbot');
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, 'ext-deliver.log');
+      try {
+        if (statSync(file).size > 2 * 1024 * 1024) renameSync(file, `${file}.1`);
+      } catch { /* 文件不存在/读不到都无所谓 */ }
+      const msg = err === undefined ? '' : ` err=${err instanceof Error ? err.message : String(err)}`.slice(0, 400);
+      appendFileSync(file, `[${new Date().toISOString()}] ${self} ${what} ok=${ok}${msg}
+`, 'utf8');
+    } catch { /* 观测失败绝不影响发送 */ }
+  };
+
   const send = async (what: string, fn: () => Promise<unknown>): Promise<boolean> => {
-    try { await fn(); return true; } catch (err) { warn(what, err); return false; }
+    try { await fn(); noteDeliver(what, true); return true; } catch (err) {
+      warn(what, err);
+      noteDeliver(what, false, err);
+      return false;
+    }
   };
 
   return {
