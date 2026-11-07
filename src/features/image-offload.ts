@@ -54,6 +54,24 @@ function roughTokens(blocks: MsgContentBlock[]): number {
   return n;
 }
 
+/**
+ * 这条消息是不是**本插件自己拼出来**的「聚合图消息」？
+ *
+ * ★ 2026-11-07 踩坑修正：原来用 `attachmentId` 台账匹配 ——
+ *   dsh 的附件 id 是**内容寻址**的（`sha256:<hash>`），同一张图被不同途径引用时会撞上，
+ *   结果把主人在 web 上手动上传的图也当成我们的给压掉了。
+ *   改成认**我们自己写的那行说明文字**（`[图片聚合]` / `（↑ xxx 发的图）`）：
+ *   只有我们注入的图块后面才会跟着这句，别的来源不可能有 ⇒ 不会误伤。
+ */
+function isOurAggregateMessage(content: MsgContentBlock[]): boolean {
+  if (!Array.isArray(content)) return false;
+  const text = content
+    .filter((b) => b?.type === 'text')
+    .map((b) => String(b.text ?? ''))
+    .join(String.fromCharCode(10));
+  return text.includes('[图片聚合]') || text.includes('（↑');
+}
+
 /** 把一条消息里的图片块换成一个文字占位；没有图片就返回 null */
 function stripImages(content: MsgContentBlock[]): { blocks: MsgContentBlock[]; removed: number } | null {
   if (!Array.isArray(content)) return null;
@@ -110,6 +128,8 @@ export async function offloadHistoryImages(
     const ev = sess.eventAt(seq) as { type?: string; data?: { content?: MsgContentBlock[] } } | undefined;
     if (!ev || ev.type !== 'user/message') continue;
     const content = ev.data?.content;
+    // 只动「我们自己聚合出来的」消息：认那行说明文字，别的一律不碰
+    if (!isOurAggregateMessage(Array.isArray(content) ? content : [])) continue;
     const stripped = stripImages(Array.isArray(content) ? content : []);
     if (!stripped) continue;
 

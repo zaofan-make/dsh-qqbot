@@ -4,6 +4,7 @@ import { handleInbound, buildQuotePart } from '../transport/inbound.js';
 import { getHistoryStore, historyGroupKey, clearGroupHistory } from '../features/history-store.js';
 import { lookupImagePath } from '../features/image-path-cache.js';
 import { pushAggImage } from '../features/image-aggregate.js';
+import { applyInjectRules } from '../transport/inject-rules.js';
 import { appendFileSync } from 'node:fs';
 import { stripLeadingMentions } from '../shared/mention-clean.js';
 import { join } from 'node:path';
@@ -248,16 +249,31 @@ function buildInterjectText(entries, note, quoteByMsg, stickerDir = '') {
  * (不唤醒、不拆 tool_calls → 宿主在下个 step 组包时带上, 她本轮就读到了)。
  * @returns true=已插进去(调用方清窗口); false=没有注入能力 / 注入抛错(调用方回落原排队逻辑, 消息不丢)
  */
-function interjectBatch(rec, entries, logger, quoteByMsg, stickerDir = '', agg) {
+function interjectBatch(rec, entries, logger, quoteByMsg, stickerDir = '', agg, 
+/**
+ * ★ 2026-11-07 主人实测：**插话不走 handleInbound**，于是「自定义小提醒」不会触发。
+ *   这里把配置传进来，在拼完插话文本后补跑一遍规则（与正常入站同一套）。
+ */
+injectRules) {
     const a = rec.agent;
     if (!a || typeof a.inject !== 'function')
         return false;
     // 逐次缩短提示(2026-10-09): 本回合第 n 次插话就用第 n 档; 注入成功后才 +1（失败回落排队，不算插过）
     const seq = Number(rec.interjectSeq) || 0;
     // ★ 2026-11-02：把窗口上按 messageId 存的引用一起带上（否则插话里"这条"指代不明）
-    const text = buildInterjectText(entries, interjectNoteFor(seq, rec.sessionId), quoteByMsg, stickerDir);
+    let text = buildInterjectText(entries, interjectNoteFor(seq, rec.sessionId), quoteByMsg, stickerDir);
     if (!text)
         return false;
+    // 自定义小提醒：插话这条路径原本完全绕过了 handleInbound，规则不会生效（主人实测发现）。
+    // 这里补跑一遍，拿"这一批最后一条消息"当判定样本（够用：规则看的是图片/链接/关键词）。
+    try {
+        if (injectRules && Array.isArray(injectRules.rules) && injectRules.rules.length > 0) {
+            const last = entries[entries.length - 1];
+            const lastMsg = (last?.msg ?? {});
+            text = applyInjectRules(text, lastMsg, injectRules.rules, logger, injectRules.imageHint !== false);
+        }
+    }
+    catch { /* 规则失败不影响插话 */ }
     // ★ 2026-11-06（主人指出）：插话正文里明明已经带了 `[图片: 本地路径]`，那张图却进不了聚合缓冲 ——
     //   因为插话这条路**不经过 handleInbound**，环形缓冲只在那边入料。
     //   这里补一手：插话的图同样落进缓冲，等下一次正常唤醒时跟着长图一起进上下文（不会丢）。
@@ -392,6 +408,9 @@ export function debounceLayer(config, manager, logger, cooldownAt) {
                         } })(), {
                             enabled: _aggCfg?.enabled === true,
                             max: typeof _aggCfg?.max === 'number' ? _aggCfg.max : 4,
+                        }, {
+                            rules: config.injectRules,
+                            imageHint: config.imageHint !== false,
                         })) {
                             clearTimer(w);
                             windows.delete(key);
