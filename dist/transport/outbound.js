@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound } from './outbound-buffer.js';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
 import { noteThinking } from '../features/thinking-log.js';
@@ -31,6 +32,24 @@ import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
 import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText, normalizeMarkdownImages } from '../features/md-media-rewrite.js';
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
+/**
+ * 「正文被平台判违规」已经告知过 AI 的回合标记（2026-11-07 主人要的功能）。
+ * 键＝SessionRecord 对象，值＝该回合的 turnStartAt；同一回合只提醒一次，免得连发刷屏。
+ */
+const violationNotified = new WeakMap();
+/**
+ * 正文被 QQ 判「内容违规」时，把这件事**立刻注入上下文**告诉 AI。
+ *
+ * 背景（主人实测 2026-11-07）：违规只进日志，AI 毫不知情，于是它会以为"已经说出去了"，
+ * 继续基于那句话往下聊 —— 观感非常怪。
+ * 注入用 `agent.inject`（不唤醒、下个 step 就能看到）；没有 inject 才退回 followup。
+ */
+export function buildViolationNotice() {
+    // ★ 2026-11-07 主人定：**只说"违规了"，不复述被拒内容**。
+    //   理由：① 复述等于把那段脏东西又塞回上下文（还占 token）；
+    //        ② 万一用户让 AI 写长篇小说，被拒的那段可能上千字，再贴一遍纯属浪费。
+    return '[系统通知] 刚才那段正文被 QQ 判「内容违规」，没发出去。换个说法重发，别原样再试。';
+}
 /** 不展示给用户的轮次错误码（底层传输/网络错误，对用户无意义，且常被重试兜住） */
 const SILENT_TURN_ERROR_CODES = new Set(['STREAM_CLOSED']);
 /** 适配主动: 同一入站消息(msg_id)最多被动回复条数(QQ 回复同一消息上限 ~4-5 条), 超出自动转主动 */
@@ -580,6 +599,44 @@ class OutboundRouter {
         _record.interjectLifted = false;
         this.logger.debug(`im-qqbot: turn/end sessionId=${sessionId}${silenced ? ' (闸门静默回合)' : ''}`);
     }
+    /**
+     * 出站失败回调：**只处理「内容违规」**（2026-11-07 主人要的功能）。
+     * 违规时立刻往上下文注入一条通知，让 AI 知道自己那句话没发出去。
+     */
+    onSendErrorFor(record) {
+        return (err) => {
+            try {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (!/内容违规/.test(msg))
+                    return;
+                const turnKey = record.turnStartAt ?? 0;
+                if (violationNotified.get(record) === turnKey)
+                    return; // 同一回合只提醒一次
+                violationNotified.set(record, turnKey);
+                const notice = buildViolationNotice();
+                const message = createUserMessage({
+                    content: [{ type: 'text', text: notice }],
+                    source: { kind: 'user' },
+                });
+                // ★ 2026-11-07 主人要"违规就**立马**重发"：原来只用 inject(=next-step + 不唤醒)，
+                //   回合已结束的话要等下一次有人说话才看得到。
+                //   宿主其实还留了一个正好对口的：`steer()` = send(msg,'next-step',**wakeup:true**) ——
+                //   塞进下一步**并且唤醒**：回合还开着就在下个 step 读到；已经结束了就当场开新回合。
+                //   逐级降级：steer → inject → followup。
+                const ag = record.agent;
+                if (typeof ag?.steer === 'function')
+                    ag.steer(message);
+                else if (typeof ag?.inject === 'function')
+                    ag.inject(message);
+                else
+                    ag?.followup?.(message);
+                this.logger.info?.(`im-qqbot: 正文被判「内容违规」，已把原因注入上下文 (key=${record.sessionKey})`);
+            }
+            catch (e) {
+                this.logger?.debug?.(`im-qqbot: 违规通知注入失败(忽略): ${e instanceof Error ? e.message : String(e)}`);
+            }
+        };
+    }
     /** 统一发送：逐条自适应目标(适配主动) + 富媒体感知分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
     async send(_record, text, tag) {
         try {
@@ -661,11 +718,11 @@ class OutboundRouter {
                     //   `localMarkdownImagesToMediaMarkers` 认不出来（它只认本地路径）⇒ 整段语法原样发到群里。
                     //   这里再套一层 stripMarkdownImagesForPlainText 统一收拾：
                     //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。绝不把语法露给群友。
-                    await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(text)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));
+                    await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(text)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record));
                     return;
                 }
             }
-            await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record));
+            await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record));
         }
         catch (err) {
             this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);

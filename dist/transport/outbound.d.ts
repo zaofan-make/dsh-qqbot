@@ -22,6 +22,14 @@ import { type ToolsRegistryLike } from './tool-presenter.js';
  */
 export declare function isGateSilence(rawArgs: string): boolean;
 import { type RawSessionEvent, type StreamDelta } from './events.js';
+/**
+ * 正文被 QQ 判「内容违规」时，把这件事**立刻注入上下文**告诉 AI。
+ *
+ * 背景（主人实测 2026-11-07）：违规只进日志，AI 毫不知情，于是它会以为"已经说出去了"，
+ * 继续基于那句话往下聊 —— 观感非常怪。
+ * 注入用 `agent.inject`（不唤醒、下个 step 就能看到）；没有 inject 才退回 followup。
+ */
+export declare function buildViolationNotice(): string;
 export type { QQBotSender } from './outbound-buffer.js';
 export type { ToolsRegistryLike } from './tool-presenter.js';
 /** 出站处理器签名（注册到 ctx.on('session/event')） */

@@ -90,6 +90,12 @@ export async function sendRichOutbound(
   /** 引用短号查表(2026-09-13 主人定): 传短号(如 0913a) → 完整 msg_id; 台账见 transport/msg-index.ts */
   refLookup?: (index: string) => string | undefined,
   /**
+   * ★ 2026-11-07 主人要的：**正文被平台判违规时告知 AI**。
+   *   每块发送失败都会回调 (`err`, `该块文本`)，由上层判断是不是"内容违规"并注入提示；
+   *   这里只是把异常**吞掉继续发后续块**（原来一抛就整段中断，后面的正文也全丢了）。
+   */
+  onSendError?: (err: unknown, text: string) => void,
+  /**
    * ★★ 2026-10-16 主人定：**出站扩展链**的上下文（第六套扩展点 `.qqbot-extensions/outbound/`）★★
    *
    * 挂在这里的原因：`sendRichOutbound` 是**所有出站**（AI 正文 / 媒体段 / 卡片文本）的必经之路，
@@ -246,8 +252,14 @@ export async function sendRichOutbound(
         // 记住她刚说的话(2026-09-13): 相关度信号 relReply 要用「当前消息 vs 她上一条发言」判断
         // "是不是有人在接她的话" —— 内存级, 不落盘, 失败也不影响发送
         try { if (tgt.scope === 'group') rememberBotReply(tgt.targetId, chunk); } catch { /* ignore */ }
-        await bot.sendMarkdown(tgt, chunk);
-        onBlockSent?.(chunk, tgt);
+        try {
+          await bot.sendMarkdown(tgt, chunk);
+          onBlockSent?.(chunk, tgt);
+        } catch (err) {
+          // 单块失败不中断整段：把错误交给上层（可能是"内容违规"），继续发后面的块
+          onSendError?.(err, chunk);
+          logError?.(`im-qqbot: 正文块发送失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
         if (ci < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
       }
     }
