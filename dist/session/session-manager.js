@@ -461,6 +461,7 @@ export class SessionManager {
         record.agentPreset = composed.agentPreset;
         record.lastActivity = Date.now();
         void oldHandle.dispose().catch(() => { });
+        void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger);
         this.logger.info(`forked session: key=${key} → ${childId} ${seed ? '(继承历史)' : '(全新空档, 旧会话存档为 parent)'} route=${route ? `${route.provider}/${route.model}` : 'session-own'}`);
     }
     clearModelOverride(scope, peerId) {
