@@ -25,6 +25,17 @@
 3. **卡片显示与实际错位**：`getEffectiveModel` 现在优先读 `agent.model.current()`（新宿主），
    读不到再看 `options`（旧宿主），最后才回落 prefs。
 
+### 合并的社区 PR（本版一并发布）
+
+- **#43**（by **kinokn**）：UI Settings 改由宿主提供 —— 删掉 `@deepseek-ai/dsh-client-ui-settings`
+  的依赖与锁文件记录（保留 `ui-slots`），避免 profile 重装时把旧版 0.1.7 又装回来。附客户端注册/设置路由回归测试。
+- **#44**（by **kinokn**）：`IdleEvictor` 的 interval 加 `unref()` —— 修「短命令跑完进程不退」
+  （`dsh web --help` 打印完卡住，Web Helper 一直等）。附进程自然退出的回归测试。
+- **#45**（by **kinokn**）：fork 出来的子会话补 `attachSessionToWorkspaceWithRetry()` ——
+  修「新会话/切模型后子会话掉到 Ungrouped」。
+
+> 上一版 v1.12.11 还合并了 **#41**（by **Chaos-Paradox**）：兼容 DSH Desktop `mainView` 会话识别 + 悬浮球否定缓存过期。
+
 ### 其他
 
 - **同模型同强度 → 不 fork**：以前点一次就白开一个新会话，现在只回一句"当前已经是 XXX"
