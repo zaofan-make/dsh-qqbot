@@ -2818,22 +2818,25 @@ var QQS_THEME_CSS = [
       //   只比 sessionId 字符串，变了才发请求，开销可忽略。
       var _dockSid = ''
       var _dockHit = null
+      var _dockCheckedAt = 0
       var _dockPending = 0
       function refreshDockVisibility() {
         // ★ v1.11.11（主人改口）：**不再跨会话常显** —— 群管理是强工作区相关的事，
         //   切到编码项目/笔记库就该整块不见；"有审批"只作为 QQ 会话内的强调（橙红+呼吸+数字，见 refreshBadge）。
         var sid = ''
         try { sid = curSessionId() } catch (eS) { sid = '' }
-        // 同一会话、已知结论 → 直接套用（不发请求，也不闪）
-        if (sid === _dockSid && _dockHit !== null) { wrap.style.display = _dockHit ? '' : 'none'; return }
+        // 同一会话复用已知结论；否定结论过期后允许事件驱动的刷新重新查询。
+        if (sid === _dockSid && _dockHit !== null && (_dockHit || Date.now() - _dockCheckedAt < 2000)) { wrap.style.display = _dockHit ? '' : 'none'; return }
         _dockSid = sid
+        var request = ++_dockPending
         if (!sid) { _dockHit = false; wrap.style.display = 'none'; return }
         // 会话变了：先按"未命中"藏起来，拿到结论再显示（宁可晚一点，也别让它乱闪）
         _dockHit = null
         wrap.style.display = 'none'
         qqHitOf(sid, function (hit) {
-          if (sid !== _dockSid) return   // 查询期间又切了会话：这次结论作废
+          if (sid !== _dockSid || request !== _dockPending) return   // 丢弃切换会话或后发查询之前的旧回包
           _dockHit = hit
+          _dockCheckedAt = Date.now()
           wrap.style.display = hit ? '' : 'none'
         })
       }
@@ -3119,13 +3122,14 @@ var QQS_THEME_CSS = [
         })
       }
       // 读 web 当前会话(sessionId)并反查它是否挂在某个 qqbot 的群/私聊上
-      // 权威源优先: ctx.sessions.list.getSnapshot().current(宿主官方, agent id === session id);
+      // 权威源优先: sessions.list 的 current 或 mainView 引用（兼容新旧宿主）;
       // 兜底: localStorage 'dsh.sessions.current'(宿主持久化镜像, 每次切换实时写)。
       function readCurrentSessionId() {
         try {
           if (sessionsSvc && sessionsSvc.list && typeof sessionsSvc.list.getSnapshot === 'function') {
             var snap = sessionsSvc.list.getSnapshot()
-            if (snap && snap.current) { state.detected = { src: 'sessions.list', sid: snap.current, title: (snap.byId && snap.byId[snap.current] && (snap.byId[snap.current].displayTitle || snap.byId[snap.current].title)) || '' }; return snap.current }
+            var sid = sessionIdFromSnapshot(snap)
+            if (sid) { state.detected = { src: 'sessions.list', sid: sid, title: (snap.byId && snap.byId[sid] && (snap.byId[sid].displayTitle || snap.byId[sid].title)) || '' }; return sid }
           }
         } catch (e) {}
         try { var raw = localStorage.getItem('dsh.sessions.current'); if (raw) { var o = JSON.parse(raw); if (o && o.sessionId) { state.detected = { src: 'localStorage', sid: o.sessionId, title: '' }; return o.sessionId } } } catch (e) {}
@@ -6877,14 +6881,24 @@ var QQS_THEME_CSS = [
     var _lastCwd = ''
     var _lastSid = ''
     // 当前会话工作区（跟随 GUI 切换工作区）：与 dsh-auto-memory 的 currentWs() 同一套取法
-    // sessions.list.getSnapshot().byId[current].cwd 是官方 buildListSnapshot 投影出来的权威字段
+    // 从 sessions.list 的当前会话投影读取 cwd（兼容 current / mainView）。
+    // 旧宿主提供 current；DSH Desktop 0.2.1-rc.5 通过 mainView 引用标记当前会话。
+    function sessionIdFromSnapshot(snap) {
+      if (!snap) return ''
+      if (snap.current) return String(snap.current)
+      var rows = Object.values(snap.byId || {})
+      var visible = rows.find(function (row) { return row && row.retainedBy && row.retainedBy.mainView > 0 })
+      return visible && visible.id ? String(visible.id) : ''
+    }
+
     /** 取当前会话 id（cwd 拿不到时后端靠它反查工作区） */
     function curSessionId() {
       try {
         var svc = _extSessionsSvc
         if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
           var snap = svc.list.getSnapshot()
-          if (snap && snap.current) return String(snap.current)
+          var sid = sessionIdFromSnapshot(snap)
+          if (sid) return sid
         }
       } catch (e) {}
       try {
@@ -6925,8 +6939,7 @@ var QQS_THEME_CSS = [
         if (svc && svc.list && typeof svc.list.getSnapshot === 'function') {
           var snap = svc.list.getSnapshot()
           if (!snap) return ''
-          var id = snap.current
-          if (id === undefined || id === null) return ''
+          var id = sessionIdFromSnapshot(snap)
           var row = snap.byId && snap.byId[id]
           if (row && typeof row.cwd === 'string') return row.cwd
         }
