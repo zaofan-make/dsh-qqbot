@@ -15,6 +15,8 @@ export class IdleEvictor {
   ) {
     if (timeoutMs > 0) {
       this.timer = setInterval(() => this.check(), 60_000);
+      // Background cleanup must not keep short-lived commands (e.g. --help) alive.
+      this.timer.unref?.();
     }
   }
 
