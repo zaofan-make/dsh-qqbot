@@ -3218,23 +3218,19 @@ var QQS_THEME_CSS = [
         var key = ctxlessKey()
         if (!key) { if (hint) hint.textContent = '未命中 QQ 会话 —— 先和 bot 在群里或私聊里聊一句（让它成为活跃会话），再回来保存'; return }
         // 2026-10-01: 模式单选 → smart；smart=true 时 window 不生效（互斥）
-        var _modeEl = document.querySelector('input[name="dk-ctxless-mode"]:checked')
-        var _mode = _modeEl ? String(_modeEl.value) : 'window'
+        var _winOnEl = document.getElementById('dk-ctxless-win-on')
+        var _smartEl = document.getElementById('dk-ctxless-smart')
+        var _segChkEl = document.getElementById('dk-ctxless-segment')
+        var _winOn = !!(_winOnEl && _winOnEl.checked)
+        var _smartChk = !!(_smartEl && _smartEl.checked)
+        var _segChk = !!(_segChkEl && _segChkEl.checked)
         var _mmEl2 = document.getElementById('dk-ctxless-memomax')
         var _segEl = document.getElementById('dk-ctxless-segkeep')
         var _segScoreEl = document.getElementById('dk-ctxless-segscore')
-        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _mode === 'smart', memoMax: _mmEl2 ? (parseInt(_mmEl2.value, 10) || 20) : 20, segment: _mode === 'segment', segmentKeep: _segEl ? (parseInt(_segEl.value, 10) || 3) : 3, segmentScoreMin: _segScoreEl ? (parseFloat(_segScoreEl.value) || 0) : 0 }
-        // radio 切换：智能判断时条数框禁用（互斥的视觉提示）
-        Array.prototype.forEach.call(document.querySelectorAll('input[name="dk-ctxless-mode"]'), function (r) {
-          r.onchange = function () {
-            var w = document.getElementById('dk-ctxless-win')
-            if (w) w.disabled = (r.value === 'smart' || r.value === 'segment')
-            var sk = document.getElementById('dk-ctxless-segkeep')
-            if (sk) sk.disabled = (r.value !== 'segment')
-            var ssc = document.getElementById('dk-ctxless-segscore')
-            if (ssc) ssc.disabled = (r.value !== 'segment')
-          }
-        })
+        // 互斥：勾了「按条数保留」就把方框内两项都关掉（方框内部则允许同时勾）
+        if (_winOn) { _smartChk = false; _segChk = false; }
+        var body = { sessionKey: key, enabled: !!(on && on.checked), window: win ? (parseInt(win.value, 10) || 0) : 5, smart: _smartChk, memoMax: _mmEl2 ? (parseInt(_mmEl2.value, 10) || 20) : 20, segment: _segChk, segmentKeep: _segEl ? (parseInt(_segEl.value, 10) || 3) : 3, segmentScoreMin: _segScoreEl ? (parseFloat(_segScoreEl.value) || 0) : 0 }
+        // 联动交给渲染时挂的 wireCtxlessMode（checkbox 版），这里不再重复挂
         if (hint) hint.textContent = '保存中…'
         apiPost('contextless', body).then(function (d) {
           if (!d || !d.ok) { if (hint) hint.textContent = '保存失败: ' + JSON.stringify(d); return }
@@ -4967,21 +4963,28 @@ var QQS_THEME_CSS = [
               + '<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:13px"><input type="checkbox" id="dk-ctxless-on"' + (state.ctxless && state.ctxless.enabled ? ' checked' : '') + '>无上下文模式</label>'
               + '<button class="dk-btn ok" id="dk-ctxless-save" style="margin-left:auto">💾 保存(本会话)</button>'
               + '<span class="dk-msg" id="dk-ctxless-hint" style="color:#2f9e44"></span></div>'
-            // 2026-10-01: 两种模式**互斥**（单参数是死参数、智能判断交给 AI），所以做成单选
+            // ★ 2026-11-08 主人定：**分段压缩 与 智能判断 可以共存**（一个是"只压尾巴"，一个是"整段压/丢"，
+            //   本质不冲突）；两者一起用「方框」框起来，**整框与上面的「按条数保留」互斥**。
+            var _winOn = !_smartOn && !_segOn
             body += '<div style="margin:4px 0 0 22px;display:flex;flex-direction:column;gap:8px">'
+              // ① 按条数保留（独占）
               + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
-                + '<input type="radio" name="dk-ctxless-mode" value="window"' + ((_smartOn || _segOn) ? '' : ' checked') + ' style="margin-top:3px">'
-                + '<span>按条数保留&nbsp;<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + _winVal + '"' + ((_smartOn || _segOn) ? ' disabled' : '') + ' style="width:56px"> 条</span>'
-                + '<div style="font-size:12px;color:#888;line-height:1.4">不管在聊什么，每轮都只带「@ 前 N 条」。简单、可预期；但<b>同一话题接着聊可能断片</b>，<b>换了话题又会多带</b>。</div></span></label>'
-              + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
-                + '<input type="radio" name="dk-ctxless-mode" value="smart"' + (_smartOn && !_segOn ? ' checked' : '') + ' style="margin-top:3px">'
-                + '<span>智能判断（推荐）'
-                + '<div style="font-size:12px;color:#888;line-height:1.4">由 AI <b>每轮自己判断话题是否结束</b>：结束了它就压缩旧历史（可留最近几条）或整段丢弃，<b>只留下自己总结的要点</b> —— 省 token 最狠，也不容易断片。要点存在独立文件里，<b>压缩永远碰不到</b>。</div></span></label>'
-              + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
-                + '<input type="radio" name="dk-ctxless-mode" value="segment"' + (_segOn ? ' checked' : '') + ' style="margin-top:3px">'
-                + '<span>分段压缩（保住缓存）'
-                + '<div style="font-size:12px;color:#888;line-height:1.4">消息照常入站，<b>只压「上回合结束 → 本回合开始」这一段</b>：保留最近 <input type="number" id="dk-ctxless-segkeep" min="1" max="50" value="' + _segKeep + '"' + (_segOn ? '' : ' disabled') + ' style="width:56px"> 条，更旧的压成一行占位。<b>更早的历史一个字都不动</b> —— 前缀不变，缓存照样命中，这才是真省。'
-                + '<div style="margin-top:4px">价值分 ≥ <input type="number" id="dk-ctxless-segscore" min="0" max="1" step="0.01" value="' + _segScore + '"' + (_segOn ? '' : ' disabled') + ' style="width:64px"> 的也保留（0 = 关闭；复用入站时的价值评分）</div></div></span></label>'
+                + '<input type="checkbox" id="dk-ctxless-win-on"' + (_winOn ? ' checked' : '') + ' style="margin-top:3px">'
+                + '<span>按条数保留&nbsp;<span style="font-size:12px;color:#666">带 @ 前 <input type="number" id="dk-ctxless-win" min="0" value="' + _winVal + '"' + (_winOn ? '' : ' disabled') + ' style="width:56px"> 条</span>'
+                + '<div style="font-size:12px;color:#888;line-height:1.4">不管在聊什么，每轮都只带「@ 前 N 条」。简单、可预期；但<b>同一话题接着聊可能断片</b>，<b>换了话题又会多带</b>。<b>与下面方框互斥。</b></div></span></label>'
+              // ② 方框：智能判断 + 分段压缩（可同时勾）
+              + '<div style="border:1px solid #d9d2f5;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:8px">'
+                + '<div style="font-size:12px;color:#7a6fb0">下面两项<b>可以同时开</b>（做的是不同的事）；<b>与上面的「按条数保留」互斥</b>。</div>'
+                + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
+                  + '<input type="checkbox" id="dk-ctxless-smart"' + (_smartOn ? ' checked' : '') + ' style="margin-top:3px">'
+                  + '<span>智能判断'
+                  + '<div style="font-size:12px;color:#888;line-height:1.4">由 AI <b>每轮自己判断话题是否结束</b>：结束了它就压缩旧历史（可留最近几条）或整段丢弃，<b>只留下自己总结的要点</b> —— 省 token 最狠，也不容易断片。要点存在独立文件里，<b>压缩永远碰不到</b>。</div></span></label>'
+                + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;font-size:13px">'
+                  + '<input type="checkbox" id="dk-ctxless-segment"' + (_segOn ? ' checked' : '') + ' style="margin-top:3px">'
+                  + '<span>分段压缩（保住缓存）'
+                  + '<div style="font-size:12px;color:#888;line-height:1.4">消息照常入站，<b>只压「上回合结束 → 本回合开始」这一段</b>：保留最近 <input type="number" id="dk-ctxless-segkeep" min="1" max="50" value="' + _segKeep + '"' + (_segOn ? '' : ' disabled') + ' style="width:56px"> 条，更旧的压成一行占位。<b>更早的历史一个字都不动</b> —— 前缀不变，缓存照样命中，这才是真省。'
+                  + '<div style="margin-top:4px">价值分 ≥ <input type="number" id="dk-ctxless-segscore" min="0" max="1" step="0.01" value="' + _segScore + '"' + (_segOn ? '' : ' disabled') + ' style="width:64px"> 的也保留（0 = 关闭；复用入站时的价值评分）</div></div></span></label>'
+              + '</div>'
               + '</div>'
             // 备忘条数上限（面板可设；超出自动丢最旧）
             body += '<div class="dk-row" style="gap:6px;align-items:center;margin:4px 0 2px 22px;font-size:13px">'
@@ -5491,18 +5494,37 @@ var QQS_THEME_CSS = [
         //   原来这几个输入框的 disabled 只由 saveCtxless 里挂的 onchange 切换 —— 也就是**保存过一次之后**才灵。
         //   刚点开面板直接切模式时，框还是灰的。这里在**渲染时**就把联动挂上。
         ;(function wireCtxlessMode () {
-          var radios = panel.querySelectorAll('input[name="dk-ctxless-mode"]')
+          var q = function (id) { return panel.querySelector('#' + id) }
           var sync = function () {
-            var pick = panel.querySelector('input[name="dk-ctxless-mode"]:checked')
-            var v = pick ? String(pick.value) : 'window'
-            var w = panel.querySelector('#dk-ctxless-win')
-            if (w) w.disabled = (v === 'smart' || v === 'segment')
-            var sk = panel.querySelector('#dk-ctxless-segkeep')
-            if (sk) sk.disabled = (v !== 'segment')
-            var ssc = panel.querySelector('#dk-ctxless-segscore')
-            if (ssc) ssc.disabled = (v !== 'segment')
+            var winOn = q('dk-ctxless-win-on')
+            var smart = q('dk-ctxless-smart')
+            var seg = q('dk-ctxless-segment')
+            var w = q('dk-ctxless-win')
+            var sk = q('dk-ctxless-segkeep')
+            var ssc = q('dk-ctxless-segscore')
+            var segOn = !!(seg && seg.checked)
+            if (w) w.disabled = !(winOn && winOn.checked)
+            if (sk) sk.disabled = !segOn
+            if (ssc) ssc.disabled = !segOn
+            void smart
           }
-          Array.prototype.forEach.call(radios, function (r) { r.onchange = sync })
+          // 勾「按条数」→ 取消方框内两项；勾方框内任一项 → 取消「按条数」
+          var winOnEl = q('dk-ctxless-win-on')
+          if (winOnEl) winOnEl.onchange = function () {
+            if (winOnEl.checked) {
+              var sm = q('dk-ctxless-smart'); if (sm) sm.checked = false
+              var sg = q('dk-ctxless-segment'); if (sg) sg.checked = false
+            }
+            sync()
+          }
+          ;['dk-ctxless-smart', 'dk-ctxless-segment'].forEach(function (id) {
+            var el = q(id)
+            if (!el) return
+            el.onchange = function () {
+              if (el.checked) { var wo = q('dk-ctxless-win-on'); if (wo) wo.checked = false }
+              sync()
+            }
+          })
           sync()
         })()
         if (state.tab === 'session' && (state.stTab || 'lm') === 'cl') loadCtxless()
