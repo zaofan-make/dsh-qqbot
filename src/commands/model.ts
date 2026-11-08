@@ -4,7 +4,7 @@
 import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
 import { getScopePeer, sendMarkdownChunked } from '../shared/index.js';
-import { sendModelCard } from '../features/model-switcher.js';
+import { sendModelCard, pickEffort } from '../features/model-switcher.js';
 import { resolveCommandTarget } from '../features/botplay.js';
 
 export function modelCommand({ manager, config }: CommandDeps): SlashCommand {
@@ -105,8 +105,24 @@ export function modelCommand({ manager, config }: CommandDeps): SlashCommand {
         return `⚠️ 没有这个模型: ${provider}/${model}${tip}\n${cardMsg || '可用 /bot-model 不带参数查看全部可选模型'}`;
       }
 
-      await manager.setModelOverride(scope, peerId, { provider, model: hit.id });
-      return `✅ 模型已切换: ${provider}/${model}\n立即生效，对话上下文保留。`;
+        // 第三段参数 = 思考强度（可选）：/bot-model provider/model low
+        const parts3 = args.trim().split(/\s+/);
+        const explicitEffort = parts3.length >= 2 ? parts3[parts3.length - 1] : '';
+        if (explicitEffort && explicitEffort.indexOf('/') < 0) {
+          await manager.setModelOverride(scope, peerId, { provider, model: hit.id, effort: explicitEffort });
+          return '✅ 模型已切换: ' + provider + '/' + model + '\n思考强度: ' + explicitEffort + '\n立即生效，对话上下文保留。';
+        }
+        // ★ 2026-11-08：手动指定也走「两步」——先弹思考强度卡再落定
+        const nsEff = String((config as { settingsNs?: string }).settingsNs ?? '').trim() || 'im-qqbot';
+        try {
+          const { target } = resolveCommandTarget(cmdCtx as never);
+          if (target && target.targetId) {
+            const m2 = await pickEffort(nsEff, target, scope as 'group' | 'c2c', peerId, { provider, model: hit.id, name: hit.name || hit.id });
+            if (m2) return m2;
+          }
+        } catch { /* 拿不到 target 就直切 */ }
+        await manager.setModelOverride(scope, peerId, { provider, model: hit.id });
+        return '✅ 模型已切换: ' + provider + '/' + model + '\n立即生效，对话上下文保留。';
     },
   };
 }

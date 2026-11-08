@@ -67,6 +67,12 @@ export declare class SessionManager {
      * 动态获取 sessions 服务（fork 能力，可选）
      */
     private getSessionsService;
+    /**
+     * 可选的**思考强度**档位（2026-11-08）。
+     * 优先问宿主 `llm.reasoningEfforts?.()`；拿不到就给常见几档（deepseek 适配器是 off/low/high/max）。
+     * ⚠️ 只是"可选项"，真正支不支持由 provider/模型自己决定 —— 传错档位适配器会报错，所以尽量用宿主给的。
+     */
+    listReasoningEfforts(): Promise<string[]>;
     getEffectiveModel(scope: ChatScope, peerId: string): ModelRoute | undefined;
     /**
      * 切换模型（fork + 重建，对齐 dsh-TUI 的 switchModel）
@@ -162,6 +168,26 @@ export declare class SessionManager {
      *   ② 否则有 `agent.options`（旧宿主）→ 维持原行为，直接改 options
      *   ③ 都没有 → 记一条 warn，别静默
      */
+    /**
+     * **反向同步**：宿主界面（输入框右下角）切了模型后，把 QQ 侧偏好也改成那个。
+     *
+     * 2026-11-08 主人要求：「一旦发生当前会话切换模型的事件，model-prefs.json 也跟着变」。
+     * 宿主**没有**现成的"模型已切换"事件可订阅（只有每轮的 `request/header` 事件），
+     * 所以这里在每轮第一步做一次**极轻的比较**：读 `agent.model.current()`，
+     * 与偏好里存的（或当前路由）不一致 ⇒ 说明是用户刚在界面上切的，采纳它。
+     *
+     * @returns 是否发生了采纳（用于日志）
+     */
+    /**
+     * 「上一次看到的宿主模型选择」——用来判断**宿主是否真的变了**。
+     *
+     * 2026-11-08 主人点破的关键：QQ 侧写偏好 + 宿主侧 pre-step 采纳，这两条路会**互相覆盖**。
+     * 单靠"和偏好比"不够：我们刚把偏好写成 high、宿主还没生效（或反过来），就会来回打。
+     * 加这个哨兵后规则变成：**只有宿主的当前选择与上次看到的不同，才采纳** ——
+     * 宿主没动过就绝不回写偏好评，天然打断拉锯。
+     */
+    private readonly lastHostModel;
+    adoptHostModel(scope: ChatScope, peerId: string, agent: unknown): boolean;
     private applyModelRoute;
     /**
      * 通道工具自愈 + 固化(2026-09-05 升级): 每次消息都全量幂等注册 channel-tools(静态 import,

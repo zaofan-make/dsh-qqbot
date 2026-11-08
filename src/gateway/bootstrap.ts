@@ -43,7 +43,7 @@ import { createExtToolInteractionController } from '../features/ext-tool-interac
 import { makeExtCaps } from '../features/ext-capabilities.js';
 import { readBotplayEvents } from '../features/botplay-store.js';
 import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
-import { ModelSwitcherController, setModelCardImpl } from '../features/model-switcher.js';
+import { ModelSwitcherController, setModelCardImpl, setEffortPickerImpl } from '../features/model-switcher.js';
 import { buildCommandList } from '../commands/index.js';
 import { SettingsReader } from '../model/settings-reader.js';
 
@@ -902,6 +902,8 @@ export async function bootstrapGateway(
   const modelSwitcher = new ModelSwitcherController(manager, sender, logger, () =>
     (Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin!.owners!.map(String) : []));
   setModelCardImpl(myNs, (target, scope, peerId, page) => modelSwitcher.sendCard(target, scope, peerId, page ?? 0));
+  // 2026-11-08：命令侧手动指定模型后，也要接着弹「思考强度」卡
+  setEffortPickerImpl(myNs, (target, scope, peerId, pick) => modelSwitcher.beginEffortPick(target, scope, peerId, pick));
   // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,
   // 模拟一个最小命令 ctx(command 名称/空参 + 消息壳), 返回 handler 结果文本。
   // 指令型按钮(Phase2): 点击后执行斜杠命令(不经 AI)。复用 buildCommandList 的 handler,

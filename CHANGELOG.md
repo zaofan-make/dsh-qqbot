@@ -1,3 +1,35 @@
+## 1.12.12 (2026-11-08)
+
+### 切模型支持「思考强度」，并与宿主界面双向同步
+
+**两步选择**：QQ 里点模型按钮后不再直接切换，而是弹出第二张卡选思考强度
+（`off / low / high / max`，档位优先问宿主 `llm.reasoningEfforts()`）。
+卡片点选、`/bot-model provider/model` 两条路都走这一步；
+想一步到位也可以 `/bot-model provider/model high`。
+「默认(跳过)」= 用模型默认档，**不等于关闭思考**。
+
+**双向同步**（issue #42）
+
+- **宿主 → 插件**：在 DSH 输入框右下角切换模型/强度后，下一轮 pre-step 会把
+  `agent.model.current()` 的 provider/model/**reasoningEffort** 写进 `model-prefs.json`。
+  ⚠️ 宿主**没有**"模型已切换"事件可订阅，所以用每轮一次的对象比较实现，开销可忽略。
+- **插件 → 宿主**：走 `model.select({ ...cur, provider, model, reasoningEffort })`，
+  宿主界面会立刻跟着变（实测主人电脑上的 UI 同步变化）。
+
+### 修掉的三处（都是实测踩出来的）
+
+1. **同模型早退漏写强度**：`applyModelRoute` 原来只比 provider/model，
+   只改强度时直接 return ⇒ 宿主没变、下一轮又按宿主把偏好改回去，表现为"怎么切都弹回 low"。
+2. **两边互相覆盖**：加"宿主变化哨兵"（记住上次看到的 `provider/model/effort`）——
+   宿主没变化就**绝不回写偏好**，从结构上打断拉锯。
+3. **卡片显示与实际错位**：`getEffectiveModel` 现在优先读 `agent.model.current()`（新宿主），
+   读不到再看 `options`（旧宿主），最后才回落 prefs。
+
+### 其他
+
+- **同模型同强度 → 不 fork**：以前点一次就白开一个新会话，现在只回一句"当前已经是 XXX"
+- **只改强度 → 也不 fork**：强度随请求下发，直接改活动 agent 的选择即可
+
 ## 1.12.11 (2026-11-08)
 
 ### 「智能判断」与「分段压缩」改为可共存

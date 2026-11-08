@@ -193,12 +193,44 @@ export class SessionManager {
         }
     }
     // ── 模型相关（委托给 ModelResolver） ──
+    /**
+     * 可选的**思考强度**档位（2026-11-08）。
+     * 优先问宿主 `llm.reasoningEfforts?.()`；拿不到就给常见几档（deepseek 适配器是 off/low/high/max）。
+     * ⚠️ 只是"可选项"，真正支不支持由 provider/模型自己决定 —— 传错档位适配器会报错，所以尽量用宿主给的。
+     */
+    async listReasoningEfforts() {
+        try {
+            const llm = this.ctx.get('llm');
+            const got = llm && typeof llm.reasoningEfforts === 'function' ? await llm.reasoningEfforts() : undefined;
+            if (Array.isArray(got) && got.length > 0)
+                return got.map((x) => String(x));
+        }
+        catch { /* 宿主没有就回落 */ }
+        return ['off', 'low', 'high', 'max'];
+    }
     getEffectiveModel(scope, peerId) {
         const key = this.sessionKey(scope, peerId);
         const rec = this.sessions.get(key);
         // 2026-09-11: 优先读宿主 agent 实际生效模型 —— web 会话级模型设置会改宿主
         // agent.options.provider/model(推理真用那个); 探测失败(fail-soft)回落配置链。
         if (rec?.agent) {
+            // ★ 2026-11-08：新宿主把当前选择放在 `agent.model.current()`（方法），
+            //   旧宿主才是 `agent.options.provider/model`。两边都读，否则会出现
+            //   "卡片显示旧 prefs / 实际宿主用的是另一个模型" 的错位。
+            try {
+                const m = rec.agent.model;
+                const cur = m && typeof m.current === 'function'
+                    ? m.current()
+                    : undefined;
+                if (cur?.provider && cur?.model) {
+                    return {
+                        provider: cur.provider,
+                        model: cur.model,
+                        ...(typeof cur.reasoningEffort === 'string' ? { effort: cur.reasoningEffort } : {}),
+                    };
+                }
+            }
+            catch { /* fail-soft */ }
             try {
                 const o = rec.agent.options;
                 if (o?.provider && o?.model)
@@ -223,6 +255,23 @@ export class SessionManager {
             const sid = this.currentSessionId(key);
             this.modelResolver.setOverride(key, sid, route);
             this.logger.info(`model pref saved (no active session): key=${key} sid=${sid} → ${route.provider}/${route.model}`);
+            return;
+        }
+        // ★ 2026-11-08：**同模型同强度 → 什么都不用做**（原来会白 fork 一个新会话）。
+        //   仅"思考强度"变化也不 fork —— 强度是随请求下发的，改活动 agent 的选择即可。
+        const cur = this.getEffectiveModel(scope, peerId);
+        if (cur && cur.provider === route.provider && cur.model === route.model) {
+            const sameEffort = (cur.effort ?? '') === (route.effort ?? '');
+            if (sameEffort) {
+                this.logger.info(`model pref unchanged: key=${key} → ${route.provider}/${route.model}${route.effort ? ` effort=${route.effort}` : ''}`);
+                return;
+            }
+            try {
+                this.applyModelRoute(record.agent, route, 'effort-only');
+            }
+            catch { /* fail-soft：拿不到 agent 就走下面的 fork */ }
+            this.modelResolver.setOverride(key, record.sessionId, route);
+            this.logger.info(`model effort updated (no fork): key=${key} effort=${route.effort}`);
             return;
         }
         // fork 旧会话历史作为 seed → 子会话保留上下文继续聊(换模型不丢记忆)
@@ -870,6 +919,66 @@ export class SessionManager {
      *   ② 否则有 `agent.options`（旧宿主）→ 维持原行为，直接改 options
      *   ③ 都没有 → 记一条 warn，别静默
      */
+    /**
+     * **反向同步**：宿主界面（输入框右下角）切了模型后，把 QQ 侧偏好也改成那个。
+     *
+     * 2026-11-08 主人要求：「一旦发生当前会话切换模型的事件，model-prefs.json 也跟着变」。
+     * 宿主**没有**现成的"模型已切换"事件可订阅（只有每轮的 `request/header` 事件），
+     * 所以这里在每轮第一步做一次**极轻的比较**：读 `agent.model.current()`，
+     * 与偏好里存的（或当前路由）不一致 ⇒ 说明是用户刚在界面上切的，采纳它。
+     *
+     * @returns 是否发生了采纳（用于日志）
+     */
+    /**
+     * 「上一次看到的宿主模型选择」——用来判断**宿主是否真的变了**。
+     *
+     * 2026-11-08 主人点破的关键：QQ 侧写偏好 + 宿主侧 pre-step 采纳，这两条路会**互相覆盖**。
+     * 单靠"和偏好比"不够：我们刚把偏好写成 high、宿主还没生效（或反过来），就会来回打。
+     * 加这个哨兵后规则变成：**只有宿主的当前选择与上次看到的不同，才采纳** ——
+     * 宿主没动过就绝不回写偏好评，天然打断拉锯。
+     */
+    lastHostModel = new Map();
+    adoptHostModel(scope, peerId, agent) {
+        try {
+            const a = agent;
+            const cur = a?.model && typeof a.model.current === 'function'
+                ? a.model.current()
+                : undefined;
+            if (!cur?.provider || !cur?.model)
+                return false;
+            // ⚠️ 必须和**偏好文件里存的**比，不能和 getEffectiveModel() 比 ——
+            //   后者自己就会读 model.current()，两边永远相等 ⇒ 永远不采纳（第一版就这么写错的）。
+            const key = this.sessionKey(scope, peerId);
+            const rec = this.sessions.get(key);
+            const sid = rec?.sessionId ?? this.currentSessionId(key);
+            const stored = this.modelResolver.getEffectiveRoute(key, sid);
+            const hostEffort = typeof cur.reasoningEffort === 'string' ? cur.reasoningEffort : undefined;
+            // ★ 只认"宿主变了"：与上次看到的一致 → 说明不是用户在界面上切的，直接不动（防拉锯）
+            const hostKey = `${cur.provider}/${cur.model}/${hostEffort ?? ''}`;
+            const lastSeen = this.lastHostModel.get(key);
+            if (lastSeen === hostKey)
+                return false;
+            this.lastHostModel.set(key, hostKey);
+            const sameRoute = !!stored && stored.provider === cur.provider && stored.model === cur.model;
+            const sameEffort = (stored?.effort ?? '') === (hostEffort ?? '');
+            if (sameRoute && sameEffort)
+                return false;
+            const route = {
+                provider: cur.provider,
+                model: cur.model,
+                ...(hostEffort ? { effort: hostEffort } : {}),
+            };
+            // 直接写偏好：**不能走 setModelOverride** —— 它现在"同模型同强度就 return"（防白 fork），
+            //   而这里正是要把宿主的新值落盘（含 effort 变化），所以绕过去，只写存储。
+            this.modelResolver.setOverride(key, sid, route);
+            this.logger.info(`[model-sync] 采纳宿主界面选择: ${cur.provider}/${cur.model}${hostEffort ? ` effort=${hostEffort}` : ''}`
+                + `（原: ${stored ? `${stored.provider}/${stored.model}${stored.effort ? ` effort=${stored.effort}` : ''}` : '无'}）`);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
     applyModelRoute(agent, route, label) {
         if (!route)
             return;
@@ -883,10 +992,19 @@ export class SessionManager {
             const m = a.model;
             if (m && typeof m.current === 'function' && typeof m.select === 'function') {
                 const cur = m.current();
-                if (cur?.provider === route.provider && cur?.model === route.model)
+                // ★ 2026-11-08 修：这里原来只看 provider/model —— 同模型只改**思考强度**时直接 return，
+                //   强度根本没写进宿主 ⇒ 下一轮 adoptHostModel 又按宿主的旧强度把偏好改回去（主人实测：切 high 又变回 low）。
+                const sameEffort = (cur?.reasoningEffort ?? '') === (route.effort ?? '');
+                if (cur?.provider === route.provider && cur?.model === route.model && sameEffort)
                     return;
                 // 保留宿主可能存在的其它字段（reasoningEffort 等），只换 provider/model
-                m.select({ ...(cur ?? {}), provider: route.provider, model: route.model });
+                // 2026-11-08：模型路由里带思考强度就一起写进去（宿主 ModelSelection 支持 reasoningEffort）
+                m.select({
+                    ...(cur ?? {}),
+                    provider: route.provider,
+                    model: route.model,
+                    ...(route.effort ? { reasoningEffort: route.effort } : {}),
+                });
                 this.logger.info(`getOrCreate: ${label} 模型覆盖(agent.model.select) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`);
                 return;
             }
@@ -1489,6 +1607,17 @@ export class SessionManager {
                         catch (e) {
                             this.logger?.debug?.('[contextless] 分段压缩异常(已忽略): ' + (e instanceof Error ? e.message : String(e)));
                         }
+                    }
+                    // ── 反向同步：宿主界面切了模型 → 跟着改偏好（2026-11-08 主人要求）──
+                    try {
+                        if (!Number.isFinite(currentStep) || currentStep <= 1) {
+                            const recSync = this.findByAgent(agent);
+                            if (recSync?.scope && recSync.peerId)
+                                this.adoptHostModel(recSync.scope, recSync.peerId, agent);
+                        }
+                    }
+                    catch (e) {
+                        this.logger?.debug?.('[model-sync] 异常(已忽略): ' + (e instanceof Error ? e.message : String(e)));
                     }
                     // ── 历史图片不重发（2026-11-07 主人定）──
                     //   每轮第一步：把**本插件聚合出来**的图片在历史里换成文字占位，
