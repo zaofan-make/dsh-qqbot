@@ -91,6 +91,7 @@ function normalizeOutbound(mod, file, abs, logger) {
         name: String(m?.name ?? file.replace(/\.[^.]+$/, '')),
         middleware: fn,
         ...(typeof m?.dispose === 'function' ? { dispose: m.dispose } : {}),
+        ...(typeof m?.onSent === 'function' ? { onSent: m.onSent } : {}),
     };
 }
 function fileVersion(p) {
@@ -147,6 +148,24 @@ export async function loadOutboundExtensions(opts) {
     return result;
 }
 /** 当前已装载的出站扩展（诊断用） */
+/**
+ * 把一次出站的结果回执给所有出站扩展的 `onSent(result)`（2026-11-11）。
+ *
+ * 调用方是 `transport/outbound-buffer.ts`：**消息真的发完之后**才调。
+ * 每个扩展独立 try/catch + 单次超时保护，**绝不因为扩展报错影响发送结果**。
+ */
+export async function notifyOutboundSent(result) {
+    if (loaded.length === 0)
+        return;
+    for (const ext of loaded) {
+        if (typeof ext.onSent !== 'function')
+            continue;
+        try {
+            await Promise.resolve(ext.onSent(result));
+        }
+        catch { /* 扩展自己炸了不影响别人 */ }
+    }
+}
 export function listOutboundExtensions() {
     return loaded.slice();
 }

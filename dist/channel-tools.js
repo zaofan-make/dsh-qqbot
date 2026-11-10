@@ -702,6 +702,9 @@ export async function apply(ctx, opts) {
             query: { type: 'string', description: '语义关键词(可空=最近收藏; 匹配标签与描述)' },
             tag: { type: 'string', description: '标签过滤(可空)' },
             limit: { type: 'integer', description: '返回条数 1~20(默认 3)' },
+            // 2026-11-11：默认输出**精简版**（desc 截 60 字 + 带 id），省 token；
+            // 需要完整描述时显式传 verbose=true（外部作者反馈"模型挑图得吃完整 desc，又慢又费 token"）
+            verbose: { type: 'boolean', description: '返回完整描述(默认精简,只给前 60 字)' },
         },
         output: {
             schema: {
@@ -714,6 +717,7 @@ export async function apply(ctx, opts) {
                         items: {
                             type: 'object', additionalProperties: false,
                             properties: {
+                                id: { type: 'string', required: true },
                                 path: { type: 'string', required: true },
                                 tags: { type: 'array', required: true, items: { type: 'string' } },
                                 desc: { type: 'string', required: true },
@@ -752,9 +756,10 @@ export async function apply(ctx, opts) {
                     ok: true,
                     msg: '',
                     items: hits.map(h => ({
+                        id: h.id,
                         path: h.path,
                         tags: h.tags,
-                        desc: h.desc ?? '',
+                        desc: String(h.desc ?? '').slice(0, args.verbose ? 400 : 60),
                         used: h.useCount,
                         formal: h.layer === 'library',
                         src: h.sourceGroup ?? '',

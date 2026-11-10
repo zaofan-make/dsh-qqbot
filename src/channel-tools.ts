@@ -651,6 +651,9 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       query: { type: 'string', description: '语义关键词(可空=最近收藏; 匹配标签与描述)' },
       tag: { type: 'string', description: '标签过滤(可空)' },
       limit: { type: 'integer', description: '返回条数 1~20(默认 3)' },
+      // 2026-11-11：默认输出**精简版**（desc 截 60 字 + 带 id），省 token；
+      // 需要完整描述时显式传 verbose=true（外部作者反馈"模型挑图得吃完整 desc，又慢又费 token"）
+      verbose: { type: 'boolean', description: '返回完整描述(默认精简,只给前 60 字)' },
     },
     output: {
       schema: {
@@ -663,6 +666,7 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
             items: {
               type: 'object', additionalProperties: false,
               properties: {
+                id: { type: 'string', required: true },
                 path: { type: 'string', required: true },
                 tags: { type: 'array', required: true, items: { type: 'string' } },
                 desc: { type: 'string', required: true },
@@ -674,7 +678,7 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
           },
         },
       },
-      render: (_a, v: { ok: boolean; msg: string; items: Array<{ path: string; tags: string[]; desc: string; used: number; formal: boolean; src: string }> }) => {
+      render: (_a, v: { ok: boolean; msg: string; items: Array<{ id?: string; path: string; tags: string[]; desc: string; used: number; formal: boolean; src: string }> }) => {
         if (!v.ok) return [{ type: 'text' as const, text: `查询失败: ${v.msg}` }];
         if (v.items.length === 0) {
           return [{ type: 'text' as const, text: '表情包库中无匹配,不建议发图,只回文字即可' }];
@@ -700,9 +704,10 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
           ok: true,
           msg: '',
           items: hits.map(h => ({
+            id: h.id,
             path: h.path,
             tags: h.tags,
-            desc: h.desc ?? '',
+            desc: String(h.desc ?? '').slice(0, (args as { verbose?: boolean }).verbose ? 400 : 60),
             used: h.useCount,
             formal: h.layer === 'library',
             src: h.sourceGroup ?? '',

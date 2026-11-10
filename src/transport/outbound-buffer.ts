@@ -169,6 +169,13 @@ export async function sendRichOutbound(
       }
       if (r.killed) {
         logError?.(`im-qqbot: 出站被扩展消灭（${r.reason || '未说明原因'}），本条未发送`);
+        // 2026-11-11：告诉扩展"这条被谁杀掉了"（它们以前完全看不到这个结果）
+        void (async () => {
+          try {
+            const m = await import('../features/ext-outbound.js');
+            await m.notifyOutboundSent({ ok: false, text, target, error: r.reason || 'killed', failedBlocks: 0, killed: true });
+          } catch { /* ignore */ }
+        })();
         return;
       }
       if (typeof r.text === 'string' && r.text !== text) text = r.text;
@@ -212,6 +219,8 @@ export async function sendRichOutbound(
     return;
   }
   // 用原始 text 解析(保留 [MEDIA])：媒体段单独发送，文本段各自剔除残留 [RECALL]
+  // 2026-11-11：出站结果统计 —— 给扩展的 `onSent` 回执（以前扩展看不到 transport 的最终结果）
+  const sentStat = { total: 0, ok: 0, failed: 0, lastError: '' as string };
   const segments = parseOutbound(text);
   // P1 表情包闸门: perTurn(每轮最多 N 张)。每轮=一次 sendRichOutbound(一轮 assistant 回复文本)。
   // 非表情包图(URL/库外文件/音视频)不计；真实闸门(禁群/频率/预算/去重/活性)在 sender.sendMedia 单点。
@@ -242,6 +251,8 @@ export async function sendRichOutbound(
       if (!clean.trim()) continue;
       // QQ 对同会话极短时间连发多条会吞/乱序: 文本分块之间加 ~500ms 间隔限速
       const chunks = chunkMarkdownText(clean, limit).map((c) => String(c || '')).filter((c) => c.trim());
+      // 2026-11-11：给扩展的 onSent 用的计数（成功/失败块数 + 最后一条错误）
+      sentStat.total += chunks.length;
       for (let ci = 0; ci < chunks.length; ci++) {
         const chunk = chunks[ci] as string;
         if (!chunk.trim()) continue;
@@ -254,8 +265,11 @@ export async function sendRichOutbound(
         try { if (tgt.scope === 'group') rememberBotReply(tgt.targetId, chunk); } catch { /* ignore */ }
         try {
           await bot.sendMarkdown(tgt, chunk);
+          sentStat.ok += 1;
           onBlockSent?.(chunk, tgt);
         } catch (err) {
+          sentStat.failed += 1;
+          sentStat.lastError = err instanceof Error ? err.message : String(err);
           // 单块失败不中断整段：把错误交给上层（可能是"内容违规"），继续发后面的块
           onSendError?.(err, chunk);
           logError?.(`im-qqbot: 正文块发送失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -264,6 +278,21 @@ export async function sendRichOutbound(
       }
     }
   }
+  // 2026-11-11：**发完之后**把结果回执给出站扩展的 `onSent`
+  //   （fire-and-forget：扩展报错/超时绝不影响已经发出去的消息）
+  void (async () => {
+    try {
+      const m = await import('../features/ext-outbound.js');
+      await m.notifyOutboundSent({
+        ok: sentStat.failed === 0 && sentStat.ok > 0,
+        text,
+        target,
+        ...(sentStat.lastError ? { error: sentStat.lastError } : {}),
+        failedBlocks: sentStat.failed,
+        killed: false,
+      });
+    } catch { /* ignore */ }
+  })();
 }
 
 export class OutboundBuffer {

@@ -186,17 +186,5 @@ export declare function enterExtension(ctx: MiddlewareContext, env: ExtRunEnv, e
     file: string;
     name: string;
 }, phase: 'inbound' | 'decide'): ExtCtxSession;
-/**
- * 把动作 API 挂到 ctx 上（每个 ctx 只挂一次）。
- * ⚠️ 一律**不可枚举**：middleware-setup 的命令层会 `{...ctx}` 组 handler 参数，
- *    可枚举的话会把这些动作/取值器一起复制过去（还可能覆盖扩展命令自己的 caps）。
- */
-/**
- * ★ 把「入站操控」这一组**打包**（2026-10-12 主人定：它也要进统一能力包）。
- *
- * 和上面那些 def 在 ctx 上的是**同一份实现**（不是两套）：这里只是换个入口交出去，
- * 好让契约写成「一套包、五套扩展」——包里的 `inbound` 组"有值"就等于"你现在正握着
- * 一条消息的处置权"。别的四套拿它会是 undefined，那是语义，不是缺失。
- */
 export declare function inboundCapsOf(ctx: MiddlewareContext, s: ExtCtxSession): ExtInboundCaps;
 //# sourceMappingURL=ext-inbound-context.d.ts.map

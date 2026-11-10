@@ -777,6 +777,63 @@ function def(target: object, key: string, desc: PropertyDescriptor): void {
  * 好让契约写成「一套包、五套扩展」——包里的 `inbound` 组"有值"就等于"你现在正握着
  * 一条消息的处置权"。别的四套拿它会是 undefined，那是语义，不是缺失。
  */
+// ────────────────────────────────────────────────────────────────
+// ctx.reply —— 入站扩展"直接回一句"（2026-11-11 新增）
+// ────────────────────────────────────────────────────────────────
+/**
+ * 为什么之前没有：入站挂点在**命令/模型之前**，给"能发消息"等于给每条入站一次主动发信，
+ * 风险是刷屏、打光主动消息配额、绕过出站护栏。所以加了四道约束：
+ *   ① **走正常出站**（`sender.sendMarkdown` + 本条的 replyTarget）—— 引用/分段/限速全部照旧；
+ *   ② **限频**：同一扩展每分钟最多 `REPLY_PER_MIN` 条，超了拒发并 warn；
+ *   ③ **审计**：每次回话都记 `action: 'reply'`（署名哪个扩展）；
+ *   ④ **不唤醒 AI、不进会话历史**：它只是"替插件说了一句"，模型不会以为自己说过。
+ */
+const REPLY_PER_MIN = 3;
+const replyLog = new Map<string, number[]>();
+
+function replyAllowed(s: ExtCtxSession): boolean {
+  const key = s.current?.file || '?';
+  const now = Date.now();
+  const arr = (replyLog.get(key) ?? []).filter((t) => now - t < 60_000);
+  if (arr.length >= REPLY_PER_MIN) {
+    replyLog.set(key, arr);
+    warnOnce(s, 'reply-rate', `ctx.reply 被限频（每扩展每分钟最多 ${REPLY_PER_MIN} 条），本条已忽略`);
+    return false;
+  }
+  arr.push(now);
+  replyLog.set(key, arr);
+  return true;
+}
+
+async function reply(_ctx: MiddlewareContext, s: ExtCtxSession, text?: unknown): Promise<boolean> {
+  const t = typeof text === 'string' ? text : String((text as { text?: unknown } | undefined)?.text ?? '');
+  if (!t.trim()) return false;
+  const sender = s.env.sender as { sendMarkdown?: (target: unknown, text: string) => Promise<unknown> } | undefined;
+  const target = s.env.replyTarget;
+  if (!sender || typeof sender.sendMarkdown !== 'function' || !target) {
+    warnOnce(s, 'reply-no-sender', 'ctx.reply 不可用：运行环境没给 sender/replyTarget（嵌入方未接线），本条已忽略');
+    return false;
+  }
+  if (!replyAllowed(s)) return false;
+  try {
+    await sender.sendMarkdown(target, t.slice(0, 2000));
+    audit(s, { action: 'reply', reason: t.slice(0, 80) } as never);
+    return true;
+  } catch (err) {
+    warn(s, `ctx.reply 发送失败: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/** 当前这条消息所属的 DSH 会话 id（入站 ctx 以前拿不到，只能从出站链的 header 里找） */
+function sessionIdOf(ctx: MiddlewareContext, s: ExtCtxSession): string {
+  try {
+    if (!s.env.resolveAgent) return '';
+    const a = s.env.resolveAgent(ctx) as { session?: { id?: unknown } } | undefined;
+    return String(a?.session?.id ?? '');
+  } catch { return ''; }
+}
+
 export function inboundCapsOf(ctx: MiddlewareContext, s: ExtCtxSession): ExtInboundCaps {
   return {
     annihilate: (o) => annihilate(ctx, s, o),
@@ -784,6 +841,8 @@ export function inboundCapsOf(ctx: MiddlewareContext, s: ExtCtxSession): ExtInbo
     forceWake: (o) => forceWake(ctx, s, o),
     decide: (o) => decide(ctx, s, o),
     silentInto: (t) => silentInto(ctx, s, t),
+    reply: (t) => reply(ctx, s, t),
+    get sessionId() { return sessionIdOf(ctx, s); },
     muteUser: (o) => muteUser(ctx, s, o),
     unmuteUser: (o) => unmuteUser(ctx, s, o),
     isMuted: (id) => isMuted(ctx, s, id),
@@ -816,6 +875,9 @@ function decorate(ctx: MiddlewareContext, s: ExtCtxSession): void {
   // ★ 静默进上下文：`ctx.silentInto()` / `ctx.silentInto('文本')` / `ctx.silentInto({ text, reason })`
   //   两个挂点都能调；同一条消息只注入一次（幂等，见 silentInto 的注释）
   def(c, 'silentInto', { value: (text?: unknown) => silentInto(ctx, s, text) });
+  // 2026-11-11：入站扩展"直接回一句"（限频 + 审计 + 走正常出站）
+  def(c, 'reply', { value: (text?: unknown) => reply(ctx, s, text) });
+  def(c, 'sessionId', { get: () => sessionIdOf(ctx, s) });
 
   // ── 动作（用户维）──
   def(c, 'muteUser', { value: (opts?: { id?: string; minutes?: number; reason?: string; by?: string }) => muteUser(ctx, s, opts) });

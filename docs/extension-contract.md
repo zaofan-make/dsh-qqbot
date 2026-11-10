@@ -295,6 +295,54 @@ handler 返回 `{ok:false,...}` 会原样透传，其它值包成 `{ok:true, dat
 > 上面这张表 + `env.kernel.get('宿主服务名')` 已经覆盖绝大多数需求；
 > 缺什么请提 issue，我们会补成正式接口，而不是让你去摸内部文件。
 
+### 入站扩展新增：`ctx.reply(text)` / `ctx.sessionId`（2026-11-11）
+
+以前入站扩展只有「改写 / 消灭 / 静默注入」，想在收到消息的当下**回一句**只能做成命令。
+现在补上，但带四道约束：
+
+```js
+export async function onInbound(ctx, next) {
+  if (/^\/ping$/.test(ctx.text)) {
+    await ctx.reply('pong~');      // ① 走正常出站（引用/分段/限速照旧）
+    return;                        //    不调 next() = 不再进模型
+  }
+  ctx.logger.info('本会话 ' + ctx.sessionId);   // ② 以前拿不到的会话 id
+  return next();
+}
+```
+
+| 约束 | 说明 |
+| --- | --- |
+| 限频 | 同一扩展**每分钟最多 3 条**，超了拒发并 warn |
+| 审计 | 每次回话都记 `action: 'reply'`（署名哪个扩展） |
+| 不进历史 | 它只是"插件替你说了一句"，模型不会以为自己说过 |
+| 不唤醒 | 不触发 AI 回合，不花 token |
+
+`ctx.sessionId` = 这条消息所属的 DSH 会话 id（以前只有出站链能拿到）。
+
+### 出站扩展新增：`onSent(result)`（2026-11-11）
+
+以前出站扩展只能观测"链内抛错 / 返回 false"，**看不到 transport 的最终结果**。
+现在消息真的发完之后会回调：
+
+```js
+export function onSent({ ok, text, failedBlocks, error, killed }) {
+  if (!ok) myLog.write({ text, failedBlocks, error, killed });
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `ok` | 至少一个块发成功 |
+| `failedBlocks` | 发失败的块数 |
+| `error` | 最后一个错误文本 |
+| `killed` | 被扩展 `annihilate` 掉（此时 `ok=false`） |
+
+### `list_stickers` 默认精简（2026-11-11）
+
+返回项现在带 **`id`**，`desc` 默认**截到 60 字**（省 token）。
+需要完整描述时传 `verbose: true`（截到 400 字）。外部作者反馈过"模型挑图要吃完整 desc，又慢又费 token"。
+
 ### 扩展设置页的字段类型（schema）
 
 扩展文件里 `export const qqbotSettingsPage = { title, desc, schema: [...] }`，面板就会给它生成设置页。

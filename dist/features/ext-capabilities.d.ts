@@ -171,6 +171,22 @@ export interface ExtInboundCaps {
         text?: string;
         reason?: string;
     }): boolean;
+    /**
+     * **直接回一句**（2026-11-11 新增；走正常出站，不唤醒 AI、不进会话历史）。
+     *
+     * 以前入站扩展只能「改写 / 消灭 / 静默注入」，想在收到消息的当下回一句只能做成命令。
+     * 现在给这条通道，但有四道约束：
+     *   ① 走 `sender.sendMarkdown` + 本条的 replyTarget（引用/分段/限速照旧）；
+     *   ② **每扩展每分钟最多 3 条**，超了拒发并 warn；
+     *   ③ 每次回话**落审计**（署名哪个扩展）；
+     *   ④ 它只是"插件替你说了一句"，模型不会以为自己说过。
+     * @returns true=已发出；false=被限频/环境没接线/发送失败
+     */
+    reply(text?: string | {
+        text?: string;
+    }): Promise<boolean>;
+    /** 这条消息所属的 DSH 会话 id（2026-11-11 新增；以前入站 ctx 拿不到） */
+    readonly sessionId: string;
     /** 用户维禁言（名单持久化、带期限、过期惰性清理） */
     /** 禁言：成功返回名单条目（{id,until,reason,by}；until=0 表示永久），失败返回 false（原因见审计） */
     muteUser(opts?: {

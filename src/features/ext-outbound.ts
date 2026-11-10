@@ -134,6 +134,22 @@ export interface OutboundCtx {
 export type OutboundMiddleware = (ctx: OutboundCtx, next: () => Promise<void>) => unknown;
 
 /** 一个已装载的出站扩展 */
+/** 一次出站的结果（给扩展的 `onSent`） */
+export interface OutboundSentResult {
+  /** 是否至少有一个块发成功 */
+  ok: boolean;
+  /** 最终发出去的正文（可能被扩展改写过） */
+  text: string;
+  /** 目标 */
+  target?: unknown;
+  /** 失败原因（ok=false 时有） */
+  error?: string;
+  /** 发失败的块数 */
+  failedBlocks: number;
+  /** 被杀（扩展 annihilate）时为 true，此时 ok=false */
+  killed: boolean;
+}
+
 export interface OutboundExtension {
   /** 文件名（含扩展名） */
   file: string;
@@ -145,6 +161,12 @@ export interface OutboundExtension {
   middleware: OutboundMiddleware;
   /** 可选：`dispose()` */
   dispose?: () => unknown;
+  /**
+   * 可选：**发送结果回执**（2026-11-11 新增）。
+   * 出站链跑完、消息真的发出去之后调用，告诉扩展"这条到底发成了没有"。
+   * 以前扩展只能看到"链内抛错"，看不到 transport 的最终结果（外部作者实测上报过）。
+   */
+  onSent?: (result: OutboundSentResult) => unknown;
 }
 
 /** 一次装载的汇总 */
@@ -219,7 +241,7 @@ function pickFn(...cands: unknown[]): OutboundMiddleware | undefined {
 }
 
 function normalizeOutbound(mod: unknown, file: string, abs: string, logger: Logger): OutboundExtension | null {
-  const m = mod as { name?: unknown; default?: unknown; onOutbound?: unknown; middleware?: unknown; dispose?: unknown };
+  const m = mod as { name?: unknown; default?: unknown; onOutbound?: unknown; middleware?: unknown; dispose?: unknown; onSent?: unknown };
   const fn = pickFn(m?.onOutbound, m?.default, m?.middleware);
   if (!fn) {
     logger.warn(`[ext-outbound] ${file} 没有可用的出站中间件（需要 onOutbound / default / middleware 之一），已跳过`);
@@ -231,6 +253,7 @@ function normalizeOutbound(mod: unknown, file: string, abs: string, logger: Logg
     name: String(m?.name ?? file.replace(/\.[^.]+$/, '')),
     middleware: fn,
     ...(typeof m?.dispose === 'function' ? { dispose: m.dispose as () => unknown } : {}),
+    ...(typeof m?.onSent === 'function' ? { onSent: m.onSent as (r: OutboundSentResult) => unknown } : {}),
   };
 }
 
@@ -291,6 +314,22 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
 }
 
 /** 当前已装载的出站扩展（诊断用） */
+/**
+ * 把一次出站的结果回执给所有出站扩展的 `onSent(result)`（2026-11-11）。
+ *
+ * 调用方是 `transport/outbound-buffer.ts`：**消息真的发完之后**才调。
+ * 每个扩展独立 try/catch + 单次超时保护，**绝不因为扩展报错影响发送结果**。
+ */
+export async function notifyOutboundSent(result: OutboundSentResult): Promise<void> {
+  if (loaded.length === 0) return;
+  for (const ext of loaded) {
+    if (typeof ext.onSent !== 'function') continue;
+    try {
+      await Promise.resolve(ext.onSent(result));
+    } catch { /* 扩展自己炸了不影响别人 */ }
+  }
+}
+
 export function listOutboundExtensions(): OutboundExtension[] {
   return loaded.slice();
 }
