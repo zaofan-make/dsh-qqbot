@@ -1,3 +1,19 @@
+## 1.12.14 (2026-11-10)
+
+### 文档修正：B′ 可以换许可证，只是不能换成 GPL/AGPL
+
+v1.12.13 的 `LICENSE-ADDENDUM.md` 写成“不授权 B′ 换用其它许可证”，**说过头了**。
+
+AFL-3.0 **§1(c)** 原文就允许：衍生作品可 *"under any license of your choice that does not contradict
+the terms and conditions ... in this Academic Free License"*。
+
+所以准确表述是：
+
+- ✅ B′ 可以换成 **MIT / Apache-2.0 / BSD / 闭源商业许可** —— 这些与 AFL 不冲突，**§1(c) 直接授权，不需要我们额外许可**
+- ❌ 但**不能换成 GPL-2.0/3.0、AGPL-3.0** —— copyleft 条款与 AFL 冲突，落进 §1(c) 的 "contradict" 被排除
+
+README 里那句“不能换成 GPL”也一并改准（补上“但可以换 MIT/Apache/闭源”）。
+
 ## 1.12.13 (2026-11-08)
 
 ### 许可证变更：MIT → Academic Free License 3.0（AFL-3.0）
