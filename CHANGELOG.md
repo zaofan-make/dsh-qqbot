@@ -1,3 +1,33 @@
+## 1.12.13 (2026-11-08)
+
+### 许可证变更：MIT → Academic Free License 3.0（AFL-3.0）
+
+- `LICENSE` 换成 AFL-3.0 **官方全文**；`package.json` → `"license": "AFL-3.0"`
+- 新增 [`LICENSE-ADDENDUM.md`](./LICENSE-ADDENDUM.md)：**额外许可 + 边界说明**
+  - 通过公开扩展接口接入、未修改本体的**插件不是衍生作品**，可自选任何许可证（含 GPL/AGPL）
+  - 独立程序（插件、启动前改源码的 M）可作为**聚合体**一起分发
+  - **额外许可**：M 在启动前修改本体源码的**修改行为本身**不违反 AFL
+  - **边界**：修改产物 B′ 若对外分发，须保留版权与"已修改"声明，且**不得以 GPL 分发**
+  - 明确提示：本豁免**不替代**插件作者在 GPL 下的义务
+- 新增 [`NOTICE`](./NOTICE)：上游腾讯 MIT 代码、LGPL 运行时依赖（lamejs-fixed / sharp）、历史贡献者
+- ⚠️ v1.12.12 及更早的 **MIT 授权永久有效、不可撤回**；AFL 只约束 v1.12.13 起的新版本
+
+### 修：实例 id 裸写数字会把 YAML 写坏（dsh-market #1071）
+
+实例 id 是用户填的，填 `1` 就会写出 `- id: 1` → js-yaml 解析成 **number** →
+下游（插件市场等）对 id 调 `.split()` 抛 TypeError，现象是"已安装列表空白 + 400 空 body + 零日志"。
+
+- 写入：`yqLoose()` —— 像标识符的（`im-qqbot`、`im-qqbot-2`）原样写，其余一律加引号（`'1'`、`'账号A'`）
+- 读取：`isBotHead` / `botIdOf` / insert 扫描全部先 `unq()` 去引号，避免带引号导致 `/^im-qqbot/` 判不出来
+- 自愈：`quoteNumericIds()` 在每次写 patch 前把历史遗留的裸数字 id 补上引号（幂等）
+
+### 文档：扩展契约补 `env.manager`
+
+`docs/extension-contract.md` 新增一节，列出 10 个**受支持的稳定接口**
+（`findBySessionId` / `findByAgent` / `findByPeer` / `getSessionRecord` / `getEffectiveModel` /
+`setModelOverride` / `listAvailableModels` / `listReasoningEfforts` / `listSessions` / `injectToPeer`），
+并明确警告：**扩展只依赖 `env`，不要 `import` 插件的 `dist/`**。
+
 ## 1.12.12 (2026-11-08)
 
 ### 切模型支持「思考强度」，并与宿主界面双向同步

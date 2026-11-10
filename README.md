@@ -1,10 +1,27 @@
 # @zaofan/dsh-qqbot
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE) ![Platform](https://img.shields.io/badge/platform-QQ%20Bot%20(dsh)-blue)
+[![License: AFL-3.0](https://img.shields.io/badge/License-AFL--3.0-blue.svg)](./LICENSE) ![Platform](https://img.shields.io/badge/platform-QQ%20Bot%20(dsh)-blue)
 
 基于 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) 的 QQ Bot IM 插件**增强 fork**：将 QQ 消息平台作为 dsh agent 的前端协议驱动，并加入表情包图库、富媒体收发、定时任务、多实例人格、好感度系统、可视化设置面板等能力。
 
 📦 仓库: [zaofan-make/dsh-qqbot](https://github.com/zaofan-make/dsh-qqbot)（fork 自 [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot)；改动都在这一侧，升级/重装上游会被冲掉）
+
+## 📄 许可证
+
+本项目自 **v1.12.13** 起采用 **[Academic Free License 3.0](./LICENSE)（AFL-3.0）** —— 宽松、允许闭源商用，
+但**与 GPL 不兼容**（GPL 项目无法把它整体并入并换证分发）。
+
+**几句话看懂能干什么：**
+
+- ✅ **插件不算衍生作品**：通过 `.qqbot-extensions/` 等公开扩展接口接入、没有改动本体的插件，
+  可以**自选任何许可证**，包括 GPL / AGPL。→ 详见 [`LICENSE-ADDENDUM.md`](./LICENSE-ADDENDUM.md)
+- ✅ **随便抄、随便改、可闭源商用**，条件只有：保留版权声明、注明“已修改”
+- ✅ **启动前修改本体的工具（M）**：修改行为本身额外许可，不违反 AFL-3.0
+- ❌ **不能把（修改后的）本体整体换成 GPL 分发** —— 这是选 AFL 的唯一目的
+- ⚠️ 你自己的 GPL 插件与本插件**结合运行时**的兼容性，仍需你自行处理（例如加链接例外）
+- 📌 v1.12.12 及更早的 **MIT 版本永久有效**，已拿到的人仍可按 MIT 使用、包括并入 GPL
+
+上游第三方代码的许可证见 [`NOTICE`](./NOTICE)。
 
 > ⭐ **用得顺手的话，麻烦点一下右上角的 Star** —— 它是这个项目"有人在用"的唯一可见信号，也是继续更新的动力。
 

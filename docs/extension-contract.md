@@ -272,6 +272,29 @@ handler 返回 `{ok:false,...}` 会原样透传，其它值包成 `{ok:true, dat
 | 宿主自重启 | `await env.restart()` | 复用内置 `/bot-restart`（自动识别启动命令、强补 `--no-open`）。默认**仅主人**可触发；要放开写 `env.restart({ requireOwner: false })` |
 | 回调按钮卡 | `env.registerInteractionCard({cardId, buttonIds, expireAt})` | 发**带回调按钮**的卡片必须先登记，否则点了没人认 |
 
+### `env.manager` —— 会话管理器（2026-11-08 补登）
+
+扩展拿到的 `env.manager` 就是插件内部的 **SessionManager 实例**，可以直接操作 QQ 会话。
+以下方法是**受支持的稳定接口**（其余同名内部方法可能随版本变动，别依赖）：
+
+| 需求 | 用法 |
+|---|---|
+| 按 DSH 会话 id 反查 QQ 会话 | `env.manager.findBySessionId(sessionId)` → `record \| undefined` |
+| 按 agent 反查 | `env.manager.findByAgent(agent)` |
+| 按 QQ peer 反查 | `env.manager.findByPeer(scope, peerId)` |
+| 取会话记录 | `env.manager.getSessionRecord(scope, peerId)` |
+| 当前用的模型 | `env.manager.getEffectiveModel(scope, peerId)` → `{provider, model, effort?}` |
+| 切模型/强度 | `await env.manager.setModelOverride(scope, peerId, {provider, model, effort?})` |
+| 可用模型列表 | `await env.manager.listAvailableModels()` |
+| 思考强度档位 | `await env.manager.listReasoningEfforts()` |
+| 列会话 | `env.manager.listSessions()` |
+| 往某会话静默注入 | `await env.manager.injectToPeer(scope, peerId, text)` |
+
+> ⚠️ **不要 `import` 插件的 `dist/`**（例如 `dist/features/session-registry.js`）。
+> 那些是**内部模块**，重构时不保证形状；一改就静默坏掉（`import` 抛错常被 try 吞了）。
+> 上面这张表 + `env.kernel.get('宿主服务名')` 已经覆盖绝大多数需求；
+> 缺什么请提 issue，我们会补成正式接口，而不是让你去摸内部文件。
+
 ### 扩展设置页的字段类型（schema）
 
 扩展文件里 `export const qqbotSettingsPage = { title, desc, schema: [...] }`，面板就会给它生成设置页。

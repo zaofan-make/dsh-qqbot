@@ -1,6 +1,6 @@
 {
   "name": "@zaofan/dsh-qqbot",
-  "version": "1.12.12",
+  "version": "1.12.13",
   "description": "QQ Bot IM channel plugin for deepseek-harness (dsh)",
   "type": "module",
   "main": "./entry.js",
@@ -55,7 +55,7 @@
     "plugin",
     "llm"
   ],
-  "license": "MIT",
+  "license": "AFL-3.0",
   "files": [
     "dist",
     "docs/extension-contract.md",
@@ -72,7 +72,9 @@
     "voice-convert.mjs",
     "scripts/download-model.mjs",
     "scripts/fix-dsh-016-presets.ps1",
-    "entry.js"
+    "entry.js",
+    "NOTICE",
+    "LICENSE-ADDENDUM.md"
   ],
   "dsh": {
     "bundle": {

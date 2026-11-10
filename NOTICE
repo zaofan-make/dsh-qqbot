@@ -1,0 +1,47 @@
+# NOTICE
+
+本项目（`@zaofan/dsh-qqbot`）自 **v1.12.13** 起以 **Academic Free License 3.0（AFL-3.0）** 发布，
+并附带 [`LICENSE-ADDENDUM.md`](./LICENSE-ADDENDUM.md) 中的额外权限说明。
+
+```
+Copyright (c) 2026 zaofan-make
+Licensed under the Academic Free License version 3.0
+```
+
+## 上游第三方代码（保留其原始许可证）
+
+本项目包含或链接了以下第三方作品。它们**不受**本项目 AFL-3.0 的授权，
+仍按其各自的原始许可证使用：
+
+| 组件 | 版权 | 许可证 |
+| --- | --- | --- |
+| `@tencent-connect/qqbot-nodejs` | Copyright (c) Tencent | MIT |
+| `@tencent-connect/qqbot-connector` | Copyright (c) Tencent | 见其包内声明 |
+| 设计思路与部分实现参考自 `tencent-connect/dsh-qqbot` 等上游项目 | 各原作者 | MIT |
+
+## 运行时依赖（各自适用其许可证）
+
+主要依赖：`jimp`（MIT）、`js-yaml`（MIT）、`silk-wasm`（MIT）、`@deepseek-ai/schemastery`（MIT）、
+`@deepseek-ai/dsh-client-ui-slots`（MIT）、`@deepseek-ai/dsh-client-ui-settings`（MIT）。
+
+其中包含 **LGPL-3.0** 组件：
+
+| 组件 | 许可证 | 说明 |
+| --- | --- | --- |
+| `lamejs-fixed` | LGPL-3.0 | 语音转 mp3；作为**独立 npm 依赖**加载，可替换 |
+| `@img/sharp-win32-x64` | Apache-2.0 AND LGPL-3.0-or-later | sharp 的 Windows 预编译二进制，动态加载 |
+
+> 本项目**不把上述 LGPL 组件内联进构建产物**（`dist/` 通过 `require` 引用外部包），
+> 以保证其可替换性符合 LGPL 要求。若你打算把本项目打包成单文件，请自行评估 LGPL 义务。
+
+## 历史
+
+v1.12.12 及更早版本以 **MIT** 发布，该授权永久有效、不可撤回；本 NOTICE 不影响那些版本的使用者。
+
+## 贡献
+
+感谢本项目接收过的社区贡献（排名不分先后）：
+`kinokn`（#43 / #44 / #45）、`Chaos-Paradox`（#41）、`Cypas`（#23 / #27 / #31 相关讨论与修复）等。
+
+这些贡献在提交时按当时的 MIT 许可纳入；若其中任何作者对本次许可证变更（MIT → AFL-3.0）
+有异议，请开 issue 联系，我们会为该部分保留 MIT 声明或作相应处理。

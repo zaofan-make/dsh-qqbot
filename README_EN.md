@@ -637,4 +637,13 @@ If this plugin saved you some tokens — or made your QQ bot feel alive — a **
 
 ## License
 
-[MIT](./LICENSE)
+Since **v1.12.13** this project is licensed under the **[Academic Free License 3.0](./LICENSE) (AFL-3.0)** —
+permissive (proprietary use allowed) but **GPL-incompatible**.
+
+- ✅ Extensions that only use the public `.qqbot-extensions/` interfaces (without modifying this project)
+  are **not derivative works** and may pick any license, including GPL/AGPL — see [`LICENSE-ADDENDUM.md`](./LICENSE-ADDENDUM.md).
+- ✅ Copy, modify, use commercially; just keep the copyright notice and state that you changed it.
+- ❌ You may **not** redistribute this project (or a modified copy of it) as a whole under GPL/AGPL.
+- 📌 Versions up to **v1.12.12** remain **MIT** forever; those copies may still be used under MIT.
+
+Third-party components keep their own licenses — see [`NOTICE`](./NOTICE).

@@ -1122,13 +1122,49 @@ export function apply(ctx) {
 
   /** YAML 单引号标量(含 ' 转义为 '') */
   function yq(v) { return `'${String(v ?? '').replace(/'/g, "''")}'` }
+
+  /**
+   * 「需要引号才引」的标量写法（2026-11-08）。
+   *
+   * 为什么不是无脑 yq()：我们的 `- id:` 行**自己也会被解析回来**（isBotHead / botIdOf / insert 扫描），
+   * 如果一律加引号，读回来的就是 `'im-qqbot-2'`（带引号）→ `/^im-qqbot/` 判不出来 → 实例直接消失。
+   * 所以：**像标识符的原样写**（im-qqbot、im-qqbot-2），**其余一律加引号**（数字 1、true、含空格/冒号/中文…）。
+   */
+  function yqLoose(v) {
+    const t = String(v ?? '');
+    return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(t) ? t : yq(t);
+  }
+
+  /** 去掉 YAML 标量外层的一对单引号（'' → ' 还原）；没引号则原样返回 */
+  function unq(v) {
+    const t = String(v ?? '');
+    const m = /^'(.*)'$/.exec(t);
+    return m ? m[1].replace(/''/g, "'") : t;
+  }
+
+  /**
+   * **自愈历史遗留的裸数字 id**（2026-11-08，dsh-market issue #1071）。
+   *
+   * 用户完全可能把实例 id 填成 `1`、`2` 这种纯数字 —— 这是合法输入，不该拒绝。
+   * 但裸写进 YAML 会被解析成 **number**：DSH loader 只判 falsy 所以照样收下，
+   * 下游（插件市场等）对 id 调 `.split()` 就抛 TypeError，现象是"已安装列表空白 + 400 空 body + 零日志"。
+   *
+   * 所以：**允许用户填数字，但落盘一律转成字符串**（加引号），并且在每次写 patch 前
+   * 把历史文件里已经裸写出来的数字 id 顺手补上引号（幂等）。
+   */
+  function quoteNumericIds(text) {
+    try {
+      return String(text ?? '').replace(/^(\s*-\s*id:\s*)([0-9]+)(\s*)$/gm, (_m, a, b, c) => `${a}'${b}'${c}`);
+    } catch { return text; }
+  }
   /** appSecret 裸写规则: 纯安全字符直接裸, 否则单引号 */
   function ysec(v) { const s = String(v ?? ''); return /^[A-Za-z0-9+/=_\-]+$/.test(s) ? s : yq(s) }
   /** 顶层块行判断(0 缩进以 "- " 开头) */
   function isTopLine(l) { return /^-\s/.test(l) }
   /** 块头是 im-qqbot 实例? */
-  function isBotHead(l) { const m = /^-\s*id:\s*(\S+)\s*$/.exec(l.trim()); return m ? /^im-qqbot(-|$)/.test(m[1]) : false }
-  function botIdOf(headLine) { const m = /^-\s*id:\s*(\S+)\s*$/.exec(headLine.trim()); return m ? m[1] : '' }
+  // ⚠️ 取值后必须 unq()：文件里可能是 `- id: '1'`（自动加过引号），带引号会让 /^im-qqbot/ 判不出来
+  function isBotHead(l) { const m = /^-\s*id:\s*(\S+)\s*$/.exec(l.trim()); return m ? /^im-qqbot(-|$)/.test(unq(m[1])) : false }
+  function botIdOf(headLine) { const m = /^-\s*id:\s*(\S+)\s*$/.exec(headLine.trim()); return m ? unq(m[1]) : '' }
 
   /** 解析 patch: 返回 {raw, bots:[{id,start,end,ins,cfg:{appId,appSecret,preset,cwd},disabled}], hasFile}
    *  patch 语义(宿主 dsh-app-boot applyEntryPatches): 顶层 `- id: X` 只能覆盖已存在 id(bundle insert 建的);
@@ -1171,7 +1207,7 @@ export function apply(ctx) {
           // 在 insert 列表内(行以空白开头或为列表项), 找 4 空格 "- id:"
           const c = lines[k];
           const m4 = /^\s{4}-\s*id:\s*(\S+)\s*$/.exec(c);
-          if (m4 && /^im-qqbot(-|$)/.test(m4[1])) { found = { line: k, id: m4[1] }; break; }
+          if (m4 && /^im-qqbot(-|$)/.test(unq(m4[1]))) { found = { line: k, id: unq(m4[1]) }; break; }
           if (/^-\s/.test(c) && !/^\s/.test(c)) break; // 下一个顶层条目
           if (c.trim() !== '' && !/^\s/.test(c) && !/^-\s/.test(c)) break;
           k += 1;
@@ -1234,7 +1270,11 @@ export function apply(ctx) {
     const pad4 = ' '.repeat(L0 + 4);
     const out = [];
     if (!isMain) out.push('- insert:');
-    out.push(`${pad0}- id: ${id}`);
+    // ★ 2026-11-08（dsh-market issue #1071 指出）：**必须加引号**。
+    //   实例 id 是用户填的，填「1」就会写出 `- id: 1` —— js-yaml 解析成 **number**，
+    //   而 DSH loader 只判 falsy（数字 1 是 truthy，照收），下游市场插件对 id 调 `.split()`
+    //   就抛 TypeError，表现成"已安装列表空白 + 400 空 body + 零日志"，极难排查。
+    out.push(`${pad0}- id: ${yqLoose(id)}`);
     if (!isMain) out.push(`${pad2}name: '@zaofan/dsh-qqbot'`);
     if (inst.disabled) out.push(`${pad2}disabled: true`);
     out.push(`${pad2}config:`);
@@ -1439,7 +1479,7 @@ export function apply(ctx) {
         writeOwnSettings(nsKey, cur);
       }
     } catch { /* 自有存储失败不阻塞 patch 写入 */ }
-    writeFileSync(PATCH_FILE, out, 'utf8');
+    writeFileSync(PATCH_FILE, quoteNumericIds(out), 'utf8');
     return { ok: true, file: PATCH_FILE, needRestart: true };
   }
 
@@ -2006,7 +2046,7 @@ export function apply(ctx) {
       text += add;
       const bak = PATCH_FILE + '.bak-copy-' + Date.now();
       try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
-      writeFileSync(PATCH_FILE, text, 'utf8');
+      writeFileSync(PATCH_FILE, quoteNumericIds(text), 'utf8');
       return { ok: true, backup: bak, newId };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   }
@@ -2164,7 +2204,7 @@ export function apply(ctx) {
       }
       const bak = PATCH_FILE + '.bak-cfg-' + Date.now();
       try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
-      writeFileSync(PATCH_FILE, out, 'utf8');
+      writeFileSync(PATCH_FILE, quoteNumericIds(out), 'utf8');
       return { ok: true, backup: bak, missing };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   }
@@ -2215,7 +2255,7 @@ export function apply(ctx) {
       }
       const bak = PATCH_FILE + '.bak-persona-' + Date.now();
       try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
-      writeFileSync(PATCH_FILE, out, 'utf8');
+      writeFileSync(PATCH_FILE, quoteNumericIds(text), 'utf8');
       return { ok: true, backup: bak };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   }
