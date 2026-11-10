@@ -218,22 +218,54 @@ export function deleteMemo(dataRoot, key) {
 // dsh 的 systemPrompt.context() 是"每次组装都求值"的动态贡献, 挂在历史尾部(user-role 快照),
 // 而 **system prompt 本体保持字节级稳定 → 前缀缓存不被打穿**。这里只放"本轮要注入的那一行"，
 // 由 inbound 算好后暂存，短 TTL(90s) 内被读取一次即用，过期自动丢弃，避免污染后续轮次。
-let pendingMemoText = '';
-let pendingMemoAt = 0;
+/**
+ * ⚠️ 2026-11-10 修（主人实测：**别的群的小传串到了本群**）：
+ * 原来是**模块级单个变量** —— 入站 A 群算好 `setPendingMemo(text)`，
+ * 而任何会话的 pre-step 都会 `takePendingMemoText()` 拿走它。
+ * 两个群同时有消息时，A 群的小传就会被 B 群的回合吃走：
+ *   ① B 群看到的是**别人**的小传（"这个群根本没这个人"）；
+ *   ② A 群自己反而拿不到（表现为"小传注入失效"）。
+ * 现在按 **sessionKey**（`qqbot:<appId>:<scope>:<peerId>`）分开存，各取各的。
+ */
+const pendingMemoMap = new Map();
 const PENDING_TTL_MS = 90_000;
-/** inbound 算好小传注入行后调用（90 秒内有效） */
-export function setPendingMemo(text) {
-    pendingMemoText = String(text || '').slice(0, 600);
-    pendingMemoAt = Date.now();
-}
-/** 供 systemPrompt.context 的 text 提供者调用：过期/为空则返回 ''（不贡献内容） */
-export function takePendingMemoText() {
-    if (!pendingMemoText)
-        return '';
-    if (Date.now() - pendingMemoAt > PENDING_TTL_MS) {
-        pendingMemoText = '';
-        return '';
+/**
+ * inbound 算好"候选小传行"后调用（按会话 key 暂存，90 秒内有效）。
+ *
+ * ★ 2026-11-10 主人指正：**不能把拼好的整段文本拿来判重** ——
+ *   前 40 字符里基本只有 `[人家记得的 昵称:` 和第一条，后面换行了也判不出来，
+ *   于是"之后新想起来的条目永远被去重掉"。
+ *   所以这里只存**原始行数组 + 昵称**，由 pre-step 逐行判"这一条在不在上下文里"。
+ */
+export function setPendingMemo(key, name, lines) {
+    const k = String(key || '');
+    if (!k)
+        return;
+    const clean = (Array.isArray(lines) ? lines : [])
+        .map((l) => String(l || '').replace(/^-\s*/, '').trim())
+        .filter(Boolean)
+        .slice(0, 4);
+    if (clean.length === 0)
+        return;
+    pendingMemoMap.set(k, { name: String(name || '他').slice(0, 40), lines: clean, at: Date.now() });
+    if (pendingMemoMap.size > 64) {
+        const now = Date.now();
+        for (const [kk, v] of pendingMemoMap)
+            if (now - v.at > PENDING_TTL_MS)
+                pendingMemoMap.delete(kk);
     }
-    return pendingMemoText;
+}
+/** 供 pre-step 调用：只取**本会话**那一份候选；过期/为空返回 undefined */
+export function takePendingMemo(key) {
+    const k = String(key || '');
+    if (!k)
+        return undefined;
+    const v = pendingMemoMap.get(k);
+    if (!v)
+        return undefined;
+    pendingMemoMap.delete(k);
+    if (Date.now() - v.at > PENDING_TTL_MS)
+        return undefined;
+    return { name: v.name, lines: v.lines };
 }
 //# sourceMappingURL=people-memo.js.map

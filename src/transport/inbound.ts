@@ -85,7 +85,6 @@ interface HistoryEntry {
 }
 
 /** 小传注入节流(同一人 24h 内不重复): uid → 上次注入时间 */
-const memoInjectAt = new Map<string, number>();
 
 interface MentionState {
   wasMentioned?: boolean;
@@ -688,19 +687,25 @@ export async function handleInbound(
           //   同一人 24h 内不重复注入(防监视感); 注入失败不影响主链。
           try {
             const uid = msg.senderId;
-            const lastAt = memoInjectAt.get(uid) ?? 0;
-            if (scope === 'group' && uid && Date.now() - lastAt > 24 * 3600_000) {
+            // ★ 2026-11-10 主人定：**去掉"每人每群 24 小时只注入一次"** ——
+            //   那个设计会让人想起不来（清空/压缩上下文后再也不注入了）。
+            //   现在的策略：**每次都按话题契合度挑 1~2 行**，交给 pre-step 做"是否已在上下文里"的去重：
+            //   已在 → 不重复；不在（新话题 / 上下文被清 / 换会话）→ 照注入。
+            if (scope === 'group' && uid) {
               const embedder = createLocalEmbedder({
                 modelDir: typeof lmCfg?.modelDir === 'string' ? lmCfg.modelDir : undefined,
                 logger,
               });
               const r = await recallLines(dataRootOf(config), uid, plain || scText || '', embedder, 2);
               if (r.lines.length > 0) {
-                const memoText = `[人家记得的 ${msg.senderName || '他'}: ${r.lines.map((l) => l.replace(/^-\s*/, '')).join(' / ')}]`;
+                // 只存原始行 + 昵称；拼接与"逐行判重"都交给 pre-step（2026-11-10）
+                const memoName = msg.senderName || '他';
+                const memoLines = r.lines.map((l) => l.replace(/^-\s*/, ''));
                 // 交给 systemPrompt.context(运行时上下文贡献)注入 —— 不写进用户消息, 不打扰 web/dock 观感,
                 // 且 system prompt 保持字节级稳定 → 前缀缓存全程命中(与 @a9i5k4/dsh-auto-memory 同款姿势)
-                setPendingMemo(memoText);
-                memoInjectAt.set(uid, Date.now());
+                // ⚠️ 按**会话**暂存（2026-11-10 修串会话）：key 必须和 session-manager 的 sessionKey 完全一致
+                setPendingMemo(`qqbot:${config.appId}:${scope}:${peerId}`, memoName, memoLines);
+                // 不再记 24h 计时（去重交给 pre-step 的"上下文是否已有"）
               }
             }
           } catch { /* 小传注入失败不影响主链 */ }

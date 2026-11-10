@@ -47,6 +47,8 @@ export declare class ModelResolver {
     /**
      * 获取指定 sessionKey 的最新 sessionId（fork 后记录，重启恢复用）
      */
+    /** 反查：DSH 会话 id → qqbot sessionKey（内存 Map，不读盘；2026-11-11） */
+    findKeyBySessionId(sessionId: string): string | undefined;
     getSessionId(sessionKey: string): string | undefined;
     /**
      * 记录指定 sessionKey 的最新 sessionId（fork 后调用）并持久化

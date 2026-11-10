@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import type { Context } from '@deepseek-ai/cordis';
 import { ConfigSchema, EditableConfigSchema, type EditableConfig, type ImQQBotConfig } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
-import { takePendingMemoText } from './features/people-memo.js';
 import type { DshAgentRegistry } from './session/index.js';
 import { getProfileDir, resolveEnv, resolveProfileName } from './shared/index.js';
 import { warmSessions } from './features/warm-sessions.js';
@@ -554,7 +553,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   try {
     const sp = (ctx as unknown as { systemPrompt?: { context?: (c: { name: string; order: number; text: (a: unknown) => string }) => () => void } }).systemPrompt;
     if (sp && typeof sp.context === 'function') {
-      sp.context({ name: 'qqbot-people-memo', order: 60, text: () => { const txt = takePendingMemoText(); if (txt) logger.info(`[小传] 运行时上下文提供 ${txt.length} 字`); return txt; } });
+      // 2026-11-10: 小传改由 pre-step 按会话注入（sp.context 在现宿主上不生效且会串会话），这里移除。
       logger.info('[im-qqbot] 群友小传已注册为运行时上下文贡献');
     } else {
       logger.warn('[im-qqbot] 宿主未提供 systemPrompt.context —— 小传注入退化为不注入');

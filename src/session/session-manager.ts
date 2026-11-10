@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
-import { takePendingMemoText } from '../features/people-memo.js';
+import { takePendingMemo, recallLines } from '../features/people-memo.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
 import { getSegmentScore } from '../features/segment-score.js';
@@ -1752,7 +1752,58 @@ export class SessionManager {
         // 群友小传(2026-09-13 主人定): 复用这条**已验证**的 pre-step 注入通道 ——
         //   ctx.systemPrompt.context() 那条在新宿主上没生效(无日志), 走这里最稳(群守则就是这么注入的)。
         //   TTL 90s: inbound 算好的那一行过期就自动不再注入。
-        const memoLine = takePendingMemoText().trim();
+        // ⚠️ 2026-11-10 修：小传按会话隔离 —— 只取**本会话**那一条，否则会串群
+        const recMemo = agent ? this.findByAgent(agent as never) : undefined;
+        const memoKey = recMemo?.sessionKey ?? '';
+        let memoLine = '';
+        // ★ 2026-11-10 主人指正：**逐行判重**，不是拿整段的前 40 字符当指纹 ——
+        //   那样"后面新想起来的条目"会被前缀误判成"已注入过"，永远进不来。
+        let memoPick = memoKey ? takePendingMemo(memoKey) : undefined;
+        // ★ 2026-11-11 主人定：**web（非 QQ）会话也要注入小传** —— 那种会话里能打字的只有主人，
+        //   所以直接取主人白名单的**第一位**（owners 可能有多个，第一个就是主人本人）。
+        //   QQ 会话走入站算好的候选（按发言者），web 会话走这里（按主人）。
+        if (!memoPick && !recMemo) {
+          try {
+            const owners = Array.isArray((this.config.groupAdmin as { owners?: unknown } | undefined)?.owners)
+              ? ((this.config.groupAdmin as { owners: string[] }).owners)
+              : [];
+            const ownerId = String(owners[0] ?? '').trim();
+            if (ownerId) {
+              // 用本批最新一条用户文本当检索 query（按话题挑最相关的 1~2 行）
+              let q = '';
+              for (let k = dec.messages.length - 1; k >= 0; k--) {
+                const mm = dec.messages[k] as { role?: string; content?: { type?: string; text?: string }[] };
+                if (mm?.role !== 'user') continue;
+                const t = String(mm.content?.[0]?.text ?? '');
+                if (t && !/^<(system-reminder|system)/.test(t)) { q = t.slice(0, 200); break; }
+              }
+              const r = await recallLines(dataRootOf(this.config), ownerId, q, undefined, 2);
+              if (r.lines.length > 0) {
+                memoPick = { name: '主人', lines: r.lines.map((l) => l.replace(/^-\s*/, '')) };
+              }
+            }
+          } catch { /* web 侧小传失败不影响主链 */ }
+        }
+        if (memoPick && memoPick.lines.length > 0) {
+          let seenText = '';
+          try {
+            seenText = dec.messages.map((m: unknown) => String((m as { content?: { text?: string }[] })?.content?.[0]?.text ?? '')).join('\n');
+            if (agent?.session?.surface?.nodes && agent.session.eventAt) {
+              for (const seq of agent.session.surface.nodes) {
+                const ev = agent.session.eventAt(seq) as { type?: string; data?: { content?: { text?: string }[] } } | undefined;
+                if (ev?.type === 'user/message') seenText += '\n' + String(ev.data?.content?.[0]?.text ?? '');
+              }
+            }
+          } catch { /* 扫描失败 → 视为都没见过，宁可多注一次 */ }
+          // 每一行单独判：这一行已经在上下文里了就不再带；没见过的带上
+          const fresh = memoPick.lines.filter((l) => {
+            const probe = l.slice(0, 24);            // 单行指纹（比整段前缀可靠得多）
+            return probe.length > 0 && !seenText.includes(probe);
+          });
+          if (fresh.length > 0) {
+            memoLine = `[人家记得的 ${memoPick.name}: ${fresh.join(' / ')}]`;
+          }
+        }
         // ── 智能判断模式：提示 + 备忘（单独算一段，**不受群守则体是否为空影响**）──
         //    ⚠️ 原来是挂在 `if (!body) return decision;` 之后的 —— 群守则体为空时直接早退，
         //       注入根本没机会执行（2026-10-01 实测：AI 反馈"没有任何一条要求我判断是不是同一个话题"）。
@@ -1787,7 +1838,9 @@ export class SessionManager {
         //   在"同回合多次请求"下全部失效（surface 要回合结束才提交），实测份数 2→3→5 只增不减。
         // ★ 2026-10-02（主人定）：把智能提示当成**第二个群守则** —— 拼进 body、共用它的去重。
         //   备忘会逐轮变化，所以下面的去重只比对固定部分（CTX_SMART_REMINDER），不受备忘影响。
-        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), memoLine, ctxSmartText].filter(Boolean).join('\n\n');
+        // ⚠️ 2026-11-10 修：memoLine **不能拼进 body** —— body 会被"群守则已在上下文里"的去重整体跳过
+        //   （skipGroupRules），于是小传从此再也注不进去。小传单独成块，自己判自己的重。
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), ctxSmartText].filter(Boolean).join('\n\n');
         if (!body) return decision;
         const text = `<system-reminder>\n${body}\n</system-reminder>`;
         const desired = {
@@ -1832,13 +1885,78 @@ export class SessionManager {
         //   "清历史"的正确机制是会话 surface 的 shadow/compaction（见 dsh-compaction-basic 的 shadowedSeqs），
         //   待按该机制另行实现。
 
+        // ★ 2026-11-11 主人定：**非 QQ 会话（在 DSH 宿主里直接打字）**要在正文开头拼一句说明，
+        //   让模型一眼看出"这条是主人在宿主界面亲自发的"，而不是 QQ 里转进来的。
+        //   为什么不放 system prompt：那条会**常驻**，之后所有回合都会被误当成"当前这条是主人直发"。
+        //   这里只改**本条待发的用户消息**（一次性），只动 text 块；图片/文件/语音一律不碰。
+        //   去重：已经带标记的不再重复拼（万一同一 message 被多次经过）。
+        // ★ 判定"非 QQ 回合"用双保险：① findByAgent 拿不到 QQ 会话记录；② 或记录里 turnOrigin !== 'qq'
+        //   （QQ 入站会置 'qq'，turn/end 清空 —— 见 inbound.ts:1055 / outbound.ts:678）
+        // ★ 2026-11-11 主人纠正：**只给「QQ 绑定的会话」加标记** ——
+        //   纯 web 会话（agent preset 自己开的、不属于任何 QQ peer）跟插件没关系，绝不能改它的正文。
+        //   条件：有 QQ 会话记录（recMemo 存在）+ 本回合不是 QQ 入站触发的（turnOrigin !== 'qq'）。
+        //   ⇒ 也就是"在 web 界面打开这个 QQ 会话、直接打字"这一种情况。
+        const isQqTurnNow = recMemo ? (recMemo as { turnOrigin?: string }).turnOrigin === 'qq' : false;
+        // ② 活跃记录没有时，用 **model-prefs 的 sessionIds 反查**（纯内存 Map，不读盘）——
+        //    会话被回收/重启后在 web 里打开继续聊，也能认出"这本来就是个 QQ 会话"。
+        let isQqSessionByPrefs = false;
+        if (!recMemo) {
+          try {
+            const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
+            if (sidNow) isQqSessionByPrefs = !!this.modelResolver.findKeyBySessionId(sidNow);
+          } catch { /* ignore */ }
+        }
+        if ((recMemo || isQqSessionByPrefs) && !isQqTurnNow) {
+          const DIRECT_MARK = '【主人在 DSH 宿主界面直接发送】';
+          try {
+            dec.messages = dec.messages.map((m: unknown) => {
+              const mm = m as {
+                role?: string;
+                source?: { kind?: string };
+                content?: Array<{ type?: string; text?: string }>;
+              };
+              if (!mm || mm.role !== 'user') return m;
+              const kind = String(mm.source?.kind ?? '');
+              if (kind.startsWith('qqbot:') || kind === 'system') return m;   // 我们自己注入的块不动
+              if (!Array.isArray(mm.content)) return m;
+              const i = mm.content.findIndex(
+                (c) => c?.type === 'text' && typeof c.text === 'string' && !c.text.startsWith(DIRECT_MARK),
+              );
+              if (i < 0) return m;
+              const nc = mm.content.slice();
+              const base = nc[i] ?? { type: 'text' };
+              nc[i] = { ...base, text: `${DIRECT_MARK}${String(base.text ?? '')}` };
+              return { ...mm, content: nc };
+            });
+            this.logger?.info?.('[web-direct] 已给本条用户消息加"主人直发"标记');
+            // 落盘一份，便于主人肉眼确认（日志窗口里不一定看得到）
+            try {
+              const { appendFileSync, mkdirSync } = await import('node:fs');
+              const dir = join(dataRootOf(this.config), '.qqbot');
+              mkdirSync(dir, { recursive: true });
+              appendFileSync(join(dir, 'web-direct.log'), `${new Date().toISOString()} 已加标记 session=${String((agent?.session as { id?: string } | undefined)?.id ?? '?')}
+`, 'utf8');
+            } catch { /* ignore */ }
+          } catch { /* 改写失败不影响主链 */ }
+        }
+
         // 先剔掉本批里已有的同类块（注入块会进事件、逐轮累积 ⇒ 用替换而不是追加）
         const _baseMsgs = _stripOldCtxSmart(dec.messages as unknown[]) as typeof dec.messages;
         // at 是按原数组算的：剔除后重新定位插入点（紧跟 claimed 之后）
         const _claimedSet = new Set(Array.isArray(p.messages) ? (p.messages as unknown[]) : []);
         let _at2 = 0;
         for (let k = _baseMsgs.length - 1; k >= 0; k--) { if (_claimedSet.has(_baseMsgs[k])) { _at2 = k + 1; break; } }
-        const extraAll: unknown[] = [];   // 智能提示已并入 body（第二群守则），这里留空
+        const extraAll: unknown[] = [];
+        // 小传：独立注入块（自己的 source kind + 自己的去重；不受群守则跳过影响）
+        if (memoLine) {
+          extraAll.push({
+            role: 'user',
+            id: randomUUID(),
+            content: [{ type: 'text', text: `<system-reminder>` + String.fromCharCode(10) + memoLine + String.fromCharCode(10) + `</system-reminder>` }],
+            source: { kind: 'qqbot:people-memo', form: 'instructions', ns },
+          });
+          this.logger?.info?.(`[小传] 注入 ${memoLine.length} 字 (session=${recMemo?.sessionKey ?? '?'})`);
+        }
         const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
         return { ...dec, messages: entered };
       } catch {

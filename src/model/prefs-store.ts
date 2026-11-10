@@ -187,6 +187,23 @@ export class PrefsStore {
    *    所以「一个群多机器人」天然隔离，绝不会把 A 机器人的会话认成 B 的。
    * ⚠️ 不做批量改写：只迁移**真正被读到**的那一条（手册：改形式 = 改语义，不能静默批量刷）。
    */
+  /**
+   * **反向查**：由 DSH 会话 id 找出它属于哪个 QQ peer（`qqbot:<appId>:<scope>:<peerId>`）。
+   *
+   * 2026-11-11（主人问「不是直接按 model-prefs.json 判断吗」）：对，这正是那份文件里
+   * 的 `sessionIds` 映射（`key → sessionId`）反过来用 —— **纯内存 Map 遍历，不读盘**。
+   * 用途：判断"某个 agent 到底是不是 QQ 会话"（web 里打开 QQ 会话时用得上）。
+   * @returns sessionKey 或 undefined（= 不是我们管的会话）
+   */
+  findKeyBySessionId(sessionId: string): string | undefined {
+    const want = String(sessionId ?? '').trim();
+    if (!want) return undefined;
+    try {
+      for (const [key, sid] of this.sessionIds) if (sid === want) return key;
+    } catch { /* ignore */ }
+    return undefined;
+  }
+
   getSessionId(sessionKey: string): string | undefined {
     const exact = this.sessionIds.get(sessionKey);
     if (exact) return exact;

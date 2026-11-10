@@ -45,8 +45,18 @@ export declare function deleteMemo(dataRoot: string, key: string): {
     ok: boolean;
     msg: string;
 };
-/** inbound 算好小传注入行后调用（90 秒内有效） */
-export declare function setPendingMemo(text: string): void;
-/** 供 systemPrompt.context 的 text 提供者调用：过期/为空则返回 ''（不贡献内容） */
-export declare function takePendingMemoText(): string;
+/**
+ * inbound 算好"候选小传行"后调用（按会话 key 暂存，90 秒内有效）。
+ *
+ * ★ 2026-11-10 主人指正：**不能把拼好的整段文本拿来判重** ——
+ *   前 40 字符里基本只有 `[人家记得的 昵称:` 和第一条，后面换行了也判不出来，
+ *   于是"之后新想起来的条目永远被去重掉"。
+ *   所以这里只存**原始行数组 + 昵称**，由 pre-step 逐行判"这一条在不在上下文里"。
+ */
+export declare function setPendingMemo(key: string, name: string, lines: string[]): void;
+/** 供 pre-step 调用：只取**本会话**那一份候选；过期/为空返回 undefined */
+export declare function takePendingMemo(key: string): {
+    name: string;
+    lines: string[];
+} | undefined;
 //# sourceMappingURL=people-memo.d.ts.map

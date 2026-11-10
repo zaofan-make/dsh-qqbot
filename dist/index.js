@@ -10,7 +10,6 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigSchema, EditableConfigSchema } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
-import { takePendingMemoText } from './features/people-memo.js';
 import { getProfileDir, resolveEnv, resolveProfileName } from './shared/index.js';
 import { warmSessions } from './features/warm-sessions.js';
 import { applyExtToolVisibility } from './channel-tools.js';
@@ -576,8 +575,7 @@ export async function apply(ctx, config) {
     try {
         const sp = ctx.systemPrompt;
         if (sp && typeof sp.context === 'function') {
-            sp.context({ name: 'qqbot-people-memo', order: 60, text: () => { const txt = takePendingMemoText(); if (txt)
-                    logger.info(`[小传] 运行时上下文提供 ${txt.length} 字`); return txt; } });
+            // 2026-11-10: 小传改由 pre-step 按会话注入（sp.context 在现宿主上不生效且会串会话），这里移除。
             logger.info('[im-qqbot] 群友小传已注册为运行时上下文贡献');
         }
         else {
