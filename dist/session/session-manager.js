@@ -1765,7 +1765,24 @@ export class SessionManager {
                 // ★ 2026-11-11 修：**QQ 会话里从 web 直发的回合**也要有兜底 ——
                 //   那种回合没有入站候选（`memoPick` 为空），但说话的是主人 ⇒ 同样按 `owners[0]` 取。
                 //   原来条件写成 `!memoPick && !recMemo`，把"QQ 会话 + web 直发"整类漏掉了。
-                if (!memoPick) {
+                // ★ 2026-11-11 主人追问「纯 web 会话怎么也注入小传」——
+                //   小传是**QQ 群里的记忆**，不该漫到跟 QQ 无关的会话里去。
+                //   默认只在「QQ 绑定会话」（含在 web 界面打开的 QQ 会话）注入；
+                //   真要给纯 web 会话也注入，开设置项 `peopleMemoInWeb`（默认 false）。
+                const isQqBoundSession = !!recMemo || (() => {
+                    try {
+                        const sid0 = String(agent?.session?.id ?? '');
+                        return !!sid0 && !!this.modelResolver.findKeyBySessionId(sid0);
+                    }
+                    catch {
+                        return false;
+                    }
+                })();
+                const allowWebMemo = this.config.peopleMemoInWeb === true;
+                if (!memoPick && (!isQqBoundSession && !allowWebMemo)) {
+                    // 纯 web 会话 + 没开开关 → 不注入，直接跳过
+                }
+                else if (!memoPick) {
                     try {
                         const owners = Array.isArray(this.config.groupAdmin?.owners)
                             ? (this.config.groupAdmin.owners)
