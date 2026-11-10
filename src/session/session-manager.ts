@@ -1762,7 +1762,10 @@ export class SessionManager {
         // ★ 2026-11-11 主人定：**web（非 QQ）会话也要注入小传** —— 那种会话里能打字的只有主人，
         //   所以直接取主人白名单的**第一位**（owners 可能有多个，第一个就是主人本人）。
         //   QQ 会话走入站算好的候选（按发言者），web 会话走这里（按主人）。
-        if (!memoPick && !recMemo) {
+        // ★ 2026-11-11 修：**QQ 会话里从 web 直发的回合**也要有兜底 ——
+        //   那种回合没有入站候选（`memoPick` 为空），但说话的是主人 ⇒ 同样按 `owners[0]` 取。
+        //   原来条件写成 `!memoPick && !recMemo`，把"QQ 会话 + web 直发"整类漏掉了。
+        if (!memoPick) {
           try {
             const owners = Array.isArray((this.config.groupAdmin as { owners?: unknown } | undefined)?.owners)
               ? ((this.config.groupAdmin as { owners: string[] }).owners)
