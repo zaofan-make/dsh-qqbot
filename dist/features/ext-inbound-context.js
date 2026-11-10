@@ -600,28 +600,12 @@ function def(target, key, desc) {
 // ctx.reply —— 入站扩展"直接回一句"（2026-11-11 新增）
 // ────────────────────────────────────────────────────────────────
 /**
- * 为什么之前没有：入站挂点在**命令/模型之前**，给"能发消息"等于给每条入站一次主动发信，
- * 风险是刷屏、打光主动消息配额、绕过出站护栏。所以加了四道约束：
+ * 为什么之前没有：入站挂点在**命令/模型之前**，给"能发消息"等于给每条入站一次主动发信。
+ * 现在放开，只保留三点（**不做限频** —— 2026-11-11 主人定：不能替用户省掉自由度）：
  *   ① **走正常出站**（`sender.sendMarkdown` + 本条的 replyTarget）—— 引用/分段/限速全部照旧；
- *   ② **限频**：同一扩展每分钟最多 `REPLY_PER_MIN` 条，超了拒发并 warn；
- *   ③ **审计**：每次回话都记 `action: 'reply'`（署名哪个扩展）；
- *   ④ **不唤醒 AI、不进会话历史**：它只是"替插件说了一句"，模型不会以为自己说过。
+ *   ② **审计**：每次回话都记 `action: 'reply'`（署名哪个扩展），出事查得到；
+ *   ③ **不唤醒 AI、不进会话历史**：它只是"替插件说了一句"，模型不会以为自己说过。
  */
-const REPLY_PER_MIN = 3;
-const replyLog = new Map();
-function replyAllowed(s) {
-    const key = s.current?.file || '?';
-    const now = Date.now();
-    const arr = (replyLog.get(key) ?? []).filter((t) => now - t < 60_000);
-    if (arr.length >= REPLY_PER_MIN) {
-        replyLog.set(key, arr);
-        warnOnce(s, 'reply-rate', `ctx.reply 被限频（每扩展每分钟最多 ${REPLY_PER_MIN} 条），本条已忽略`);
-        return false;
-    }
-    arr.push(now);
-    replyLog.set(key, arr);
-    return true;
-}
 async function reply(_ctx, s, text) {
     const t = typeof text === 'string' ? text : String(text?.text ?? '');
     if (!t.trim())
@@ -632,8 +616,6 @@ async function reply(_ctx, s, text) {
         warnOnce(s, 'reply-no-sender', 'ctx.reply 不可用：运行环境没给 sender/replyTarget（嵌入方未接线），本条已忽略');
         return false;
     }
-    if (!replyAllowed(s))
-        return false;
     try {
         await sender.sendMarkdown(target, t.slice(0, 2000));
         audit(s, { action: 'reply', reason: t.slice(0, 80) });
