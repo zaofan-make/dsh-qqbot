@@ -2211,6 +2211,36 @@ export function apply(ctx) {
 
   /** 写回人设正文（只替换那段块标量，写前自动备份整个 patch）。
    *  ⚠️ 换行符**逐行保真**：patch 可能 LF/CRLF 混用（实测踩过），统一 eol 会改掉别处字节。 */
+  /**
+   * 写盘前自检（2026-11-11，issue #46 建议）。
+   *
+   * 事故背景：一个人设保存把整份 `cordis.patch.yml` 覆盖掉了（变量名写错）。
+   * 这类"一个变量写错就毁掉全部配置"的路径，光靠 review 兜不住，所以在**落盘前**挡一道：
+   *   ① 新内容必须仍然以顶层数组条目开头（`- id:` / `- insert:`），不能是裸文本；
+   *   ② 新内容必须包含**旧文件里所有的顶层 id**（少一个都算把别人的配置写没了）。
+   * 不满足 ⇒ 不写盘，返回原因（备份文件仍然保留，用户可手动回滚）。
+   */
+  function guardPatchWrite(before, after) {
+    const topIds = (txt) => {
+      const out = new Set();
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const m = /^-\s*id:\s*'?([^'\s]+)'?\s*$/.exec(line);
+        if (m) out.add(m[1]);
+      }
+      return out;
+    };
+    const a = String(after || '');
+    if (!a.trim()) return { ok: false, reason: '新内容为空' };
+    if (!/^\s*-\s*(id:|insert:)/m.test(a)) return { ok: false, reason: '新内容不是顶层 YAML 数组（没有任何 - id: / - insert:）' };
+    const beforeIds = topIds(before);
+    const afterIds = topIds(a);
+    if (beforeIds.size > 0) {
+      const lost = [...beforeIds].filter((id) => !afterIds.has(id));
+      if (lost.length > 0) return { ok: false, reason: `丢失 ${lost.length} 个既有条目（${lost.slice(0, 3).join(', ')}…）` };
+    }
+    return { ok: true };
+  }
+
   function writePresetPersona(presetId, text) {
     try {
       if (!existsSync(PATCH_FILE)) return { ok: false, error: 'profile patch 不存在' };
@@ -2255,7 +2285,16 @@ export function apply(ctx) {
       }
       const bak = PATCH_FILE + '.bak-persona-' + Date.now();
       try { writeFileSync(bak, raw, 'utf8'); } catch { /* 备份失败不阻塞 */ }
-      writeFileSync(PATCH_FILE, quoteNumericIds(text), 'utf8');
+      // ⚠️⚠️ 2026-11-11 issue #46 事故：这里原来写的是 `text`（函数参数 = 新人设正文），
+      //   不是拼好的 `out` ⇒ 点「保存」会把整份 cordis.patch.yml 覆盖成一段人设纯文本，
+      //   42732 字节 → 1230 字节，全部 loader 条目消失，**下次重启直接起不来**。
+      //   写法与 copyPresetDecl 里的 `quoteNumericIds(text)` 看似相同，但那边的 text 是累积后
+      //   的完整 patch（局部变量），两处含义完全不同 —— 极易误判，别再改回去。
+      const nextText = quoteNumericIds(out);
+      // 写盘前自检（#46 建议）：必须是"看起来还是那份 patch"才允许落盘，否则直接拒绝并保留备份。
+      const guard = guardPatchWrite(raw, nextText);
+      if (!guard.ok) return { ok: false, error: `拒绝写入：${guard.reason}（已备份到 ${bak}）`, backup: bak };
+      writeFileSync(PATCH_FILE, nextText, 'utf8');
       return { ok: true, backup: bak };
     } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   }
