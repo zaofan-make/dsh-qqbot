@@ -67,6 +67,7 @@ class OutboundRouter {
     logger;
     toolsRegistry;
     buffers = new Map();
+    pendingSends = new Map();
     /** agentId(sessionId) → 当前正在流的 attemptId（LLM 重试会换 attempt） */
     streamAttempt = new Map();
     /** 本回合是否产出过正文增量（turn/end 判断"有没有正文"用） */
@@ -235,9 +236,7 @@ class OutboundRouter {
      *   (2026-09-10 主人指出原按"回合总块数"判定会白白重复推一条)。
      *   注: adaptive 模式本身「第 6 条起自动转主动」= 主人说的 B 方案, 已内建, 故此处只处理 passive。
      */
-    maybeResendLastBlock(sessionKey, record) {
-        const st = this.turnBlocks.get(sessionKey);
-        this.turnBlocks.delete(sessionKey);
+    maybeResendLastBlock(sessionKey, record, st) {
         if (!st)
             return;
         // ══ ★★ 2026-10-16 主人定：**回合结束钩子**（出站扩展的配图挂这里）★★ ══
@@ -465,7 +464,7 @@ class OutboundRouter {
         if (buffer !== undefined && buffer.text.trim()) {
             // 记账放**生成侧**(不看发送成败): 这块正文已经产生了, 就该入账
             this.noteGenerated(record.sessionKey, record.replyTarget.msgId ?? '', buffer.text);
-            void buffer.flush();
+            void this.trackSend(record, buffer.flush());
             this.buffers.delete(sessionId);
             return;
         }
@@ -478,7 +477,7 @@ class OutboundRouter {
         if (!fullText.trim())
             return;
         this.noteGenerated(record.sessionKey, record.replyTarget.msgId ?? '', fullText);
-        void this.send(record, fullText, 'sendMarkdown', 'assistant/message');
+        void this.trackSend(record, this.send(record, fullText, 'sendMarkdown', 'assistant/message'));
         this.buffers.delete(sessionId);
     }
     /** 详细主动(detail, 2026-09-11 主人加): 发送行为与 adaptive 完全一致, 额外推送工具调用/结果 */
@@ -516,7 +515,7 @@ class OutboundRouter {
         const max = OutboundRouter.TOOL_NOTICE_MAX;
         const shown = cur.lines.slice(0, max);
         const more = cur.lines.length > max ? `\n…等 ${cur.lines.length} 个工具` : '';
-        void this.send(cur.record, `**🔧 工具调用**\n${shown.join('\n')}${more}`, 'sendToolCallNotice', 'tool/call');
+        void this.trackSend(cur.record, this.send(cur.record, `**🔧 工具调用**\n${shown.join('\n')}${more}`, 'sendToolCallNotice', 'tool/call'));
     }
     /** 工具调用：默认仅记录(避免刷屏, 等结果)；详细主动(detail)下额外推一条轻量提示 */
     onToolCall(record, event) {
@@ -555,7 +554,7 @@ class OutboundRouter {
         const text = formatToolResult(call.name, call.args, event.raw, this.toolsRegistry, record.agent);
         if (!text)
             return;
-        void this.send(record, text, 'sendToolResult', 'tool/result');
+        void this.trackSend(record, this.send(record, text, 'sendToolResult', 'tool/result'));
     }
     /** 轮次结束：清理 buffer，异常结束时告知用户 */
     onTurnEnd(sessionId, _record, event) {
@@ -573,25 +572,26 @@ class OutboundRouter {
         // 兜底: 回合结束清掉未消费的"工具内心话"（正常在 assistant/message 就用掉了）
         this.innerToolText.delete(_record.sessionKey);
         const buffer = this.buffers.get(sessionId);
-        // 先让残留 buffer flush 完(记账在 flush 里发生), 再判断 passive 收尾补发
-        const finish = () => this.maybeResendLastBlock(_record.sessionKey, _record);
+        // 收尾前等待本回合的正文发送完成
         if (buffer !== undefined) {
             if (buffer.text.trim()) {
-                void buffer.flush().then(finish, finish);
+                this.noteGenerated(_record.sessionKey, _record.replyTarget.msgId ?? '', buffer.text);
+                void this.trackSend(_record, buffer.flush());
             }
             else {
                 buffer.cancel();
-                finish();
             }
             this.buffers.delete(sessionId);
         }
-        else {
-            finish();
-        }
+        // 保留本回合快照，避免等待期间下一回合覆盖正文
+        const turnBlocks = this.turnBlocks.get(_record.sessionKey);
+        this.turnBlocks.delete(_record.sessionKey);
+        const pending = this.pendingSends.get(_record.sessionKey);
+        void Promise.allSettled(pending ? [...pending] : []).then(() => this.maybeResendLastBlock(_record.sessionKey, _record, turnBlocks));
         const failure = extractTurnError(event.reason);
         // 闸门静默导致的"取消"不是故障 —— 这个回合本来就不该出声（2026-09-14 主人要求）
         if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code) && !silenced) {
-            void this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError', 'turn/end');
+            void this.trackSend(_record, this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError', 'turn/end'));
         }
         this.gateSilenced.delete(_record.sessionKey);
         this.deliveredFiles.delete(_record.sessionKey);
@@ -638,6 +638,19 @@ class OutboundRouter {
                 this.logger?.debug?.(`im-qqbot: 违规通知注入失败(忽略): ${e instanceof Error ? e.message : String(e)}`);
             }
         };
+    }
+    /** 跟踪尚未完成的发送，供回合收尾等待 */
+    trackSend(record, operation) {
+        const pending = this.pendingSends.get(record.sessionKey) ?? new Set();
+        this.pendingSends.set(record.sessionKey, pending);
+        pending.add(operation);
+        const done = () => {
+            pending.delete(operation);
+            if (!pending.size)
+                this.pendingSends.delete(record.sessionKey);
+        };
+        void operation.then(done, done);
+        return operation;
     }
     /** 统一发送：逐条自适应目标(适配主动) + 富媒体感知分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
     async send(_record, text, tag, source) {

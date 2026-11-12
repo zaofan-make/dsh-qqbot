@@ -301,6 +301,12 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             self.text = state.text;
             return true;
         },
+        transform(fn) {
+            if (state.killed || self.phase !== 'send')
+                return false;
+            (state.transforms ??= []).push({ fn, extension: state.extension });
+            return true;
+        },
         annihilate(reason) {
             state.killed = true;
             state.reason = String(reason ?? '');
@@ -396,6 +402,8 @@ export async function runOutboundChain(text, opts = {}) {
                 called = true;
                 await next();
             };
+            const previousExtension = state.extension;
+            state.extension = ext;
             try {
                 await ext.middleware(ctx, onceNext);
                 if (!called && !state.killed) {
@@ -411,9 +419,28 @@ export async function runOutboundChain(text, opts = {}) {
                 if (!state.killed)
                     await next();
             }
+            finally {
+                state.extension = previousExtension;
+            }
         };
         await next();
-        return { text: state.text, killed: state.killed, reason: state.reason, ran };
+        let messages;
+        if (!state.killed && state.transforms?.length) {
+            messages = [{ text: state.text, kind: ctx.kind, source: ctx.source }];
+            for (const { fn, extension } of state.transforms) {
+                if (extension && (breaker.get(extension.name) ?? 0) >= BREAKER_LIMIT)
+                    continue;
+                try {
+                    messages = messages.flatMap((message) => fn(message) ?? []);
+                }
+                catch (err) {
+                    if (extension)
+                        noteBreaker(extension.name, logger);
+                    logger.warn(`[ext-outbound] ${extension?.name ?? 'transform'} 内容变换失败，保留本次变换前的消息: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            }
+        }
+        return { text: state.text, killed: state.killed, reason: state.reason, ran, ...(messages ? { messages } : {}) };
     }
     finally {
         active -= 1;
