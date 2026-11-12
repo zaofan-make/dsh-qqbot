@@ -52,6 +52,7 @@ import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
 import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText, normalizeMarkdownImages } from '../features/md-media-rewrite.js';
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
+import type { OutboundCtx } from '../features/ext-outbound.js';
 
 /**
  * 「正文被平台判违规」已经告知过 AI 的回合标记（2026-11-07 主人要的功能）。
@@ -302,6 +303,7 @@ class OutboundRouter {
           sender: this.bot,
           logger: this.logger,
           turnId: sessionKey,
+          source: 'assistant/message',
         });
       } catch (err) {
         this.logger.warn(
@@ -551,7 +553,7 @@ class OutboundRouter {
     if (!fullText.trim()) return;
 
     this.noteGenerated(record.sessionKey, record.replyTarget.msgId ?? '', fullText);
-    void this.send(record, fullText, 'sendMarkdown');
+    void this.send(record, fullText, 'sendMarkdown', 'assistant/message');
     this.buffers.delete(sessionId);
   }
 
@@ -589,7 +591,7 @@ class OutboundRouter {
     const max = OutboundRouter.TOOL_NOTICE_MAX;
     const shown = cur.lines.slice(0, max);
     const more = cur.lines.length > max ? `\n…等 ${cur.lines.length} 个工具` : '';
-    void this.send(cur.record, `**🔧 工具调用**\n${shown.join('\n')}${more}`, 'sendToolCallNotice');
+    void this.send(cur.record, `**🔧 工具调用**\n${shown.join('\n')}${more}`, 'sendToolCallNotice', 'tool/call');
   }
 
   /** 工具调用：默认仅记录(避免刷屏, 等结果)；详细主动(detail)下额外推一条轻量提示 */
@@ -634,7 +636,7 @@ class OutboundRouter {
     );
     if (!text) return;
 
-    void this.send(record, text, 'sendToolResult');
+    void this.send(record, text, 'sendToolResult', 'tool/result');
   }
 
   /** 轮次结束：清理 buffer，异常结束时告知用户 */
@@ -668,7 +670,7 @@ class OutboundRouter {
     const failure = extractTurnError(event.reason);
     // 闸门静默导致的"取消"不是故障 —— 这个回合本来就不该出声（2026-09-14 主人要求）
     if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code) && !silenced) {
-      void this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError');
+      void this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError', 'turn/end');
     }
 
     this.gateSilenced.delete(_record.sessionKey);
@@ -718,7 +720,7 @@ class OutboundRouter {
   }
 
   /** 统一发送：逐条自适应目标(适配主动) + 富媒体感知分块；媒体指令([MEDIA:..]/[RECALL])被剔除，失败降级记录 */
-  private async send(_record: SessionRecord, text: string, tag: string): Promise<void> {
+  private async send(_record: SessionRecord, text: string, tag: string, source: OutboundCtx['source']): Promise<void> {
     try {
       // ★★ 2026-11-05（主人定）：**web 回合静默**
       //   设置项 `webTurnSilent` 勾上后：不是由 QQ 入站触发的回合（`turnOrigin !== 'qq'`，
@@ -807,8 +809,9 @@ class OutboundRouter {
             () => this.resolveTarget(_record),
             this.chunkTargetFn(_record),
             undefined,
-             this.refLookupFor(_record),
-             this.onSendErrorFor(_record),
+            this.refLookupFor(_record),
+            this.onSendErrorFor(_record),
+            { source },
           );
           return;
         }
@@ -823,8 +826,9 @@ class OutboundRouter {
         () => this.resolveTarget(_record),
         this.chunkTargetFn(_record),
         undefined,
-         this.refLookupFor(_record),
-         this.onSendErrorFor(_record),
+        this.refLookupFor(_record),
+        this.onSendErrorFor(_record),
+        { source },
       );
     } catch (err) {
       this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);

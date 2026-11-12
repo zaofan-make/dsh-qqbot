@@ -7,6 +7,7 @@
 import type { SessionRecord } from '../session/index.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { chunkMarkdownText } from './chunker.js';
+import type { OutboundCtx } from '../features/ext-outbound.js';
 import { StreamingWriter } from './streaming-writer.js';
 import {
   containsRecall,
@@ -114,6 +115,8 @@ export async function sendRichOutbound(
     isLastChunk?: boolean;
     /** 这条出站是什么（默认 text） */
     kind?: 'text' | 'markdown' | 'media' | 'card' | 'forward' | 'other';
+    /** 产生本条消息的宿主事件（默认 unknown） */
+    source?: OutboundCtx['source'];
     /** 数据根（扩展的 store 用它） */
     dataRoot?: string;
     /** 主人 openid 白名单 */
@@ -382,6 +385,8 @@ export class OutboundBuffer {
         this.chunkTarget,
         this.onBlockSent,
         this.refLookup,
+        undefined,
+        { source: 'assistant/message' },
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

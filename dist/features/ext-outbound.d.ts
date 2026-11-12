@@ -11,6 +11,8 @@ export interface OutboundCtx {
     segments: unknown[];
     /** 这条出站是什么 */
     kind: 'text' | 'markdown' | 'media' | 'card' | 'forward' | 'other';
+    /** 产生本条消息的宿主事件 */
+    source: 'assistant/message' | 'tool/call' | 'tool/result' | 'turn/end' | 'unknown';
     /** 回复目标（被动回复优先靠它自带的 msgId） */
     target: {
         scope?: string;
@@ -154,6 +156,7 @@ export interface RunOutboundOptions {
     chunkIndex?: number;
     isLastChunk?: boolean;
     kind?: OutboundCtx['kind'];
+    source?: OutboundCtx['source'];
     segments?: unknown[];
     apiCall?: unknown;
     kernel?: unknown;

@@ -58,6 +58,8 @@ export interface OutboundCtx {
   segments: unknown[];
   /** 这条出站是什么 */
   kind: 'text' | 'markdown' | 'media' | 'card' | 'forward' | 'other';
+  /** 产生本条消息的宿主事件 */
+  source: 'assistant/message' | 'tool/call' | 'tool/result' | 'turn/end' | 'unknown';
   /** 回复目标（被动回复优先靠它自带的 msgId） */
   target: { scope?: string; peerId?: string; msgId?: string } | null;
   /** 本回合 id（同一回合的所有正文块共享；没有回合概念时是空串） */
@@ -194,6 +196,7 @@ export interface RunOutboundOptions {
   chunkIndex?: number;
   isLastChunk?: boolean;
   kind?: OutboundCtx['kind'];
+  source?: OutboundCtx['source'];
   segments?: unknown[];
   apiCall?: unknown;
   kernel?: unknown;
@@ -474,6 +477,7 @@ export function makeOutboundCtx(
     text: state.text,
     segments: Array.isArray(opts.segments) ? opts.segments : [],
     kind: opts.kind ?? 'text',
+    source: opts.source ?? 'unknown',
     target: t,
     turnId: String(opts.turnId ?? ''),
     chunkIndex: Number(opts.chunkIndex ?? 0),

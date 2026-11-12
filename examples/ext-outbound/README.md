@@ -29,6 +29,7 @@ export default async function onOutbound(ctx, next) {
 | --- | --- |
 | `ctx.text` | 本条出站正文（只读；要改请用 `ctx.rewrite()`） |
 | `ctx.kind` | `'text' \| 'markdown' \| 'media' \| 'card' \| 'forward' \| 'other'` |
+| `ctx.source` | `'assistant/message' \| 'tool/call' \| 'tool/result' \| 'turn/end' \| 'unknown'` |
 | `ctx.target` | `{ scope, peerId, msgId? }` —— **被动回复靠它自带的 msgId** |
 | `ctx.turnId` / `ctx.chunkIndex` / `ctx.isLastChunk` | 回合内定位 |
 | **`ctx.phase`** | `'send'` = 正文**发送前**；`'turnEnd'` = **回合真正结束** |

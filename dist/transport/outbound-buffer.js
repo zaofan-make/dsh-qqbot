@@ -312,7 +312,7 @@ export class OutboundBuffer {
                     return;
             }
             // 降级：静态发送（writer 不存在 or 流式失败）→ 富媒体感知发送
-            await sendRichOutbound(this.bot, this.record.replyTarget, this.buffer, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup);
+            await sendRichOutbound(this.bot, this.record.replyTarget, this.buffer, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup, undefined, { source: 'assistant/message' });
         }
         catch (err) {
             this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

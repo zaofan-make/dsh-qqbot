@@ -282,6 +282,7 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
         text: state.text,
         segments: Array.isArray(opts.segments) ? opts.segments : [],
         kind: opts.kind ?? 'text',
+        source: opts.source ?? 'unknown',
         target: t,
         turnId: String(opts.turnId ?? ''),
         chunkIndex: Number(opts.chunkIndex ?? 0),
