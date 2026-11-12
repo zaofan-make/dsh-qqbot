@@ -12,7 +12,7 @@
  *   查表时从后往前找最新一条；文件超过 COMPACT_BYTES 时压缩成"最新 1000 条唯一 id"。
  *   ⚠️ 格式是跨进程契约: 宿主侧 settings-host.js 里有同格式的同步只读实现（那边不能 await）。
  */
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { basename, dirname, extname, join, sep } from 'node:path';
 /** 台账文件名（放在表情包目录里，跟图库同生共死） */
 export const IMAGE_URL_LEDGER = 'image-url-ledger.jsonl';
@@ -74,7 +74,12 @@ function compact(file) {
     }
     const kept = [...uniq.values()].slice(-MAX_ENTRIES);
     try {
-        writeFileSync(file, kept.map(x => JSON.stringify(x)).join('\n') + (kept.length ? '\n' : ''), 'utf8');
+        // ★ 2026-11-12：改成 tmp + rename 原子写（原来直接覆盖）。
+        //   直接覆盖的窗口里进程被杀/断电会留半个文件 ⇒ 下次 loadAll 只读到一部分，
+        //   「图库 id → QQ 链接」的兜底台账就静默丢一批。rename 同分区是原子的。
+        const tmp = file + '.tmp-' + Date.now();
+        writeFileSync(tmp, kept.map(x => JSON.stringify(x)).join('\n') + (kept.length ? '\n' : ''), 'utf8');
+        renameSync(tmp, file);
     }
     catch { /* ignore */ }
 }

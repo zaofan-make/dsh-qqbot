@@ -52,7 +52,11 @@ function compactLedgerFile(file) {
         }
         if (map.size === 0)
             return;
-        const out = [...map.values()].sort((a, b) => (a.ts) - (b.ts)).map((o) => JSON.stringify(o)).join(NL) + NL;
+        // ★ 2026-11-12（外部 AI 审查启发）：**不再每次全表 sort**。
+        //   压缩只需要"每个 key 留最新一条 + 稳定顺序"，而 jsonl 的物理顺序对读取方没有语义要求
+        //   （读取方一律按 ts 自己排）。Map 的插入顺序天然稳定，直接用即可，
+        //   省掉一次 O(n log n) —— 这条路径每 200 次追加会跑一次，人多的实例上能明显省。
+        const out = [...map.values()].map((o) => JSON.stringify(o)).join(NL) + NL;
         const tmp = file + '.tmp-' + Date.now();
         writeFileSync(tmp, out, 'utf8');
         renameSync(tmp, file);
