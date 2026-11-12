@@ -295,8 +295,13 @@ export async function sendRichOutbound(
   })();
 }
 
+/** 待发送缓冲超过这个长度就告警一次（不丢内容） */
+const OUTBOUND_BUFFER_WARN_BYTES = 200_000;
+
 export class OutboundBuffer {
   private buffer = '';
+  /** 缓冲过大只告警一次（见 append 的注释） */
+  private warnedBig = false;
   private flushing = false;
   private readonly writer: StreamingWriter | null;
 
@@ -328,10 +333,24 @@ export class OutboundBuffer {
       : null;
   }
 
-  /** 追加文本增量 */
+  /**
+   * 追加文本增量。
+   *
+   * 2026-11-12 性能观察：`flush()` 是串行的（`flushing` 锁），发送慢时这段时间新到的
+   * 增量会全部堆在 `buffer` 里。正常情况只有几 KB，但极端情况（QQ 端卡住 + AI 狂输出）
+   * 可能涨到几 MB，再一次性 `chunkMarkdownText` 会有明显 GC 停顿。
+   * 这里**只加可见性、不丢内容**：超过阈值打一条 warn（便于事后从日志确认"是不是堆积了"）。
+   * 真正的背压应该在 AI 侧（流式输出本身就受限于上一个 flush），不在传输层做丢弃。
+   */
   public append(text: string): void {
     this.buffer += text;
     this.writer?.append(text);
+    if (this.buffer.length > OUTBOUND_BUFFER_WARN_BYTES && !this.warnedBig) {
+      this.warnedBig = true;
+      try {
+        this.logger.warn?.(`[outbound] 待发送缓冲已到 ${this.buffer.length} 字（flush 跟不上 or 发送变慢），不丢内容，仅告警一次`);
+      } catch { /* ignore */ }
+    }
   }
 
   /** 获取当前累积文本 */

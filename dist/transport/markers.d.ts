@@ -36,7 +36,7 @@ export declare const HISTORY_BEGIN_ALL: readonly string[];
 export declare const HISTORY_END_ALL: readonly string[];
 /** 全部标记（清洗/判断用） */
 export declare const ALL_MARKERS: readonly string[];
-/** 文本里出现过任一标记（大小写不敏感，兼容旧英文标记） */
+export declare function clampForMarkerScan(text: string): string;
 export declare function hasAnyMarker(text: string, needles?: readonly string[]): boolean;
 /** 找**第一个**出现的标记（认新旧），没有则返回 undefined */
 export declare function findFirstMarker(text: string, needles: readonly string[]): {

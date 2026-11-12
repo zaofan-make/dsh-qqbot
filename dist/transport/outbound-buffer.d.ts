@@ -116,6 +116,8 @@ export declare class OutboundBuffer {
     /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
     private readonly refLookup?;
     private buffer;
+    /** 缓冲过大只告警一次（见 append 的注释） */
+    private warnedBig;
     private flushing;
     private readonly writer;
     constructor(record: SessionRecord, bot: QQBotSender, limit: number, logger: Logger, streamingEnabled: boolean, cwd?: string | undefined, resolveTarget?: (() => ReplyTarget) | undefined, 
@@ -125,7 +127,15 @@ export declare class OutboundBuffer {
     onBlockSent?: ((text: string, target: ReplyTarget) => void) | undefined, 
     /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
     refLookup?: ((index: string) => string | undefined) | undefined);
-    /** 追加文本增量 */
+    /**
+     * 追加文本增量。
+     *
+     * 2026-11-12 性能观察：`flush()` 是串行的（`flushing` 锁），发送慢时这段时间新到的
+     * 增量会全部堆在 `buffer` 里。正常情况只有几 KB，但极端情况（QQ 端卡住 + AI 狂输出）
+     * 可能涨到几 MB，再一次性 `chunkMarkdownText` 会有明显 GC 停顿。
+     * 这里**只加可见性、不丢内容**：超过阈值打一条 warn（便于事后从日志确认"是不是堆积了"）。
+     * 真正的背压应该在 AI 侧（流式输出本身就受限于上一个 flush），不在传输层做丢弃。
+     */
     append(text: string): void;
     /** 获取当前累积文本 */
     get text(): string;

@@ -12,7 +12,7 @@
  *   查表时从后往前找最新一条；文件超过 COMPACT_BYTES 时压缩成"最新 1000 条唯一 id"。
  *   ⚠️ 格式是跨进程契约: 宿主侧 settings-host.js 里有同格式的同步只读实现（那边不能 await）。
  */
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { basename, dirname, extname, join, sep } from 'node:path';
 /** 台账文件名（放在表情包目录里，跟图库同生共死） */
 export const IMAGE_URL_LEDGER = 'image-url-ledger.jsonl';
@@ -65,7 +65,11 @@ export function recordImageUrl(stickerDir, id, url) {
 }
 /** 压缩: 只留最新 MAX_ENTRIES 条唯一 id（新→旧顺序不变，最新的在最后） */
 function compact(file) {
-    const items = loadAll(file);
+    // ★ 2026-11-12 性能：**只读尾部**再解析，不把整个文件读进内存。
+    //   压缩的目标本来就是"保留最新 MAX_ENTRIES 条"，头部那几 MB 的旧记录读进来也全会被丢掉。
+    //   取 `MAX_ENTRIES * 4` 条行的保守切片（单行 ~150 字节 ⇒ 600KB 级别），
+    //   既保证够用，又避免文件长大后一次同步读几十 MB 卡住事件循环。
+    const items = loadTail(file, MAX_ENTRIES * 4);
     const uniq = new Map();
     for (const it of items) {
         if (uniq.has(it.id))
@@ -123,6 +127,48 @@ function indexOfFile(file) {
         index.set(it.id, it.url); // 后出现的覆盖前面的 = 最新链接
     cache.set(file, { key, index });
     return index;
+}
+/**
+ * 只读文件**尾部**若干行（性能用；2026-11-12）。
+ *
+ * 为什么不做真正的 seek：`image-url-ledger.jsonl` 是追加写的行文本，
+ * 从末尾按字节窗口回溯 + 找到第一个换行就够，不需要完整 fs 定位 API。
+ * 拿不到（文件小于窗口）就退化成整份读 —— 结果一致。
+ */
+function loadTail(file, maxLines) {
+    try {
+        const st = statSync(file);
+        // 单行按 200 字节保守估；窗口最小 64KB，最大 4MB
+        const window = Math.min(4 * 1024 * 1024, Math.max(64 * 1024, maxLines * 200));
+        if (st.size <= window)
+            return loadAll(file);
+        const fd = openSync(file, 'r');
+        try {
+            const buf = Buffer.alloc(window);
+            readSync(fd, buf, 0, window, st.size - window);
+            let txt = buf.toString('utf8');
+            const nl = txt.indexOf('\n');
+            if (nl >= 0)
+                txt = txt.slice(nl + 1); // 丢掉被截断的半行
+            const out = [];
+            for (const line of txt.split('\n')) {
+                const t = line.trim();
+                if (!t)
+                    continue;
+                try {
+                    out.push(JSON.parse(t));
+                }
+                catch { /* 坏行跳过 */ }
+            }
+            return out;
+        }
+        finally {
+            closeSync(fd);
+        }
+    }
+    catch {
+        return loadAll(file);
+    }
 }
 /** 按「图库 id」或「图片文件路径」查 QQ 链接（查不到返回 undefined） */
 export function lookupImageUrl(stickerDir, idOrPath) {

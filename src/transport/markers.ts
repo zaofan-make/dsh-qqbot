@@ -44,13 +44,33 @@ export const ALL_MARKERS: readonly string[] = [
 ];
 
 /** 文本里出现过任一标记（大小写不敏感，兼容旧英文标记） */
+/**
+ * 标记解析的上限长度（2026-11-12 性能加固）。
+ *
+ * 这里全是"找第一个/最后一个标记"的线性扫描与正则；正常消息几百字，但一旦有人贴几万字
+ * 的文本（日志、报错、聊天记录），这些扫描就会在事件循环上跑满几十毫秒。
+ * 标记只可能出现在**开头或结尾附近**（[rf:] / [引用:] / [语音合成]），中间几万字对我们没有意义，
+ * 所以超长时只保留头尾各一截，中间折叠 —— 结果与完整扫描一致，代价恒定。
+ */
+const MARKER_SCAN_LIMIT = 20_000;
+
+export function clampForMarkerScan(text: string): string {
+  const t = String(text ?? '');
+  if (t.length <= MARKER_SCAN_LIMIT) return t;
+  const head = t.slice(0, MARKER_SCAN_LIMIT / 2);
+  const tail = t.slice(-MARKER_SCAN_LIMIT / 2);
+  return head + String.fromCharCode(10) + tail;
+}
+
 export function hasAnyMarker(text: string, needles: readonly string[] = ALL_MARKERS): boolean {
+  text = clampForMarkerScan(text);
   const t = String(text ?? '');
   return needles.some((n) => t.toLowerCase().includes(n.toLowerCase()));
 }
 
 /** 找**第一个**出现的标记（认新旧），没有则返回 undefined */
 export function findFirstMarker(text: string, needles: readonly string[]): { idx: number; len: number } | undefined {
+  text = clampForMarkerScan(text);
   const t = String(text ?? '');
   let best: { idx: number; len: number } | undefined;
   for (const n of needles) {
@@ -62,6 +82,7 @@ export function findFirstMarker(text: string, needles: readonly string[]): { idx
 
 /** 找**最后一个**出现的标记（认新旧）—— 引用的"结束标记"必须取最后一个，否则会被原文里的假标记截断 */
 export function findLastMarker(text: string, needles: readonly string[]): { idx: number; len: number } | undefined {
+  text = clampForMarkerScan(text);
   const t = String(text ?? '');
   let best: { idx: number; len: number } | undefined;
   for (const n of needles) {
@@ -77,6 +98,7 @@ export function findLastMarker(text: string, needles: readonly string[]): { idx:
  * 方括号退化成圆括号：语义照旧看得懂，但不再参与结构匹配。
  */
 export function escapeBlockMarkers(text: string): string {
+  text = clampForMarkerScan(text);
   let s = String(text ?? '');
   for (const m of ALL_MARKERS) {
     s = s.split(m).join(`(${m.slice(1, -1)})`);   // [X] → (X)
@@ -89,6 +111,7 @@ export function escapeBlockMarkers(text: string): string {
 
 /** 把块标记整段抹掉（打分文本/展示用；认新旧、大小写不敏感） */
 export function stripBlockMarkers(text: string, replacement = ' '): string {
+  text = clampForMarkerScan(text);
   let s = String(text ?? '');
   for (const m of ALL_MARKERS) {
     s = s.split(m).join(replacement);
