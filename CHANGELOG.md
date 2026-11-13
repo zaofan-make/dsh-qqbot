@@ -1,3 +1,17 @@
+## 1.12.23 (2026-11-13)
+
+### 新：只读工具标记 `isConcurrencySafe`（借 DSH 0.2.2 的并行批处理）
+
+宿主 `tools/batch` 会把同一 step 内的工具调用分类：**并发安全的进有界滚动池并行跑**，
+其余（exclusive）当屏障串行。判据就是工具定义上的 `isConcurrencySafe(args) => boolean`。
+
+我们原来一个都没标（等于全部串行）。现在给纯只读的 6 个标上：
+
+`list_stickers` / `sticker_stats` / `sticker_untagged` / `session_list` / `group_join_requests` / `target_group`
+
+效果：模型一次发多个查询类调用时，这些会**并行执行**，结果仍按调用顺序返回。
+写操作（发送/撤回/禁言/群发/定时）保持默认（串行），不放宽。
+
 ## 1.12.22 (2026-11-12)
 
 ### 性能：三处小优化（都不改行为）

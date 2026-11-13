@@ -646,6 +646,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
 
   const listStickersTool = defineTool({
     name: 'list_stickers',
+    // 2026-11-13：只读工具标记为并发安全 —— 宿主 (tools/batch) 会把同一 step 内的多个 safe 调用并行跑
+    isConcurrencySafe: () => true,
     description: '(聊天加分项,气氛对就大胆用!)按情绪关键词搜本地表情包库, 挑最贴切的一张用 send_media(kind=image, source=路径) 发出去(一次最多一张); 实在查不到贴切的才回纯文字。',
     parameters: {
       query: { type: 'string', description: '语义关键词(可空=最近收藏; 匹配标签与描述)' },
@@ -891,6 +893,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
 
   const statsStickerTool = defineTool({
     name: 'sticker_stats',
+    // 2026-11-13：只读工具标记为并发安全 —— 宿主 (tools/batch) 会把同一 step 内的多个 safe 调用并行跑
+    isConcurrencySafe: () => true,
     description: '查看表情包库概况(总数/各分区/未打标数/占用)。想了解库存或准备整理时用: 若"未打标"数大于0, 接着用 sticker_untagged 翻出未整理图并 sticker_tag 补标, 保持弹药库好用。',
     parameters: {},
     output: {
@@ -916,6 +920,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
 
   const untaggedStickerTool = defineTool({
     name: 'sticker_untagged',
+    // 2026-11-13：只读工具标记为并发安全 —— 宿主 (tools/batch) 会把同一 step 内的多个 safe 调用并行跑
+    isConcurrencySafe: () => true,
     description: '(日常整理巡检,AI应主动做)列出表情包库里还没整理完的图(缺标签或缺介绍)。群里没活/或想维护图库时先调它(也可先 sticker_stats 看有没有未打标), 发现有图就逐张用 sticker_tag 补标签和一句描述; 库越干净, list_stickers 搜图越准。参数 a: 1=全部(候选+收藏) 2=只看收藏(正式文件夹)。可选 limit(每批条数, 默认20, 上限100)、offset(跳过前N条, 翻页用)。',
     parameters: {
       a: { type: 'integer', enum: [1, 2], required: true, description: '1=查全部 2=只查收藏文件夹(正式)' },
@@ -1225,6 +1231,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
 
   const listJoinRequestsTool = defineTool({
     name: 'group_join_requests',
+    // 2026-11-13：只读工具标记为并发安全 —— 宿主 (tools/batch) 会把同一 step 内的多个 safe 调用并行跑
+    isConcurrencySafe: () => true,
     description: '群管理(读): 看待审批入群申请(**默认只给本页 5 条**, 用 page 翻页; 同一人重复申请只留最新)。传 gid 可查指定群, 不填=当前群/manageGroup。仅主人要求时调用; 需开启"QQ群管理"且机器人为群管理员。跨群审批请显式带 gid。' +
       '\n示例: {gid:"<群openid>"} · {gid:"<群openid>", page:2} · {limit:20 看全}',
     parameters: {
@@ -1425,6 +1433,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
 
   const sessionListTool = defineTool({
     name: 'session_list',
+    // 2026-11-13：只读工具标记为并发安全 —— 宿主 (tools/batch) 会把同一 step 内的多个 safe 调用并行跑
+    isConcurrencySafe: () => true,
     description: '会话(读): 列出全部活跃会话(范围/peer/群名/活跃时间), 用于跨会话寻址。**默认 peer/sender 只给尾号**(省 token); 需要完整 openid 时传 full=true。',
     parameters: {
       full: { type: 'boolean', description: 'true=给完整 openid; 默认 false(只给尾号, 寻址用群名/备注即可)' },
@@ -1710,6 +1720,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
    */
   const targetGroupTool = defineTool({
     name: 'target_group',
+    // 2026-11-13：只读工具标记为并发安全 —— 宿主 (tools/batch) 会把同一 step 内的多个 safe 调用并行跑
+    isConcurrencySafe: () => true,
     description:
       '目标分组管理(与 dock「📇 群组管理 → 🗂 分组」共用同一份数据, 改完主人刷新面板就能看到): 查看/新建/改名/删除分组, 或把目标加进/移出分组。建好后 broadcast_send 的 targets 直接写**分组名**即可群发。改动类动作仅主人明确要求时调用; 重名/找不到会明确报错。' +
       '\n最小示例: {action:"list"} · {action:"create", name:"开发群"} · {action:"add", name:"群友", targets:["群A"]} · {action:"remove", name:"群友", targets:["群B"]}',
