@@ -1653,7 +1653,16 @@ try { syncContextTools(ctx, true); } catch { /* ignore */ }   // ← 写死 true
 **验收（照需求单四条）**：工具发卡 → 群友点 → 模块 `onInteraction` 被调用且 `ctx.performer.openid` 是点击者本人；
 点击者有回执；票数按人累计、重复点可识别；四条既有链路（preset/approval/question/botplay）行为不变、无消费者时仍只 ack。
 
-### 11.22 🟢 「会话列表 / 会话标题」别去解 `.zstd` —— 直接问宿主服务（2026-10-14 实测）
+### 11.22 🟢 「会话列表 / 会话标题」别去解 `.zstd` —— 直接问宿主服务（2026-10-14 实测，**2026-11-13 更新**）
+
+> ✅ **2026-11-13 重要更正**：`sessionTitle.get()` **没有坏** —— 它要的是 **Session 对象**（`sessions.list()` 里那一项），
+> 传 **id 字符串**才会抛 `session.snapshotEvents is not a function`。
+> 传对象后能直接拿到 `{title, messageSeqs, source:{kind,provider}}`，
+> 而且**比扫 log 更全**：`log` 里只有"标题被生成过"的会话才有 `session/title` 事件。
+> 例：本 QQ 会话扫 log 是空的，`sessionTitle.get(session)` 却返回「查看交接白板文件」。
+> 现在 `/会话列表` 命令已改成「先 `sessionTitle.get(o)`，失败才回退扫 log」。
+
+
 
 写「列出所有会话 / 显示会话标题」这类功能时，**不要碰 `~/.dsh/sessions/**/*.jsonl.zstd`**（多帧 zstd、
 `zstdDecompressSync` 只解第一帧、`createZstdDecompress` 同样停在第一帧且**不抛错**，多帧兜底永远触发不了）。

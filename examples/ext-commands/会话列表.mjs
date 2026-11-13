@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 /**
  * 会话列表.mjs — `/会话列表` 斜杠命令（扩展命令第五套）
  *
@@ -69,15 +70,15 @@ function cn(v) { return v === undefined || v === null ? '' : String(v); }
 function short(s, n) { const t = cn(s).replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 
 /** 诊断日志（沿用 /子会话 的做法：写死路径，排查"点了没反应"最有用） */
-// ★ 2026-10-16 修复: 原来写死 Windows 路径(D:/…) —— 手机(POSIX)上永远写不进去(全盘找不到该日志),
-//   排查等于瞎。改成相对本文件的 ../data/(本文件就在 {dataRoot}/.qqbot-extensions/commands/ 下)。
-const DIAG_URL = new URL('../data/会话列表-diag.log', import.meta.url);
+// ★ 2026-10-24 修复（issue #17）: 诊断日志原来写死 Windows 路径(D:/…) —— Linux/容器上会被
+//   当成相对路径，在家目录里生成一个叫 "D:" 的畸形目录。日志跟本文件走，跨平台都不会丢。
+const DIAG_FILE = fileURLToPath(new URL('../data/会话列表-diag.log', import.meta.url));
 async function diag(msg) {
   try {
     const { appendFile, mkdir } = await import('node:fs/promises');
     const { dirname } = await import('node:path');
-    await mkdir(new URL('../data/', import.meta.url), { recursive: true });
-    await appendFile(DIAG_URL, `${new Date().toISOString()} ${msg}\n`);
+    await mkdir(dirname(DIAG_FILE), { recursive: true });
+    await appendFile(DIAG_FILE, `${new Date().toISOString()} ${msg}\n`);
   } catch { /* 诊断失败绝不影响主流程 */ }
 }
 
@@ -89,9 +90,7 @@ function dataRootOf(ctx) {
     const cand = p.dataRoot ?? caps.dataRoot ?? ctx?.dataRoot ?? '';
     if (cand) return String(cand);
   } catch { /* ignore */ }
-  // ★ 2026-10-16: 兜底写死 Windows 路径 → 手机上是错的; 改成从本文件位置推
-  //   ({dataRoot}/.qqbot-extensions/commands/x.mjs → 上两级 = {dataRoot})
-  try { return decodeURIComponent(new URL('../../', import.meta.url).pathname).replace(/[\\/]+$/, ''); } catch { return ''; }
+  return 'D:/newwenjianjia/aiwork/鲸鱼娘/dshqqbot';
 }
 
 /**
@@ -206,22 +205,12 @@ async function sendCard(ctx, text, keyboard) {
   const rt = ctx?.replyTarget ?? {};
   const pe = ctx?.peer ?? {};
   const scope = cn(rt.scope || ctx?.scope || pe.scope || mc.kind || ((mc.groupOpenid || pe.groupId || pe.peerId) ? 'group' : 'c2c'));
-  // ★ 2026-10-16 c2c 修复: 原来 rt.targetId 在私聊里就是**对方 openid**, 会被当成群号 →
-  //   tier① 直连去请求 /v2/groups/<user_openid>/messages 必然被拒(gid 非空时 body 也不带
-  //   c2c 需要的 content 字段) → 一路降级成"文字发出来了、按钮消失"。
-  //   私聊一律 gid='' 走 /v2/users/<openid>/messages。
-  const gid = scope === 'group'
-    ? cn(mc.groupOpenid || rt.targetId || rt.openid || rt.id || pe.groupId || pe.groupOpenid || pe.peerId || pe.id || '')
-    : '';
+  const gid = cn(mc.groupOpenid || rt.targetId || rt.openid || rt.id || pe.groupId || pe.groupOpenid || (scope === 'group' ? (pe.peerId || pe.id) : '') || '');
   const uid = cn(mc.senderId || rt.openid || rt.id || pe.openid || pe.userId || '');
   const api = caps.api;
   if (keyboard && typeof api === 'function' && (gid || uid)) {
     const path = gid ? `/v2/groups/${gid}/messages` : `/v2/users/${uid}/messages`;
-    // ★ 2026-10-16 c2c 修复: 私聊的 markdown+键盘消息带上 msg_id(被动回复锚点),
-    //   否则可能被拒/退化; 群聊保持原样(实测不带 msg_id 也能发)。
-    const replyMsgId = cn(rt.msgId || rt.messageId || mc.msgId || mc.messageId || '');
-    void diag(`[sendCard] ①path=${path} msgId=${replyMsgId || '-'} kbRows=${keyboard?.content?.rows?.length ?? '?'}`);
-    const body = { msg_type: 2, markdown: { content: text }, keyboard, ...(gid ? {} : { content: text, ...(replyMsgId ? { msg_id: replyMsgId } : {}) }) };
+    const body = { msg_type: 2, markdown: { content: text }, keyboard, ...(gid ? {} : { content: text }) };
     try {
       const r = await api(path, { method: 'POST', body });
       void diag(`[sendCard] ①api=${JSON.stringify(r ?? null).slice(0, 200)}`);
@@ -313,6 +302,8 @@ function wsDisplay(dir, max = 52) {
 
 const OPT_CACHE = new Map();
 const OPT_TTL_MS = 60 * 1000;         // 候选缓存：60 秒（新会话能及时冒出来）
+/** 全量会话列表缓存（60s）：sessionPersistence.list() 扫盘很慢，别每次向导都重扫 */
+const ALL_CACHE = new Map();
 const TTL_CACHE = new Map();          // 标题缓存（带时间戳，5 分钟过期）
 const TITLE_TTL_MS = 5 * 60 * 1000;
 let KERNEL = null;
@@ -361,7 +352,89 @@ function fullId(id) { const s = cn(id); return s.startsWith('session-') ? s : `s
  * 宿主里**全部**会话（含已结束的）。返回 [{id, cwd, createdAt, sizeBytes}]；
  * 拿不到服务时返回 null，调用方回退扫盘。
  */
+/**
+ * 会话索引的**磁盘缓存**（10 分钟）：
+ * 宿主的 `sessionPersistence.list()` 每次都要扫全盘（本机 1697 个），
+ * 而且**没有过滤选项**（0.2.2 源码确认：options 只有 signal）。
+ * 所以首次扫完就落盘，后续向导/翻页直接读，跨重启也有效。
+ */
+const SESSION_INDEX_TTL_MS = 10 * 60 * 1000;
+let SESSION_INDEX_FILE = '';
+
+function sessionIndexFile() {
+  if (SESSION_INDEX_FILE) return SESSION_INDEX_FILE;
+  try {
+    const dr = String((typeof CTX_CACHE !== 'undefined' && CTX_CACHE && CTX_CACHE.dataRoot) || '');
+    if (dr) SESSION_INDEX_FILE = join(dr, '.qqbot', 'session-index-cache.json');
+  } catch { /* ignore */ }
+  return SESSION_INDEX_FILE;
+}
+
+function readSessionIndexCache() {
+  try {
+    const f = sessionIndexFile();
+    if (!f) return null;
+    if (!existsSync(f)) return null;
+    const j = JSON.parse(readFileSync(f, 'utf8'));
+    if (!j || !Array.isArray(j.items)) return null;
+    if (Date.now() - Number(j.at || 0) > SESSION_INDEX_TTL_MS) return null;
+    return j.items;
+  } catch { return null; }
+}
+
+function writeSessionIndexCache(items) {
+  try {
+    const f = sessionIndexFile();
+    if (!f) return;
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify({ at: Date.now(), items }), 'utf8');
+  } catch { /* 缓存失败不影响主流程 */ }
+}
+
+/**
+ * ⭐ 2026-11-13 主线路：从 `workspaceRegistry` 读（宿主界面「隐藏已归档」用的就是它）。
+ *
+ * 为什么换成它：`sessionPersistence.list()` 每次都要枚举磁盘上全部会话（本机 1697 个，含子代理），
+ * 而 `workspaceRegistry` 在**启动时就把 header 索引进内存**，并维护 registry 级 `archivedSessionIds`。
+ * 实测：11 个工作区 `sessionIds` 合计 **262**（对比 1697），且拿取是**同步内存操作**。
+ *
+ * 返回 [{ path, title, ids }]，ids 已**剔除归档**。
+ */
+function regWorkspaces(ctx) {
+  const reg = svcOf(ctx, 'workspaceRegistry');
+  if (!reg || typeof reg.list !== 'function') return null;
+  let archived = [];
+  try { archived = reg.archivedSessionIds || []; } catch { /* ignore */ }
+  const arch = new Set(Array.isArray(archived) ? archived.map((x) => String(x)) : []);
+  let list = [];
+  try { list = reg.list() || []; } catch { return null; }
+  const out = [];
+  for (const w of list) {
+    let rec = null;
+    try { rec = w.record || null; } catch { /* ignore */ }
+    let ids = [];
+    try { ids = Array.isArray(w.sessionIds) ? w.sessionIds.slice() : []; } catch { /* ignore */ }
+    const path = String(rec?.path ?? '');
+    const title = String(rec?.title ?? '') || path;
+    const live = ids.filter((id) => !arch.has(String(id)));
+    out.push({ path, title, ids: live, archivedCount: ids.length - live.length });
+  }
+  return { list: out, archived: arch.size };
+}
+
 async function listAllSessions(ctx) {
+  // ★ 2026-11-13（主人："1359 个？好慢"）：`sessionPersistence.list()` 会把**磁盘上所有会话**
+  //   枚举出来（含**子代理会话**和归档），一千多个时首次要等好几秒。
+  //   这里做两件事：① 结果整体缓存 60s（向导翻页/重试不再重扫）；② 把 delegationDepth 带出来供上层过滤。
+  const CACHE_KEY = 'allSessions';
+  const cacheHit = ALL_CACHE.get(CACHE_KEY);
+  if (cacheHit && Date.now() - cacheHit.at < 60_000) return cacheHit.v;
+  // ★ 2026-11-13（主人："还是慢"）：`sessionPersistence.list()` **没有"只列未归档"的选项**
+  //   （签名只有 `{signal}`，我们查过 0.2.2 源码）。它每次都要枚举磁盘上全部会话
+  //   （本机 1697 个，含子代理/归档）⇒ 首次必然几秒。
+  //   所以改成**磁盘缓存**：10 分钟内直接读缓存，跨进程重启也有效；过期才重扫一次。
+  const diskHit = readSessionIndexCache();
+  if (diskHit) return diskHit;
   const sp = svcOf(ctx, 'sessionPersistence');
   if (!sp || typeof sp.list !== 'function') {
     void diag(`[svc] 拿不到 sessionPersistence（kernel=${!!kernelOf(ctx)} sp=${!!sp}）`);
@@ -377,9 +450,13 @@ async function listAllSessions(ctx) {
         cwd: cn(h.cwd ?? it?.cwd),
         createdAt: Number(h.createdAt ?? it?.createdAt ?? 0) || 0,
         sizeBytes: Number(it?.sizeBytes ?? 0) || 0,
+        // 子代理会话：delegationDepth > 0（顶层会话没有这个字段或为 0）
+        depth: Number(h.delegationDepth ?? it?.delegationDepth ?? 0) || 0,
       };
     }).filter((x) => x.id);
     if (out.length === 0) return null;
+    ALL_CACHE.set(CACHE_KEY, { at: Date.now(), v: out });
+    writeSessionIndexCache(out);
     return out;
   } catch (e) {
     void diag(`[svc] sessionPersistence.list 抛错=${short(e?.message ?? e, 160)}`);
@@ -404,6 +481,8 @@ async function liveMap(ctx) {
   const hit = TTL_CACHE.get('live');
   if (hit && Date.now() - hit.at < 15 * 1000) return hit.v;
   const out = new Map();
+  let titleSvc = null;
+  try { titleSvc = svcOf(ctx, 'sessionTitle'); } catch { /* ignore */ }
   const ss = svcOf(ctx, 'sessions');
   if (ss && typeof ss.list === 'function') {
     try {
@@ -413,12 +492,23 @@ async function liveMap(ctx) {
         const id = bareId(o?.id ?? o?.sessionId ?? '');
         if (!id) continue;
         let title = '';
-        const lg = o?.log;
-        if (Array.isArray(lg)) {
-          for (let i = lg.length - 1; i >= 0; i--) {
-            if (String(lg[i]?.type ?? '') === 'session/title') {
-              const t = lg[i]?.data?.title;
-              if (typeof t === 'string' && t) { title = t; break; }
+        // ★ 2026-11-13 更新（实测）：`sessionTitle.get()` **没坏** —— 它要的是 **Session 对象**，
+        //   传 id 字符串才会抛 "session.snapshotEvents is not a function"。
+        //   传对象后能直接拿到标题，且**比扫 log 更全**（log 里只有 "被生成过" 的会话才有 session/title 事件）。
+        if (titleSvc) {
+          try {
+            const r = titleSvc.get(o);
+            if (r && typeof r.title === 'string' && r.title) title = r.title;
+          } catch { /* 回退扫 log */ }
+        }
+        if (!title) {
+          const lg = o?.log;
+          if (Array.isArray(lg)) {
+            for (let i = lg.length - 1; i >= 0; i--) {
+              if (String(lg[i]?.type ?? '') === 'session/title') {
+                const t = lg[i]?.data?.title;
+                if (typeof t === 'string' && t) { title = t; break; }
+              }
             }
           }
         }
@@ -446,12 +536,24 @@ async function optionsOfRaw(ctx, step, st) {
   try {
     const lib = await loadLib();
     if (step === 'workspace') {
+      // ⭐ 先走 registry（内存，瞬间）；拿不到才退回扫盘
+      const reg = regWorkspaces(ctx);
+      if (reg && reg.list.length > 0) {
+        const list = reg.list
+          .filter((w) => w.ids.length > 0)
+          .sort((a, b) => b.ids.length - a.ids.length);
+        LAST_SCOPE = `注册表 ${list.length} 个工作区 / 未归档会话 ${list.reduce((n, w) => n + w.ids.length, 0)} 个（另已归档 ${reg.archived} 个）`;
+        void diag(`[opts] workspace 走 registry：${LAST_SCOPE}`);
+        return list.map((w) => ({ value: w.path, label: `${wsDisplay(w.path)}  · ${w.ids.length} 个` }));
+      }
       const all = await listAllSessions(ctx);
       if (all) {
+        // ★ 只数**顶层会话**：子代理会话（depth>0）不该出现在"工作区有多少会话"里
+        const top = all.filter((x) => !x.depth);
         const cnt = new Map();
-        for (const s of all) if (s.cwd) cnt.set(s.cwd, (cnt.get(s.cwd) ?? 0) + 1);
+        for (const s of top) if (s.cwd) cnt.set(s.cwd, (cnt.get(s.cwd) ?? 0) + 1);
         const list = [...cnt.entries()].sort((a, b) => b[1] - a[1]);
-        LAST_SCOPE = `宿主 ${all.length} 个会话 / ${list.length} 个工作区`;
+        LAST_SCOPE = `宿主 ${top.length} 个会话（另有子代理 ${all.length - top.length} 个，未列出）/ ${list.length} 个工作区`;
         void diag(`[opts] workspace 走宿主：${LAST_SCOPE}`);
         return list.map(([cwd, n]) => ({ value: cwd, label: `${wsDisplay(cwd)}  · ${n} 个` }));
       }
@@ -463,6 +565,27 @@ async function optionsOfRaw(ctx, step, st) {
     if (step === 'session') {
       const ws = st.picked.workspace?.value ?? '';
       const live = await liveMap(ctx);
+      // ⭐ 同样先走 registry：该工作区的 sessionIds 已在内存里（且已剔除归档）
+      const reg = regWorkspaces(ctx);
+      const rw = reg?.list.find((w) => w.path === ws);
+      if (reg && rw) {
+        const ids = rw.ids.slice();
+        // 有标题的（live）排前面，其余按 id 稳定排序
+        const score = (id) => (live.get(bareId(id))?.title ? 1 : 0);
+        ids.sort((a, b) => (score(b) - score(a)) || String(a).localeCompare(String(b)));
+        const shown = ids.slice(0, 80);
+        const named = ids.filter((id) => live.get(bareId(id))?.title).length;
+        LAST_SCOPE = `${ids.length} 个未归档会话（${named} 个在线有名；该区归档 ${rw.archivedCount} 个已隐藏）`;
+        void diag(`[opts] session 走 registry ws=${ws} 命中 ${ids.length}，有名 ${named}`);
+        return shown.map((id) => {
+          const info = live.get(bareId(id));
+          const t = info?.title ?? '';
+          const tag = info ? '🟢' : '⚪';
+          const id8 = bareId(id).slice(0, 8);
+          const head = t ? short(t, 24) : id8;
+          return { value: id, label: `${tag} ${head}${t ? ` · ${id8}` : ''}` };
+        });
+      }
       const all = await listAllSessions(ctx);
       if (all) {
         const seen = new Set();

@@ -1663,7 +1663,11 @@ window.__ModuleLoader__.load({
       useEffect(function () { load(true) }, [layer, untagged, q])
       // 自动刷新: 后台机器人持续收藏/改动时, 页面每 6 秒同步一次(不打断勾选)
       useEffect(function () {
-        var t = setInterval(function () { load(true) }, 6000)
+        // ★ 2026-11-13：页面不可见时不刷新（原来 6s 一次，切到后台也在拉）
+        var t = setInterval(function () {
+          try { if (document.hidden) return } catch (e) { /* ignore */ }
+          load(true)
+        }, 15000)
         return function () { clearInterval(t) }
       }, [layer, untagged, q])
 
@@ -2778,7 +2782,19 @@ var QQS_THEME_CSS = [
         } catch (e) {}
       }
       poll()
-      setInterval(poll, 2000)
+      // ★ 2026-11-13（主人实测：上传图片时页面卡、对话框转圈）：
+      //   这里原来 **每 2 秒** 拉两次接口（审批 + 提问）并重渲染 DOM，
+      //   大上传/大重渲染期间会和主线程抢时间。现在：
+      //   ① 间隔 2s → **10s**（审批不是秒级需求，晚 8 秒完全可接受）
+      //   ② 页面不可见（切标签/最小化）时**直接不轮询**
+      //   ③ 上一次还没回来就跳过本次（避免请求堆积）
+      var _pollBusy = false
+      setInterval(function () {
+        try { if (document.hidden) return } catch (e) { /* ignore */ }
+        if (_pollBusy) return
+        _pollBusy = true
+        try { poll() } finally { setTimeout(function () { _pollBusy = false }, 3000) }
+      }, 10000)
     }
 
     // ══ 群管理悬浮球 dock(可拖拽; 点开=群管理悬浮台; 关闭收回成球) ══
@@ -3049,7 +3065,11 @@ var QQS_THEME_CSS = [
         })
       }
       refreshBadge()
-      setInterval(refreshBadge, 10000)
+      // ★ 2026-11-13：10s → 30s，页面不可见时不拉（红点晚 20 秒刷新没人有感觉）
+      setInterval(function () {
+        try { if (document.hidden) return } catch (e) { /* ignore */ }
+        refreshBadge()
+      }, 30000)
 
       // ── 面板状态(每个实例独立保存, 切回不丢) ──
       var state = { ns: '', accts: [], gid: '', groups: [], tab: 'chat', sendScope: 'group', sendTo: '', sendName: '', sendText: '', insertCtx: true, targetQ: '', c2cs: [], joins: null, mutes: null, members: null, muteSecs: '60', bindGid: '', bindName: '', msg: '', busy: '', wantPeer: null, lookedUp: false, detected: null, detectedHit: null, chatItems: [], chatMore: false, chatBusy: '', chatErr: '', chatOldest: 0, chatText: '', chatIns: true, outMode: '', outRev: undefined, bpEvents: [], bpSel: null, bpDraft: null, bpExt: null, bpExtBusy: '', bpReq: '', bpReqHint: '', bpSrcText: null, bpSrcPath: '', rosterSel: {}, rosterScope: 'all', rosterQ: '', hubSid: '', hubRev: undefined, hubBusy: '', hubMsg: '', gaEnabled: false, gaPoll: false, gaPollWake: true, gaHubNotify: true, gaNotifyGroup: true, gaInterval: 5, gaMinCount: 1, gaMsg: '', gaBusy: '', bcDraft: null, bcTasks: null, cardMd: '', cardBtns: '', cardGid: '', cardBusy: '', cardQ: '', tgGroups: [], tgCur: '', hammerSub: 'mute', arOn: false, arMode: 'keep', arKws: '', arKinds: [], arMute: 0, arDry: false, arMsg: '', qunLogged: null, qunUin: '', qunGroups: [], qunGc: '', qunKw: '', qunMembers: [], qunCount: 0, qunQr: false, qunMsg: '', qunBusy: false, qunLoading: false }

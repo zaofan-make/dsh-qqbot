@@ -1,3 +1,32 @@
+## 1.12.24 (2026-11-13)
+
+### 性能：前端轮询降频（主人实测「上传图片时对话框转圈」）
+
+`client/qqbot-settings.js` 里有几个**常驻**定时器，上传/重渲染期间会和主线程抢时间：
+
+| 轮询 | 原来 | 现在 |
+| --- | --- | --- |
+| 审批/提问 | **每 2 秒** × 2 个请求 | **10 秒**，页面不可见跳过，上次未回跳过 |
+| 入群红点 | 10 秒 | **30 秒**，不可见跳过 |
+| 表情包列表自动刷新 | 6 秒 | **15 秒**，不可见跳过 |
+
+### 修：`/会话列表` 不再扫盘（改用 `workspaceRegistry`）
+
+宿主的 `sessionPersistence.list()` **没有归档/深度过滤**（0.2.2 源码签名只有 `{signal}`），
+每次枚举磁盘全部会话（本机 1697 个，其中 1435 个是子代理）⇒ 首次要等好几秒。
+
+现在改成读 **`kernel.get('workspaceRegistry')`**：它启动时就把 header 索引进内存，
+`.list()` 直接给出 11 个工作区 + 每个的 `record.sessionIds`（合计 262），
+另有 `archivedSessionIds`（226）可用来剔除归档 —— 和宿主 UI 那颗「隐藏已归档」同一份数据。
+
+顺带：`sessionTitle.get()` 要传 **Session 对象**（传 id 会抛 `session.snapshotEvents is not a function`），
+用它取标题比扫 `log` 更全；旧路径保留作兜底。
+
+### 新增：`examples/ext-commands/dshapi.mjs`
+
+宿主服务探测命令 `/dshapi [title|stats|market|present|cwd|quotes|ckpt|batch|ws]`，
+用来确认某个宿主服务在当前版本是否可用、形状如何（写扩展前先跑一下，省得猜名字）。
+
 ## 1.12.23 (2026-11-13)
 
 ### 新：只读工具标记 `isConcurrencySafe`（借 DSH 0.2.2 的并行批处理）
