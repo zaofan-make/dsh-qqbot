@@ -46,6 +46,7 @@ export declare function buildQuotePart(quote: ResolvedQuote | undefined, sticker
  *   没被 @  → `[昵称 #短号]`            ← 不带 openid(省 token; 32 位 id 每行 20+ token)
  *   被 @ 了 → `[昵称 (openid) #短号]` + 正文后 ` (@you)`  ← 要回 @ 他/认人才给 id
  *   短号两边都留(引用标记 + id_lookup 反查 openid 的入口, 不能省)。
+ * ★ 2026-11-13：标签里的名字改用"显示名"（可带群名片后缀），`#短号` 位置与格式**不变**。
  */
-export declare function buildUserMessage(userContent: string, quotePart: string, senderId: string, senderName: string | undefined, isGroup: boolean, wasMentioned: boolean, msgRef: string): string;
+export declare function buildUserMessage(userContent: string, quotePart: string, senderId: string, senderName: string | undefined, isGroup: boolean, wasMentioned: boolean, msgRef: string, memberNick?: string): string;
 //# sourceMappingURL=inbound.d.ts.map

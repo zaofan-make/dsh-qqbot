@@ -1100,7 +1100,7 @@ function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msg
     const wasMentioned = state.mention?.wasMentioned ?? false;
     const batchDispatch = state.batchDispatch === true;
     const aggregated = state.aggregated === true;
-    const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef);
+    const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef, memberNickOf(msg));
     const dynamicCtx = buildDynamicCtx(msg, downloaded);
     const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
     // ⚠️ 2026-09-10 去重(主人: "图片链接重复两次"): 聚合/冷却重新派发时, 同一条消息会**既被
@@ -1422,6 +1422,39 @@ function extractQuotedContent(msg) {
     return '';
 }
 /**
+ * 群名片（2026-11-13）：官方在群消息的 `author.member_nickname` 里下发"这个人在本群的名片"。
+ *
+ * ⚠️ 主人当天定的铁律：**名字只追加显示，绝不替换**
+ *   —— 群友小传是按 `senderName`（= 账号 username，实际按 openid 存）落盘并做检索的，
+ *     底层 `senderName` 一旦改成名片名，历史小传/台账/反查会全部对不上。
+ *   所以这里的产物**只用于展示**（入站行的发送者标签），`msg.senderName` 保持原样。
+ *   `openid` 反查入口（`#短号` / `(@you)` 时的 openid）也不受影响。
+ */
+function memberNickOf(msg) {
+    const raw = msg.raw;
+    const nick = String(raw?.author?.member_nickname ?? raw?.author?.memberNick ?? '').trim();
+    return nick || undefined;
+}
+/**
+ * 只给**显示**用的名字：`账号名(群昵称:xxx)`。
+ * 规则（主人 2026-11-13 定）：
+ *   · 群名片为空 → 原样返回账号名（绝大多数情况，零额外 token）
+ *   · 群名片与账号名**相同** → 原样返回（不加后缀，避免噪声）
+ *   · 账号名拿不到（空 / 直接就是 openid）→ 直接用群名片
+ *   · 只有"两个都有且不同"才追加 `(群昵称:xxx)`
+ */
+function withMemberNick(name, memberNick, senderId, senderName) {
+    const nick = String(memberNick ?? '').trim();
+    const base = String(name ?? '').trim();
+    if (!nick)
+        return base || senderName || '';
+    if (!base || base === senderId)
+        return nick;
+    if (nick === base)
+        return base;
+    return `${base}(群昵称:${nick})`;
+}
+/**
  * Layer 3: 带发送者标签的用户消息
  * 引用消息功能开启时, 每条入站都带**短消息号**(msgRef, 形如 0913a; 群聊挂发送者标签, 私聊独立一行)
  * —— AI 想引用对方时在正文写 [rf:短号](2026-09-13 主人定: 短号省 token, 台账见 msg-index.ts)。
@@ -1429,8 +1462,9 @@ function extractQuotedContent(msg) {
  *   没被 @  → `[昵称 #短号]`            ← 不带 openid(省 token; 32 位 id 每行 20+ token)
  *   被 @ 了 → `[昵称 (openid) #短号]` + 正文后 ` (@you)`  ← 要回 @ 他/认人才给 id
  *   短号两边都留(引用标记 + id_lookup 反查 openid 的入口, 不能省)。
+ * ★ 2026-11-13：标签里的名字改用"显示名"（可带群名片后缀），`#短号` 位置与格式**不变**。
  */
-export function buildUserMessage(userContent, quotePart, senderId, senderName, isGroup, wasMentioned, msgRef) {
+export function buildUserMessage(userContent, quotePart, senderId, senderName, isGroup, wasMentioned, msgRef, memberNick) {
     if (!isGroup) {
         // ★ 2026-10-30 主人要求「给私聊消息加上名字前缀」：
         //   以前私聊只拼 `[消息号: xxx]` + 正文，**压根不带发送者名字** ——
@@ -1440,13 +1474,14 @@ export function buildUserMessage(userContent, quotePart, senderId, senderName, i
         //   不要退回短 openid（那串对模型毫无意义，只是白占 token）。
         //   所以：只有真拿到名字时才加 `[昵称 #短号]`；拿不到就维持原来那行消息号。
         const refPart = msgRef ? ` #${msgRef}` : '';
-        if (senderName)
-            return `${quotePart}[${senderName}${refPart}] ${userContent}`;
+        const shown = withMemberNick(senderName, memberNick, senderId);
+        if (shown)
+            return `${quotePart}[${shown}${refPart}] ${userContent}`;
         const idPart = msgRef ? `[消息号: ${msgRef}]\n` : '';
         return `${quotePart}${idPart}${userContent}`;
     }
     const mentionTag = wasMentioned ? ' (@you)' : '';
-    const displayName = senderName ?? shortSenderId(senderId);
+    const displayName = withMemberNick(senderName, memberNick, senderId, shortSenderId(senderId));
     // 省 token(2026-09-12 定, 2026-09-15 主人复查"没 @ 的只显示昵称呢?"):
     //   和**群历史行**一个口径 —— 没被 @ 的消息只给昵称, 32 位 openid 只在"被 @ 了"(要回 @ 他/认人)时才给。
     //   ⚠️ 短消息号 `#ref` **两边都留**: 那是引用标记([rf:xxxx] 靠它), 也是 id_lookup 反查 openid 的入口 ——
