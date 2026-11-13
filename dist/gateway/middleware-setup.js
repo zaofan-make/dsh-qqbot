@@ -376,8 +376,17 @@ pluginCtx) {
         }
     };
     bot.use(async (ctx, next) => {
-        if (ctx.message?.kind !== 'group')
-            return next(); // 私聊 SDK 已支持
+        // ★ 2026-11-13 修（主人实测：群里 /tools-reload 回执「/whoami 加载成功」，
+        //   私聊发 /whoami 却直接进了 AI）。机制真相：
+        //   ① 原来这里 `kind !== 'group' → next()`，私聊交给 SDK 的 slashCommand 中间件（见下方 slashCommand({...})）；
+        //   ② 而 SDK 的 registry 是 **创建时一次性灌入** options.commands 的（slash-command.js:71-73），
+        //      它明明提供了 `register()/unregister()`，本插件当初只取了 `.middleware`、把这两个丢了 ⇒
+        //      热刷后新增的命令私聊**永远**不认识，只能重启宿主；
+        //   ③ 群聊走的是下面这套自建分发（实时读 cmdMap），所以群里热刷立刻生效、私聊不行。
+        //   现在私聊也走这套：热刷即时生效，且 handlerArg 带齐 caps（SDK 那层只兜底 autoHelp 的 /help）。
+        const kind0 = String(ctx.message?.kind ?? '');
+        if (kind0 !== 'group' && kind0 !== 'c2c')
+            return next();
         // ★ 2026-10-31（issue #36）：先剥行首 @ 再判 `/`（群里 @bot 后正文以 <@id> 开头）
         const content = stripLeadingMentions(String(ctx.message?.content ?? ''));
         if (!content || !content.startsWith('/'))

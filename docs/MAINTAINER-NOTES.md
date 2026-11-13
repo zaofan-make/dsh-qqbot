@@ -1744,7 +1744,7 @@ try { syncContextTools(ctx, true); } catch { /* ignore */ }   // ← 写死 true
 | 4 | 私聊**发卡通通失败** | 私聊没有 `gid`，代码却从 `replyTarget` 里取 gid ⇒ **拿到了私聊 openid** 当群号用 | `c9f13f6`：按 scope 分派目标 |
 | 5 | 私聊会话下「最近评分」**看不到记录** | 前端按"群"过滤，私聊记录被滤掉 | `e94e8b1`：按 scope 查 |
 | 6 | 日志写进了**别人的目录** | 日志路径**写死** | `c9f13f6`：按 dataRoot 拼 |
-| 7 | 私聊里**新加的扩展命令不生效**（同一条命令群里一刷就通） | `/tools-reload` 热刷对 **c2c 命令无效** —— 命令表只按群消息那条链重建，私聊走 debounce → `handleInbound`，用的还是旧表 | **必须重启宿主**（2026-11-13 主人实测确认：热刷后群里 `/whoami` 立刻可用，私聊要重启才行） |
+| 7 | 私聊里**新加的扩展命令不生效**（同一条命令群里一刷就通，私聊得重启） | **两条命令通道不同源**：群聊走插件自建分发（每次现查 `cmdMap`，热刷即时生效）；私聊被 `kind !== 'group' → next()` 让给 SDK 的 `slashCommand` 中间件 —— 而它的 registry 是**创建时一次性**灌入 `options.commands` 的（`slash-command.js:71-73`），本插件当初只取了 `.middleware`、把 SDK 明明提供的 `register()/unregister()` 丢了 ⇒ 热刷出来的新命令私聊**永远**不认识 | v1.12.27：自建分发放开 c2c（`kind0 !== 'group' && kind0 !== 'c2c' → next()`），私聊也实时读 `cmdMap` 且 `handlerArg` 带齐 caps；SDK 那层只兜底 `autoHelp` 的 `/help`。⚠️ 自建分发**没有** SDK 的 `cmd.scope` 检查（内置/扩展命令目前都没声明 scope，暂无影响；以后要加 scope 得补这里） |
 | 8 | 私聊 `senderName` 一直是空 / 显示成 openid | 官方此前不下发；SDK 的 C2C 分支也只取了 `user_openid`、没取 `username` | 官方 2026-11-13 起下发 `author.username`（连 `author.avatar`）；插件改读 `msg.raw.author.username`，台账反查降为兜底（`inbound.ts` / `c2c-name.ts`） |
 
 ### 硬规矩（写代码时照着做）

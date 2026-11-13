@@ -1,5 +1,20 @@
 ## 1.12.27 (2026-11-13)
 
+### 修：私聊里新加的命令必须重启才生效（命令分发机制）
+
+群里 `/tools-reload` 回执显示「/whoami 加载成功」，私聊发 `/whoami` 却直接进了 AI。
+
+机制真相：
+- 群聊走插件**自建分发** —— 每次现查 `cmdMap`，热刷即时生效；
+- 私聊被 `kind !== 'group' → next()` 让给 SDK 的 `slashCommand` 中间件，
+  而它的 registry 是**创建时一次性**灌入 `options.commands` 的（`slash-command.js:71-73`）；
+  本插件当初只取了 `.middleware`，把 SDK 明明提供的 `register()/unregister()` **丢了**
+  ⇒ 热刷出来的新命令，私聊永远不认识，只能重启宿主。
+
+修法：自建分发放开 c2c（`kind0 !== 'group' && kind0 !== 'c2c' → next()`），
+私聊也实时读 `cmdMap`、`handlerArg` 带齐 caps；SDK 那层只兜底 `autoHelp` 的 `/help`。
+⚠️ 自建分发没有 SDK 的 `cmd.scope` 检查（现有命令都没声明 scope），以后要加 scope 需补这里。
+
 ### 修：私聊昵称改用官方下发的 `author.username`
 
 QQ 官方 2026-11-13 起在 C2C 事件里下发 `author.username`（连带 `author.avatar`，带签名参数会过期），
