@@ -1,7 +1,7 @@
 # dsh-qqbot 开发与维护手册(唯一主文档)
 
 > **现状一句话**:本项目已发布为**单包开源版 `@zaofan/dsh-qqbot` v0.4.0** →
-> https://github.com/gcry13067381632-jpg/dsh-qqbot(Public,README 双语)。
+> https://github.com/zaofan-make/dsh-qqbot(Public,README 双语)。
 > 历史方案/实测/交接长文一律归档在 `_md-archive/`,本文是唯一维护入口;改完代码按 §3 流程走。
 > ⚠️ **2026-10-04 注**：上面那个 `v0.4.0` **早已过时**，别引用 —— 当前开发目录 `package.json` 是 **1.6.5**，而线上 profile 的 `node_modules` 实装 **1.6.4**（profile 声明 1.6.5、lockfile 钉 1.6.4 —— 即 §6 那条"文件真相 vs pnpm 真相"的现例）。版本沿革看 §11.18 / §11.23 与 CHANGELOG。
 > **2026-09-07 功能演进总档**:`dsh-qqbot-2026-09-07-悬浮球与功能增强.md`(本目录)——悬浮球UI升级/账号折叠/在线绿点/QQ工具会话级永久挂载/预设人格编辑器/大文件分片后台发送/QQ菜单面板host代理/chat-ledger台账去重/踩坑速查。
@@ -179,7 +179,7 @@ node scripts/download-model.mjs    # 下 bge-small-zh-v1.5 三件套(优先 hf-m
 
 ### GitHub 凭据（2026-10-12 起：绕开 GCM，改用本地 token 文件）
 
-**背景**：仓库账号 2026-10-12 从 `gcry13067381632-jpg` 改名为 **`zaofan-make`**。
+**背景**：仓库账号 2026-10-12 已改名为 **`zaofan-make`**（旧名含个人信息，此处不记录；Git 历史里的旧 author 属于改名前的既成事实，见已归档的凭据说明）。
 Windows 上的凭据助手是 `helper-selector`（= **Git Credential Manager**），它按
 **host + path + username** 索引条目 —— 旧条目里用户名还是改名前那个，于是：
 
