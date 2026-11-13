@@ -13,7 +13,7 @@
  *   长图 = 一块 ImageBlock，比 N 块省得多；发送者名字**不画在图上**（省得接中文字体），
  *   改为随图附一句文字说明，模型照样知道每格是谁发的。
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 
@@ -319,8 +319,29 @@ export async function buildAggregateBlocks(key: string, agent: unknown, logger?:
   ];
 }
 
-/** 按扩展名猜媒体类型（宿主只收这四种） */
+/**
+ * 媒体类型：**先看真实字节，后缀只做兜底**（2026-11-13，issue #47）。
+ *
+ * 图库里存在历史坏名文件（jpg 存了 png 之类）。宿主 `dsh-attachment-local` 会按签名校验
+ * 我们声明的类型，声明错了就 `IMAGE_TYPE_MISMATCH` 整张图读不出来 —— 只按后缀猜会二次命中。
+ */
 function mediaTypeOf(path: string): 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' {
+  try {
+    const fd = openSync(path, 'r');
+    try {
+      const head = Buffer.alloc(12);
+      const n = readSync(fd, head, 0, 12, 0);
+      if (n >= 12) {
+        if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return 'image/png';
+        if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
+        if (head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x38) return 'image/gif';
+        if (head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46
+          && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50) return 'image/webp';
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch { /* 读不到就走后缀兜底 */ }
   const p = path.toLowerCase();
   if (p.endsWith('.png')) return 'image/png';
   if (p.endsWith('.webp')) return 'image/webp';

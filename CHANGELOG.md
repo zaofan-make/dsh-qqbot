@@ -1,5 +1,19 @@
 ## 1.12.27 (2026-11-13)
 
+### 修：图库扩展名按真实字节定（issue #47）—— 否则 `read_image` 报 `IMAGE_TYPE_MISMATCH`
+
+宿主 DSH 0.2.2-rc.2 的 `dsh-attachment-local` 开始按签名严格校验声明类型
+（`detected.mediaType !== declaredMediaType` ⇒ `IMAGE_TYPE_MISMATCH`），而声明类型**只看扩展名**。
+QQ 下发的 `content_type` 与图片 URL 后缀双向都可能说谎 ⇒ 文件名说谎的图直接读不出来。
+
+- `sticker-store.ts`：新增 `extFromMagic()`；`capture()` / `importLocalFile()` 的扩展名改为
+  **魔数优先**，`content_type` / URL / 源文件名只作兜底（原来 `isImageBuffer()` 已经判过真实类型，结果却被丢了）
+- 新增 `healExtensionMismatches()`（构造时自动跑）：四层目录（candidate / library / negative / trash）
+  按魔数改名并**回写 index.json 的 `ext`**（不回写的话 `pathOf()` 会指向改名前那个不存在的路径）；
+  目标已存在时只回写不覆盖
+- `image-aggregate.ts` 的 `mediaTypeOf()`：先读文件头 12 字节，后缀只做兜底（避免把图库路径喂给宿主时二次命中）
+- 本机实测：3474 张图里 **25 张**扩展名与真实字节不符（jpg↔png↔webp↔gif 都有）
+
 ### 修：私聊里新加的命令必须重启才生效（命令分发机制）
 
 群里 `/tools-reload` 回执显示「/whoami 加载成功」，私聊发 `/whoami` 却直接进了 AI。

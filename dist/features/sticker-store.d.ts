@@ -97,6 +97,14 @@ export declare class StickerStore {
     private save;
     /** 关闭时立即落盘（进程退出兜底） */
     flush(): void;
+    /**
+     * 老库自愈（2026-11-13，issue #47）：扩展名与真实字节不符的图按魔数改名，并回写 index 的 `ext`。
+     *
+     * 为什么必须做迁移：宿主 0.2.2 起严格校验声明类型（`IMAGE_TYPE_MISMATCH`），扩展名说谎的图
+     * read_image / 发图全废；而**改名后必须回写 ext**，否则 `pathOf()` 还指着改名前那个不存在的路径。
+     * 四层都扫（candidate / library / negative / trash）；目标文件已存在时只回写 ext，不覆盖。
+     */
+    private healExtensionMismatches;
     private filePathOf;
     /** 单条路径（给工具/发送用） */
     pathOf(id: string): string | undefined;

@@ -11,7 +11,7 @@
  * 运行时数据根默认 = {agent cwd}/表情包（config.sticker.dataDir 可覆盖）。
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 import * as dns from 'node:dns';
 import type { Logger } from '../types.js';
@@ -247,6 +247,42 @@ function isImageBuffer(buf: Buffer): boolean {
   return false;
 }
 
+/**
+ * 按**真实字节**判定扩展名（2026-11-13，issue #47）。
+ *
+ * 为什么必须以魔数为准：QQ 下发的 `content_type` 与图片 URL 后缀**双向都可能说谎**
+ * （实测 534 条图库里 7 张不符：png 存了 jpeg、jpg 存了 png）。
+ * 宿主 DSH 0.2.2-rc.2 起 `dsh-attachment-local` 会按签名严格校验声明类型：
+ *   detected.mediaType !== declaredMediaType ⇒ `IMAGE_TYPE_MISMATCH`
+ * 而声明类型**只由扩展名决定** ⇒ 文件名说谎 = 这整张图读不出来（read_image / 发图全废）。
+ */
+function extFromMagic(buf: Buffer): string | undefined {
+  if (buf.length < 12) return undefined;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg'; // JPEG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png'; // PNG
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return 'gif'; // GIF
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+    && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'webp'; // WEBP
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return 'bmp'; // BMP
+  return undefined;
+}
+
+/** 只读文件头 12 字节（大图也不整读） */
+function readHead12(path: string): Buffer | undefined {
+  try {
+    const fd = openSync(path, 'r');
+    try {
+      const head = Buffer.alloc(12);
+      const n = readSync(fd, head, 0, 12, 0);
+      return n > 0 ? head.subarray(0, n) : undefined;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 export class StickerStore {
   private items = new Map<string, StickerMeta>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -259,6 +295,8 @@ export class StickerStore {
       mkdirSync(join(dataDir, dir), { recursive: true });
     }
     this.loadIndex();
+    // ★ 2026-11-13（issue #47）：顺手把历史坏名的图自愈掉（按魔数改名 + 回写 ext）
+    this.healExtensionMismatches();
   }
 
   private indexPath(): string {
@@ -307,6 +345,52 @@ export class StickerStore {
     } catch { /* ignore */ }
   }
 
+  /**
+   * 老库自愈（2026-11-13，issue #47）：扩展名与真实字节不符的图按魔数改名，并回写 index 的 `ext`。
+   *
+   * 为什么必须做迁移：宿主 0.2.2 起严格校验声明类型（`IMAGE_TYPE_MISMATCH`），扩展名说谎的图
+   * read_image / 发图全废；而**改名后必须回写 ext**，否则 `pathOf()` 还指着改名前那个不存在的路径。
+   * 四层都扫（candidate / library / negative / trash）；目标文件已存在时只回写 ext，不覆盖。
+   */
+  private healExtensionMismatches(): void {
+    const NAME_RE = /^([0-9a-f]{6,64})\.([a-z0-9]{2,5})$/i;
+    let renamed = 0;
+    let relinked = 0;
+    for (const [layerKey, rel] of Object.entries(LAYER_DIRS)) {
+      const dir = join(this.dataDir, rel as string);
+      let names: string[] = [];
+      try { names = readdirSync(dir); } catch { continue; }
+      for (const name of names) {
+        const m = NAME_RE.exec(name);
+        if (!m) continue;
+        const id = m[1] ?? '';
+        const curExt = (m[2] ?? '').toLowerCase();
+        if (!id || !curExt) continue;
+        const full = join(dir, name);
+        const head = readHead12(full);
+        const ext = head ? extFromMagic(head) : undefined;
+        if (!ext || ext === curExt) continue;
+        const target = join(dir, `${id}.${ext}`);
+        try {
+          if (!existsSync(target)) {
+            renameSync(full, target);
+            renamed += 1;
+          }
+          const meta = this.items.get(id);
+          if (meta && meta.ext !== ext) {
+            meta.ext = ext;
+            meta.layer = layerKey as StickerMeta['layer'];
+            relinked += 1;
+          }
+        } catch { /* 单张失败不影响其余 */ }
+      }
+    }
+    if (renamed || relinked) {
+      this.save();
+      this.logger?.info?.(`[sticker-store] 扩展名自愈: 改名 ${renamed} 张, 回写 ext ${relinked} 条`);
+    }
+  }
+
   private filePathOf(meta: StickerMeta): string {
     return join(this.dataDir, LAYER_DIRS[meta.layer], `${meta.id}.${meta.ext}`);
   }
@@ -346,7 +430,8 @@ export class StickerStore {
     }
 
     const fromUrl = extname(new URL(url).pathname).replace(/^\./, '').slice(0, 5) || 'jpg';
-    const ext = (contentType && MIME_EXT[contentType.toLowerCase()]) || fromUrl;
+    // ★ 2026-11-13（issue #47）：**真实字节优先**，content_type / URL 后缀只做兜底。
+    const ext = extFromMagic(buf) ?? ((contentType && MIME_EXT[contentType.toLowerCase()]) || fromUrl);
 
     const meta: StickerMeta = {
       id,
@@ -556,7 +641,11 @@ export class StickerStore {
         this.save();
         return { status: 'dup', id };
       }
-      const ext = (input?.sourceUrl ? extname(new URL(input.sourceUrl).pathname).replace(/^\./, '').slice(0, 5) : extname(srcPath).replace(/^\./, '').toLowerCase().slice(0, 5)) || 'jpg';
+      const fromName = input?.sourceUrl
+        ? extname(new URL(input.sourceUrl).pathname).replace(/^\./, '').slice(0, 5)
+        : extname(srcPath).replace(/^\./, '').toLowerCase().slice(0, 5);
+      // ★ 2026-11-13（issue #47）：同 capture —— 扩展名以真实字节为准，文件名只是兜底。
+      const ext = extFromMagic(buf) ?? (fromName || 'jpg');
       const meta: StickerMeta = {
         id,
         layer: 'candidate',
