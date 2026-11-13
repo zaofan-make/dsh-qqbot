@@ -3631,3 +3631,15 @@ Get-Content "<dataRoot>\.qqbot\web-direct.log" -Tail 5
 
 
 
+
+### 附：dock 聊天页的标签解析（2026-11-13，同一个坑的另一半）
+
+`settings-host.js` 的 `chatPolishOne()` / `chatSplitHistoryBlock()` 各有一处 `[^\]\n:]` 正则
+（**排除冒号**）—— 新格式带 `(群昵称:xxx)` 一带冒号就漏判 ⇒ dock 把整行当正文显示；
+同时 `[图片聚合]` 不在 `RE_MARKER_WORD` 里，被当成发送者名。
+
+已改为统一走 `chatParseSenderTag()`（先剥 `#短号` 与 `(openid)` 尾巴再判名片）+
+`chatSenderLabel()`；`RE_MARKER_WORD` 补 `图片聚合` / `图片已省略` / `消息号`。
+
+> ⚠️ **以后再改入站标签格式，`src/transport/inbound.ts` 与 `settings-host.js` 两边都得改。**
+> 只改 src ⇒ 模型侧正常、dock 侧错乱（本次就是主人先发现的），而且 dock 解析失败是**静默**的。
