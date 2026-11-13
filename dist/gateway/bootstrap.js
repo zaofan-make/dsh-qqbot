@@ -426,7 +426,13 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     // 避开 QQ 对 markdown 富媒体的严格频控(实测连发 5 条 markdown 后静默被拦)。
     const hasMarkdownSyntax = (text) => {
         const t = String(text || '');
-        return (/<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<emoji:|<#/.test(t) ||
+        return (
+        // ★ 2026-11-13（主人私聊实测：头像 md 原样显示成文字）：
+        //   **图片语法必须直接判成 markdown** —— 只有 msg_type=2 才渲染图片。
+        //   原来靠下面那条 `\[([^\]\n]+)\]\(https?:…\)` 顺带命中，但 alt 里只要有半角 `]`
+        //   （机器人名 `[lv1魅魔]…` 就是），整条就判不出来 ⇒ 走纯文本通道 ⇒ 语法露在聊天里。
+        t.includes('![') || t.includes('qqbot-media://') ||
+            /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<emoji:|<#/.test(t) ||
             t.includes('```') || t.includes('`') ||
             /(^|\n)\s*(#{1,6}\s|>\s?|[-*+]\s|\d+\.\s)/.test(t) ||
             /\*\*[^*]+\*\*/.test(t) ||
