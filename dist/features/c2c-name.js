@@ -1,5 +1,11 @@
 /**
- * c2c-name.ts —— 私聊昵称兜底：用 openid 反查群成员台账（2026-10-30）
+ * c2c-name.ts —— 私聊昵称**兜底**：用 openid 反查群成员台账（2026-10-30，2026-11-13 改注释）
+ *
+ * ⚠️ 2026-11-13 起：官方开始在 C2C 事件里下发 `author.username`（以及 `avatar`）。
+ *    入站侧优先读 `msg.raw.author.username`（见 inbound.ts 的 handleInbound 顶部那段），
+ *    **本模块已降级为兜底** —— 只在官方没给（旧事件 / 未下发 / 空串）时才反查台账。
+ *    （SDK 仍然不读 username：qqbot-nodejs 的 C2C 分支只取 user_openid，
+ *      但它保留了 raw: ev，所以我们能直接读到。）
  *
  * 背景（主人实测纠正后的结论）：
  *   · **同一机器人实例内，私聊的 openid 与群里的 member_openid 是一致的**

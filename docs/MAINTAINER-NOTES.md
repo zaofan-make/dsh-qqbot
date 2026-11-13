@@ -1734,7 +1734,7 @@ try { syncContextTools(ctx, true); } catch { /* ignore */ }   // ← 写死 true
 **群聊能跑通的东西，私聊不一定能跑。** 私聊**没有 `gid`**、没有群上下文，还多两道限制：
 「**主动消息受限**」和「**卡片权限 type=2**」。
 
-### 已踩过的六个坑（现象 → 根因 → 修法）
+### 已踩过的坑（现象 → 根因 → 修法）
 
 | # | 现象 | 根因 | 修法 / 提交 |
 |---|------|------|------------|
@@ -1744,6 +1744,8 @@ try { syncContextTools(ctx, true); } catch { /* ignore */ }   // ← 写死 true
 | 4 | 私聊**发卡通通失败** | 私聊没有 `gid`，代码却从 `replyTarget` 里取 gid ⇒ **拿到了私聊 openid** 当群号用 | `c9f13f6`：按 scope 分派目标 |
 | 5 | 私聊会话下「最近评分」**看不到记录** | 前端按"群"过滤，私聊记录被滤掉 | `e94e8b1`：按 scope 查 |
 | 6 | 日志写进了**别人的目录** | 日志路径**写死** | `c9f13f6`：按 dataRoot 拼 |
+| 7 | 私聊里**新加的扩展命令不生效**（同一条命令群里一刷就通） | `/tools-reload` 热刷对 **c2c 命令无效** —— 命令表只按群消息那条链重建，私聊走 debounce → `handleInbound`，用的还是旧表 | **必须重启宿主**（2026-11-13 主人实测确认：热刷后群里 `/whoami` 立刻可用，私聊要重启才行） |
+| 8 | 私聊 `senderName` 一直是空 / 显示成 openid | 官方此前不下发；SDK 的 C2C 分支也只取了 `user_openid`、没取 `username` | 官方 2026-11-13 起下发 `author.username`（连 `author.avatar`）；插件改读 `msg.raw.author.username`，台账反查降为兜底（`inbound.ts` / `c2c-name.ts`） |
 
 ### 硬规矩（写代码时照着做）
 

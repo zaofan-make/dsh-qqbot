@@ -64,16 +64,26 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     //   原因：**私聊消息不走 message 处理器** —— debounce 层聚合后直接调 handleInbound
     //   （debounce.ts:638 `flush(c2c …) → handleInbound`），在 message 里加等于永远不执行
     //   （2026-10-30 实测踩到：代码在、进程也重启了，就是不生效）。
-    //   做法：同一实例内私聊 openid == 群 member_openid，拿它反查群台账即可。
+    // ★ 2026-11-13 主人要求：私聊昵称**改成用官方下发的**。
+    //   QQ 官方 11-13 起在 C2C 事件的 author 里下发 `username`（连带 `avatar`，带签名参数会过期）；
+    //   但 @tencent-connect/qqbot-nodejs 的 C2C 分支只取了 `user_openid`、**没取 username**，
+    //   好消息是它保留了 `raw: ev` ⇒ 直接读 `msg.raw.author.username` 即可。
+    //   台账反查（c2c-name.ts，按 openid 匹配群成员台账）**降级为兜底**：
+    //   只在官方没给（旧事件/未下发/空串）时才用。
+    //   ⚠️ 群聊不用改 —— SDK 的群分支本来就 `senderName: ev.author.username`。
     try {
         const m = msg;
-        if (String(m.kind) === 'c2c' && m.senderId && (!m.senderName || m.senderName === m.senderId)) {
+        const officialName = String(m.raw?.author?.username ?? '').trim();
+        if (officialName) {
+            m.senderName = officialName;
+        }
+        else if (String(m.kind) === 'c2c' && m.senderId && (!m.senderName || m.senderName === m.senderId)) {
             const hit = c2cNameOf(dataRootOf(config), m.senderId);
             if (hit)
                 m.senderName = hit;
         }
     }
-    catch { /* 反查失败不影响主流程 */ }
+    catch { /* 取名失败不影响主流程 */ }
     const scope = msg.kind === 'group' ? 'group' : 'c2c';
     const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
     const replyTarget = {

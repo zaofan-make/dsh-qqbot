@@ -1,3 +1,17 @@
+## 1.12.27 (2026-11-13)
+
+### 修：私聊昵称改用官方下发的 `author.username`
+
+QQ 官方 2026-11-13 起在 C2C 事件里下发 `author.username`（连带 `author.avatar`，带签名参数会过期），
+但官方 api-v2 文档尚未同步（192 页零变化），且 `@tencent-connect/qqbot-nodejs` 的 C2C 分支
+只取了 `user_openid`、没取 `username`（好消息：它保留了 `raw: ev`）。
+
+- `inbound.ts` 的 `handleInbound` 顶部：**优先读 `msg.raw.author.username`** 填 `senderName`；
+  台账反查（`c2c-name.ts`，按 openid 匹配群成员台账）**降为兜底**，只在官方没给时使用。
+- 群聊不动 —— SDK 的群分支本来就是 `senderName: ev.author.username`。
+- 手册 §11.33 补两条：① `/tools-reload` 热刷对 **c2c 命令无效**（必须重启宿主）；
+  ② 官方下发昵称/头像的来龙去脉与本模块的新职责。
+
 ## 1.12.26 (2026-11-13)
 
 ### 修：「主人 web 直发」标记从「按回合」改成「按条」
