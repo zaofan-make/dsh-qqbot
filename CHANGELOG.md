@@ -1,3 +1,22 @@
+## 1.12.26 (2026-11-13)
+
+### 修：「主人 web 直发」标记从「按回合」改成「按条」
+
+主人从 DSH web 界面直接打的字，本该在正文开头带上 `【主人在 DSH 宿主界面直接发送】`，
+但从 11-13 起大量丢失（`{dataRoot}/.qqbot/web-direct.log` 断档）。
+
+- **根因**：判定是**回合级**的 —— `record.turnOrigin === 'qq'` 就整回合跳过。
+  群里一刷屏，主人的 web 消息和群友消息被收进同一个回合 ⇒ 主人那几条一起被跳过。
+- **修法**：改成**按条**判宿主的 `user-rpc` 变体 ——
+  `source.kind === 'user' && typeof source.rpcId === 'string'`。
+  web/桌面界面提交必带 `rpcId`（+ `clientTimeZone`）；QQ 入站与插件注入全是裸 `{kind:'user'}`
+  或自己的 kind ⇒ 不会被误标。官方插件（`dsh-client-file-upload` / `dsh-experimental-auto-review` /
+  `dsh-time-context`）用的正是同一判据。
+- 落盘日志改成「真加了才写」，并带条数：`已加标记 n=2 session=…`
+  （旧版无论加没加都写一行，肉眼分不清"加上了"和"进了分支但一条没加"）。
+- `turnOrigin` 保留 —— `outbound` 的 `webTurnSilent` 还在用它。
+- 详见手册 §11.40。
+
 ## 1.12.25 (2026-11-13)
 
 ### 新：内存自检 `/memcheck`（宿主 OOM 崩过一次）

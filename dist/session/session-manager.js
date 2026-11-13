@@ -1920,13 +1920,16 @@ export class SessionManager {
                 //   为什么不放 system prompt：那条会**常驻**，之后所有回合都会被误当成"当前这条是主人直发"。
                 //   这里只改**本条待发的用户消息**（一次性），只动 text 块；图片/文件/语音一律不碰。
                 //   去重：已经带标记的不再重复拼（万一同一 message 被多次经过）。
-                // ★ 判定"非 QQ 回合"用双保险：① findByAgent 拿不到 QQ 会话记录；② 或记录里 turnOrigin !== 'qq'
-                //   （QQ 入站会置 'qq'，turn/end 清空 —— 见 inbound.ts:1055 / outbound.ts:678）
+                // ★ 2026-11-13 主人改：**判定从「按回合」改成「按条」**。
+                //   旧实现看 `record.turnOrigin`（QQ 入站置 'qq'、turn/end 清空）⇒ 主人 web 打的那条只要和
+                //   群友消息被收进同一回合，整回合就被跳过、标记全丢（11-13 实测大量丢失，见 §11.40）。
+                //   新判据 = 宿主「用户 RPC 提示词」的正式字段：`source.kind === 'user' && typeof source.rpcId === 'string'`
+                //   （web/桌面界面输入由 dsh-api-session-controller 构造，必带 rpcId + clientTimeZone，宿主类型表里
+                //     叫 'user-rpc' 变体；QQ 入站 / 插件注入 / agent.inject 全是裸 {kind:'user'} 或自己的 kind ⇒ 不会命中）。
+                //   ⚠️ turnOrigin 本身别删 —— outbound 的 webTurnSilent 还在用它。
                 // ★ 2026-11-11 主人纠正：**只给「QQ 绑定的会话」加标记** ——
                 //   纯 web 会话（agent preset 自己开的、不属于任何 QQ peer）跟插件没关系，绝不能改它的正文。
-                //   条件：有 QQ 会话记录（recMemo 存在）+ 本回合不是 QQ 入站触发的（turnOrigin !== 'qq'）。
-                //   ⇒ 也就是"在 web 界面打开这个 QQ 会话、直接打字"这一种情况。
-                const isQqTurnNow = recMemo ? recMemo.turnOrigin === 'qq' : false;
+                //   条件：有 QQ 会话记录（recMemo 存在，或 model-prefs 的 sessionIds 反查命中）。
                 // ② 活跃记录没有时，用 **model-prefs 的 sessionIds 反查**（纯内存 Map，不读盘）——
                 //    会话被回收/重启后在 web 里打开继续聊，也能认出"这本来就是个 QQ 会话"。
                 let isQqSessionByPrefs = false;
@@ -1938,16 +1941,18 @@ export class SessionManager {
                     }
                     catch { /* ignore */ }
                 }
-                if ((recMemo || isQqSessionByPrefs) && !isQqTurnNow) {
+                if (recMemo || isQqSessionByPrefs) {
                     const DIRECT_MARK = '【主人在 DSH 宿主界面直接发送】';
+                    let marked = 0;
                     try {
                         dec.messages = dec.messages.map((m) => {
                             const mm = m;
                             if (!mm || mm.role !== 'user')
                                 return m;
-                            const kind = String(mm.source?.kind ?? '');
-                            if (kind.startsWith('qqbot:') || kind === 'system')
-                                return m; // 我们自己注入的块不动
+                            // ★ 只认「界面直发」：宿主 user-rpc 变体（kind=user ＋ rpcId 字符串）。
+                            //   QQ 入站 / 群守则 / 小传 / 提问回执 / 定时任务注入 都不是这个形状 ⇒ 一律不动。
+                            if (mm.source?.kind !== 'user' || typeof mm.source.rpcId !== 'string')
+                                return m;
                             if (!Array.isArray(mm.content))
                                 return m;
                             const i = mm.content.findIndex((c) => c?.type === 'text' && typeof c.text === 'string' && !c.text.startsWith(DIRECT_MARK));
@@ -1956,18 +1961,22 @@ export class SessionManager {
                             const nc = mm.content.slice();
                             const base = nc[i] ?? { type: 'text' };
                             nc[i] = { ...base, text: `${DIRECT_MARK}${String(base.text ?? '')}` };
+                            marked++;
                             return { ...mm, content: nc };
                         });
-                        this.logger?.info?.('[web-direct] 已给本条用户消息加"主人直发"标记');
-                        // 落盘一份，便于主人肉眼确认（日志窗口里不一定看得到）
-                        try {
-                            const { appendFileSync, mkdirSync } = await import('node:fs');
-                            const dir = join(dataRootOf(this.config), '.qqbot');
-                            mkdirSync(dir, { recursive: true });
-                            appendFileSync(join(dir, 'web-direct.log'), `${new Date().toISOString()} 已加标记 session=${String(agent?.session?.id ?? '?')}
+                        if (marked > 0) {
+                            const sidNow = String(agent?.session?.id ?? '?');
+                            this.logger?.info?.(`[web-direct] 已给 ${marked} 条界面直发消息加"主人直发"标记 (session=${sidNow})`);
+                            // 落盘一份，便于主人肉眼确认（日志窗口里不一定看得到）
+                            try {
+                                const { appendFileSync, mkdirSync } = await import('node:fs');
+                                const dir = join(dataRootOf(this.config), '.qqbot');
+                                mkdirSync(dir, { recursive: true });
+                                appendFileSync(join(dir, 'web-direct.log'), `${new Date().toISOString()} 已加标记 n=${marked} session=${sidNow}
 `, 'utf8');
+                            }
+                            catch { /* ignore */ }
                         }
-                        catch { /* ignore */ }
                     }
                     catch { /* 改写失败不影响主链 */ }
                 }

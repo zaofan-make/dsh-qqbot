@@ -3503,3 +3503,79 @@ if (inBatch) skipGroupRules = true;          // 群守则已在本批/历史里
 
 没有这一行，就说明**入站没算出候选**（`recallLines` 空/归档）或 **pre-step 判重把它跳过了**，
 不要再怀疑"是不是没生效"。
+
+---
+
+## §11.40 🔴 「主人 web 直发」标记判定：按回合 → 按条（v1.12.26，2026-11-13）
+
+### 现象
+
+主人在 DSH 宿主 web 界面直接打字，正文本该被拼上 `【主人在 DSH 宿主界面直接发送】`，
+但从某个时刻起**大量丢失**：`开了` / `不是抓完了你不去看？` / `你先看看代码…` 全都没有前缀。
+落盘诊断 `{dataRoot}/.qqbot/web-direct.log` 里也是断档的。
+
+### 根因
+
+`src/session/session-manager.ts`（agent/pre-step 里那段）原来的判定是**回合级**的：
+
+```ts
+const isQqTurnNow = recMemo ? recMemo.turnOrigin === 'qq' : false;
+if ((recMemo || isQqSessionByPrefs) && !isQqTurnNow) { /* 加标记 */ }
+```
+
+`turnOrigin` 由 QQ 入站置 `'qq'`（`inbound.ts`）、`turn/end` 清空（`outbound.ts`）。
+群里一刷屏，主人的 web 消息和群友消息被**收进同一个回合** ⇒ `turnOrigin === 'qq'`
+⇒ 整回合跳过，主人同一回合里打的那几条也一起被跳过。
+
+### 修法：按**条**判宿主 `user-rpc` 变体
+
+反查宿主类型表（`dsh-session` 的 `MessageSourceMap`）：
+
+```ts
+user:      { kind: 'user' }
+user-rpc:  { kind: 'user'; rpcId: SessionRequestId; clientTimeZone?: string; principal?: Principal }
+```
+
+`user-rpc` 就是"客户端 RPC 提交的提示词"（web / 桌面界面都走 `dsh-api-session-controller`）。
+⇒ 判据：
+
+```ts
+if (mm.source?.kind !== 'user' || typeof mm.source.rpcId !== 'string') return m;  // 不是界面直发
+```
+
+- **QQ 入站**：插件 5 处构造点全是裸 `{kind:'user'}`（`inbound.ts` 的 458/682/1068、
+  `debounce.ts` 414、`ext-inbound-context.ts` 572）⇒ 永远不带 rpcId ⇒ 不会被误标。
+- **插件注入**：`qqbot:group-rules` / `qqbot:people-memo` / `plugin:qqbot-approval` /
+  `compact-checkpoint` / 定时任务的 `subagent-settled` ⇒ kind 不是 `'user'` ⇒ 天然排除。
+  （原来那句 `kind.startsWith('qqbot:') || kind === 'system'` 已隐含在新判据里，可删。）
+- **宿主官方插件用的是同一判据**（可对照）：`dsh-client-file-upload` 判
+  `source.kind !== 'user' || !('rpcId' in source)`；`dsh-experimental-auto-review` 判
+  `source.kind === 'user' && typeof source.rpcId === 'string'`；`dsh-time-context` 用
+  `rpcId + clientTimeZone` 取时区。
+
+### 已知边界
+
+- 宿主 `dsh-subagent` 的 `prompt()` 也构造 `{kind:'user', rpcId: request.requestId}`
+  ⇒ 经 subagent API 往 QQ 会话投 prompt 会被标成"主人直发"（实测极少，且语义上也确实是界面提交的）。
+- 实测数据（2026-11-13）：本 QQ 会话 11 条 user/message 中，主人 web 打的 4 条全带
+  `rpcId + clientTimeZone`；1828 条 QQ 入站 0 条带。近 24h 全库 9 个会话：
+  `user+rpcId=1257`、`user(无rpcId)=8765`。
+
+### 顺带两条
+
+1. **`turnOrigin` 不要删** —— `outbound.ts` 的 `webTurnSilent` 还靠它判"这一回合要不要发 QQ"。
+   这次只删了它在"直发标记"里的用法。
+2. 落盘日志改成**真的加了才写**，并带条数：`已加标记 n=2 session=…`。
+   旧版无论加没加都写一行，肉眼分不清"加上了"和"进了分支但一条没加"。
+
+### 验法
+
+群里刷屏时让主人从 web 打一句：
+
+```powershell
+Get-Content "<dataRoot>\.qqbot\web-direct.log" -Tail 5
+```
+
+应看到新行且 `n>=1`；同时会话里那条带前缀、**同回合的群友消息没有前缀**。
+
+
