@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { mdAltSafe } from '../shared/md-alt.js';
 /** 模块级缓存（每次发消息都问一遍太浪费） */
 let cached = null;
 const AVATAR_MD_SIZE = 50; // 显示尺寸（px）
@@ -84,7 +85,9 @@ export function botAvatarMarkdown(dataRoot, appId) {
     catch { /* ignore */ }
     if (!url)
         return '';
-    return `![${self.username || '机器人'} #${AVATAR_MD_SIZE}px #${AVATAR_MD_SIZE}px](${url})`;
+    // ★ 2026-11-13：alt 必须安全化 —— 机器人名带 `[...]` 时 `![alt](url)` 会在第一个 `]` 处断掉，
+    //   整段原样显示成文本（主人实测：`[lv1魅魔]鲸鱼娘（万能ai）` 私聊头像失效）。
+    return `![${mdAltSafe(self.username)} #${AVATAR_MD_SIZE}px #${AVATAR_MD_SIZE}px](${url})`;
 }
 let avatarFetcher;
 /** 注入取头像能力（bootstrap 里调一次） */

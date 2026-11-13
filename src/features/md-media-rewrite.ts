@@ -12,6 +12,7 @@ import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage, type MdMediaTarget } from './md-media.js';
+import { mdAltSafe } from '../shared/md-alt.js';
 
 function diag(msg: string): void {
   try {
@@ -126,7 +127,8 @@ export function normalizeMarkdownImages(text: string): string {
     // alt 去掉所有尺寸注释后再拼回规范的两个
     const altClean = altOne.replace(/#\s*\d{1,5}\s*(?:px)?/g, '').replace(/\s+/g, ' ').trim();
     const sizePart = sizes.length === 2 ? ` #${sizes[0]}px #${sizes[1]}px` : '';
-    return `![${altClean}${sizePart}](${srcOne})`;
+    // ★ 2026-11-13：模型写的 alt 里可能带 `[` `]`（方括号风格），照样会在第一个 `]` 处断掉
+    return `![${mdAltSafe(altClean, '图片')}${sizePart}](${srcOne})`;
   });
 }
 
