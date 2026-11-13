@@ -32,6 +32,8 @@ import { makeExtCaps } from '../features/ext-capabilities.js';
 import { readBotplayEvents } from '../features/botplay-store.js';
 import { PresetSwitcherController, setPresetCardImpl } from '../features/preset-switcher.js';
 import { ModelSwitcherController, setModelCardImpl, setEffortPickerImpl } from '../features/model-switcher.js';
+import { registerMemStats } from '../features/mem-stats.js';
+import { imagePathCacheSize } from '../features/image-path-cache.js';
 import { buildCommandList } from '../commands/index.js';
 import { SettingsReader } from '../model/settings-reader.js';
 /** 从 interaction 事件推出"回复目标"(回执发到按钮所在群/私聊)。scope 由事件 chat_type/scene 推断 */
@@ -46,6 +48,23 @@ function replyTargetOfInteraction(event, _ctx, _manager) {
 }
 export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     const manager = new SessionManager(ctx, agents, config, logger);
+    // 2026-11-13：给 `/memcheck` 命令注册一个内存快照采集器（宿主 OOM 崩过一次，需要事后证据）
+    try {
+        registerMemStats(() => {
+            const m = process.memoryUsage();
+            let sessions = 0;
+            try {
+                sessions = manager.sessions?.size ?? 0;
+            }
+            catch { /* ignore */ }
+            return {
+                rss: m.rss, heapUsed: m.heapUsed, heapTotal: m.heapTotal, external: m.external,
+                sessions,
+                imagePathCache: imagePathCacheSize(),
+            };
+        });
+    }
+    catch { /* 注册失败不影响主流程 */ }
     // 2026-10-22: 账号包要用机器人 token 通道（素材上传），这里把凭据放全局供 pack 读取
     try {
         globalThis.__qqbotAppCred = {

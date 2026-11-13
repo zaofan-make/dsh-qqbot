@@ -1,3 +1,17 @@
+## 1.12.25 (2026-11-13)
+
+### 新：内存自检 `/memcheck`（宿主 OOM 崩过一次）
+
+宿主崩在 `Ineffective mark-compacts near heap limit`（堆涨到 3.4GB，GC 压不动），
+崩之前没有任何证据。补一个探针：
+
+- 插件侧新增 `src/features/mem-stats.ts`：bootstrap 把快照函数挂到 `globalThis[Symbol.for('im-qqbot.memstats')]`
+  （O(1) 读数：进程内存、活跃会话数、图片路径缓存条数）
+- 命令 `examples/ext-commands/memcheck.mjs`：
+  - `/memcheck` → 进程 rss/heapUsed/heapTotal/external、堆上限与已用百分比、插件缓存条数、
+    以及**记忆插件的向量配置**（provider / 维度 / 是否 GPU）与语义索引体积
+  - `/memcheck top` → 额外列出**事件数最多的 5 个会话**（事件数≈上下文体积，找"哪个会话在涨"）
+
 ## 1.12.24 (2026-11-13)
 
 ### 性能：前端轮询降频（主人实测「上传图片时对话框转圈」）
