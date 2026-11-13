@@ -1,5 +1,17 @@
 ## 1.12.28 (2026-11-13)
 
+### 修：dock 聊天页认不出带群名片的发送者壳（整行漏进正文）
+
+`settings-host.js` 里解析入站标签的两处正则是 `[^\]\n:]`（**排除冒号**），
+新格式 `[做早饭(群昵称:这是昵称) #111310s]` 一带冒号就匹配不到 ⇒ 整行当正文显示，
+同时 `[图片聚合]` 被当成发送者名（screenshot）。
+
+- 新增 `chatParseSenderTag()` / `chatSenderLabel()`：统一解析 4 种历史形态
+  （纯昵称 / `#短号` / `(openid)` / `(群昵称:xxx)`），尾部的短号与 openid 先剥再判，
+  含冒号的兜底判据挪到名片解析**之后**（否则新格式又被排除）
+- `chatSplitHistoryBlock()` 与 `chatPolishOne()` 改为调用它；`RE_MARKER_WORD` 补 `图片聚合` / `图片已省略` / `消息号`
+- 老会话里的旧格式消息照旧能解析
+
 ### 新：群名片（`member_nickname`）**只追加显示**，不替换 `senderName`
 
 官方 11-13 起群消息 `author` 里带了 `member_nickname`（本群名片）与 `member_role`。

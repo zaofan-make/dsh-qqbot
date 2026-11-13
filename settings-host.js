@@ -4176,7 +4176,7 @@ export function apply(ctx) {
   // 历史块标记(新旧), 出现在正文里就整段抹掉 —— 内容已由 chatSplitHistoryBlock 拆成独立气泡
   const RE_HIST_MARK_ANY = /\[(?:\/?历史|\/?(?:Chat history begins|Chat history ends))\]/gi;
   // 这些词是**标记**不是昵称: 误当发送者时气泡会显示"历史"/"引用"(头像也跟着取错首字)
-  const RE_MARKER_WORD = /^\/?(?:历|历史|当前|引|引用|Quoted message(?: begins| ends)?|Current message|Chat history(?: begins| ends)?)$/i;
+  const RE_MARKER_WORD = /^\/?(?:历|历史|当前|引|引用|图片聚合|图片已省略|消息号|Quoted message(?: begins| ends)?|Current message|Chat history(?: begins| ends)?)$/i;
   // ⚠️ 2026-10-01 修(主人 dock 聊天页截图暴露):
   //   原实现拿**整段 body.trim()** 去套"整行 == [历史]"的正则 → 对
   //   "[历史]\n[昵称] …\n[/历史]\n[当前]\n…" 永远不命中 → 历史打包分支形同虚设, 后果三连:
@@ -4519,6 +4519,40 @@ export function apply(ctx) {
   }
   // 群延迟/冷却历史打包的分行器: [Chat history begins]…[Chat history ends] + [Current message]
   // 每行 "[昵称 (openid)] 内容" 开新气泡, 后续行并入该气泡; 系统提示段起截断(后面是给 LLM 的注入)
+  /**
+   * 解析入站发送者壳的**内层**文本 → { name, nick }，解析不出来返回 null。
+   *
+   * 要兼容的历史形态（改过三次，老会话里三种都还在）：
+   *   ① `做早饭`                            —— 2026-09 初版
+   *   ② `做早饭 #0913a`                      —— 2026-09-13 加短消息号
+   *   ③ `做早饭 (FB3FB5B8A7B65973682C3CFEEEEFB14A)` —— 被 @ 时带 openid
+   *   ④ `做早饭(群昵称:这是昵称) #0913a`      —— 2026-11-13 加群名片（本次）
+   *
+   * ⚠️ ④ 里**带冒号**，所以老那套「含冒号的方括号一律当附件标记」的判据必须放到
+   *    名片解析**之后**，否则新格式整个漏判 → dock 聊天页整行当正文显示（主人 2026-11-13 截图）。
+   */
+  function chatParseSenderTag(inner) {
+    let s = String(inner == null ? '' : inner).trim();
+    if (!s) return null;
+    // 尾：` #短号`（短号是 4~8 位字母数字，见 msg-index.ts）
+    s = s.replace(/\s*#[A-Za-z0-9_-]{2,16}\s*$/, '').trim();
+    // 尾：` (openid)`（老格式的 id 段）
+    s = s.replace(/\s*\([A-Za-z0-9_-]{6,}\)\s*$/, '').trim();
+    // 群名片后缀 `(群昵称:xxx)`
+    const m = /^(.*?)\(群昵称[:：](.*)\)$/s.exec(s);
+    if (m && m[1].trim()) return { name: m[1].trim(), nick: String(m[2] || '').trim() };
+    if (!s) return null;
+    // 老判据：含冒号的一律不当昵称（`[图片: url]` / `[文件: 名]` 这类附件标记）
+    if (s.includes(':') || s.includes('：')) return null;
+    return { name: s, nick: '' };
+  }
+  /** 气泡上显示的名字：有群名片且与账号名不同才追加 */
+  function chatSenderLabel(info) {
+    if (!info) return '';
+    const n = String(info.name || '').trim();
+    const k = String(info.nick || '').trim();
+    return (k && k !== n) ? n + '(群昵称:' + k + ')' : n;
+  }
   function chatSplitHistoryBlock(body) {
     const out = [];
     let cur = null;
@@ -4550,21 +4584,24 @@ export function apply(ctx) {
       if (/^-\s*(Attachment URLs|Files?|Images?|ASR|Voices?|Videos?)\s*[:：]/i.test(s)) { pendingMeta.push(s); continue; }
       // 2026-09-12 适配(token 瘦身后历史行变成 "[昵称]"): id 段设为**可选**, 老格式 "[昵称 (openid)]" 仍认;
       // 同时排除含冒号的方括号(如 "[图片: url]"), 免得把附件标记当成发送者。
-      const m = s.match(/^\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\](.*)$/);
+      const m = s.match(/^\[([^\]\n]+)\](.*)$/);
       // ⚠️ 2026-10-01 修（主人实测：dock 聊天界面冒出个叫「引」的人发消息）：
       //   `[引]` / `[/引]` / `[引用]` 是**块标记**而不是昵称壳 —— 命中它们时不能开新气泡，
       //   要当普通行并入当前段（真昵称在后面几行，交给 chatPolishOne 去找）。
       //   与 chatPolishOne 的 RE_MARKER_WORD 同款防御，此处之前漏了。
-      const isNick = m && m[1].trim() && !RE_MARKER_WORD.test(m[1].trim());
+      // ★ 2026-11-13：解析交给 chatParseSenderTag（兼容 `(群昵称:xxx)` 与 `#短号` 尾巴）。
+      const nickInfo = m ? chatParseSenderTag(m[1]) : null;
+      const isNick = !!(nickInfo && nickInfo.name && !RE_MARKER_WORD.test(nickInfo.name));
       if (isNick) {
+        const shown = chatSenderLabel(nickInfo);
         // ⚠️ 2026-10-01：当前消息的引用块会先形成一个 sender 为空的段 —— 紧随的 [昵称] 行要**接管**它
         //   （引用块 + 正文同属一条消息），否则引用块会独立成一个没有名字的气泡。
         if (cur && !cur.sender) {
-          cur.sender = m[1].trim();
+          cur.sender = shown;
           cur.lines.push(...[m[2].trim(), ...pendingMeta].filter(Boolean));
         } else {
           flush();
-          cur = { sender: m[1].trim(), lines: [m[2].trim(), ...pendingMeta].filter(Boolean) };
+          cur = { sender: shown, lines: [m[2].trim(), ...pendingMeta].filter(Boolean) };
         }
         pendingMeta = [];
       }
@@ -4594,12 +4631,15 @@ export function apply(ctx) {
     });
     // 2026-09-12 适配: "[昵称]" 与 "[昵称 (openid)]" 都认; 排除含冒号的方括号(附件标记)
     // 2026-10-01: **标记词**(`[引]`/`[历史]`/`[当前]`…)不算昵称, 跳过它继续往后找真昵称
-    const reTag = /\[([^\]\n:]*?)(?:\s*\([A-Za-z0-9_-]{6,}\))?\]/g;
+    // ★ 2026-11-13: 正则放宽成"方括号里连续文本", 具体形态交给 chatParseSenderTag ——
+    //   否则 `[做早饭(群昵称:这是昵称) #111310s]` 因为含冒号匹配不到, 整行漏进正文。
+    const reTag = /\[([^\]\n]+)\]/g;
     let tmm;
     while ((tmm = reTag.exec(b)) !== null) {
-      const nm = tmm[1].trim();
-      if (!nm || RE_MARKER_WORD.test(nm)) continue;
-      sender = nm;
+      const info = chatParseSenderTag(tmm[1]);
+      if (!info || !info.name) continue;
+      if (RE_MARKER_WORD.test(info.name)) continue;
+      sender = chatSenderLabel(info);
       b = b.replace(tmm[0], '');
       break;
     }
