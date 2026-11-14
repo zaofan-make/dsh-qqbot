@@ -1172,7 +1172,7 @@ export class SessionManager {
     }
     url.searchParams.set('hot', hotVer);
     const mod = (await import(url.href)) as { apply?: (c: Context) => unknown };
-    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context, o?: { dataRoot?: string; cwd?: string }) => unknown;
+    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context, o?: { dataRoot?: string; cwd?: string; agent?: unknown }) => unknown;
     await applyFn(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
     this.logger.info('im-qqbot: 通道工具热刷新完成(新工具已注册到 agentCtx)');
     diagSm('hotReloadChannelTools: 完成');

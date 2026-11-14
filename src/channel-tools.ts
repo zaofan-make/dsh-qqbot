@@ -528,7 +528,7 @@ function stickerStoreOf(exec: { agent?: unknown }): ReturnType<typeof getSticker
  *   调用方（session-manager）知道自己是谁，必须把根传进来。
  * @param opts.cwd 本实例的工作目录（扩展 runner 的 env.cwd）
  */
-export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: string }): Promise<void> {
+export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: string; agent?: unknown }): Promise<void> {
 
   // ★★★ 2026-10-31：记住本插件的 apply ctx —— expose:'all' 的工具必须注册到**这个** ctx 上，
   //   才能和普通扩展工具（下面的 `ctx.tools.register`）处在同一个作用域。
@@ -2937,10 +2937,39 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
           } catch { /* ignore */ }
           return undefined;
         })();
+        // ★ 2026-11-14（主人："我们插件里早就写过查当前的服务商"）：
+        //   除了 agent 的运行时路由，再补一条**我们自己的真相源** ——
+        //   `manager.modelResolver.getEffectiveRoute(sessionKey, sessionId)`（持久化在 model-prefs.json）。
+        //   两条都拿不到才交给扩展自己的兜底逻辑。
+        const providerOf = ((): string => {
+          try {
+            const rc = (agentOf as { session?: { requestContext?: () => { provider?: string } } } | undefined)
+              ?.session?.requestContext?.();
+            if (rc?.provider) return String(rc.provider);
+          } catch { /* ignore */ }
+          try {
+            const mgr = (qqCh?.manager ?? bridgeCh?.manager) as unknown as {
+              sessions?: Map<string, { agentCtx?: unknown; agent?: { ctx?: unknown }; sessionKey?: string; sessionId?: string }>;
+              modelResolver?: { getEffectiveRoute?: (k: string, id?: string) => { provider?: string } | undefined };
+            } | undefined;
+            const sessions = mgr?.sessions;
+            if (sessions) {
+              for (const rec of sessions.values()) {
+                if (rec?.agentCtx === ctx || rec?.agent?.ctx === ctx) {
+                  const route = mgr?.modelResolver?.getEffectiveRoute?.(String(rec.sessionKey ?? ''), rec.sessionId);
+                  if (route?.provider) return String(route.provider);
+                  break;
+                }
+              }
+            }
+          } catch { /* ignore */ }
+          return '';
+        })();
         try {
           vis = (await def.enabled({
             ctx,
             agent: agentOf,
+            provider: providerOf,
             manager: qqCh?.manager ?? bridgeCh?.manager,
             dataRoot: extRoot,
             logger: ctx.logger,

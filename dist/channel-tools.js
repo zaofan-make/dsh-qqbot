@@ -3160,10 +3160,40 @@ export async function apply(ctx, opts) {
                     catch { /* ignore */ }
                     return undefined;
                 })();
+                // ★ 2026-11-14（主人："我们插件里早就写过查当前的服务商"）：
+                //   除了 agent 的运行时路由，再补一条**我们自己的真相源** ——
+                //   `manager.modelResolver.getEffectiveRoute(sessionKey, sessionId)`（持久化在 model-prefs.json）。
+                //   两条都拿不到才交给扩展自己的兜底逻辑。
+                const providerOf = (() => {
+                    try {
+                        const rc = agentOf
+                            ?.session?.requestContext?.();
+                        if (rc?.provider)
+                            return String(rc.provider);
+                    }
+                    catch { /* ignore */ }
+                    try {
+                        const mgr = (qqCh?.manager ?? bridgeCh?.manager);
+                        const sessions = mgr?.sessions;
+                        if (sessions) {
+                            for (const rec of sessions.values()) {
+                                if (rec?.agentCtx === ctx || rec?.agent?.ctx === ctx) {
+                                    const route = mgr?.modelResolver?.getEffectiveRoute?.(String(rec.sessionKey ?? ''), rec.sessionId);
+                                    if (route?.provider)
+                                        return String(route.provider);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { /* ignore */ }
+                    return '';
+                })();
                 try {
                     vis = (await def.enabled({
                         ctx,
                         agent: agentOf,
+                        provider: providerOf,
                         manager: qqCh?.manager ?? bridgeCh?.manager,
                         dataRoot: extRoot,
                         logger: ctx.logger,

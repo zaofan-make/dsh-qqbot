@@ -31,6 +31,7 @@ export declare function setChannelBridge(b: QQChannel | undefined): void;
 export declare function apply(ctx: Context, opts?: {
     dataRoot?: string;
     cwd?: string;
+    agent?: unknown;
 }): Promise<void>;
 /**
  * host 面板用(2026-09-13 主人要的「让ai写」按钮):
