@@ -250,7 +250,8 @@ export async function setupMiddlewares(
   //   这里只做两件事：① 把 dataRoot+logger 配置进去（之后热刷可直接重扫，不必再注册回调）；
   //   ② 首次装载 + 装"出站操控器"（`globalThis[Symbol.for('im-qqbot.outbound')]`）供**其他扩展**调用。
   try {
-    configureOutboundExtensions({ dataRoot: dataRootOf(config), logger });
+    // ★ P1：owner = 本实例的 bot 对象 —— runOutboundChain 靠 opts.sender 反查它所属的桶
+  configureOutboundExtensions({ dataRoot: dataRootOf(config), logger, owner: bot as unknown as object });
     installOutboundApi();
     const ro = await reloadOutboundExtensions();
     if (ro.total > 0) {

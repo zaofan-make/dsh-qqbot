@@ -173,7 +173,7 @@ export async function sendRichOutbound(
         void (async () => {
           try {
             const m = await import('../features/ext-outbound.js');
-            await m.notifyOutboundSent({ ok: false, text, target, error: r.reason || 'killed', failedBlocks: 0, killed: true });
+            await m.notifyOutboundSent({ ok: false, text, target, error: r.reason || 'killed', failedBlocks: 0, killed: true }, bot);
           } catch { /* ignore */ }
         })();
         return;
@@ -290,7 +290,7 @@ export async function sendRichOutbound(
         ...(sentStat.lastError ? { error: sentStat.lastError } : {}),
         failedBlocks: sentStat.failed,
         killed: false,
-      });
+      }, bot);
     } catch { /* ignore */ }
   })();
 }

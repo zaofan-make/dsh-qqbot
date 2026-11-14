@@ -110,15 +110,11 @@ export function hasExtInboundReloader() {
  */
 export async function reloadExtOutbound(dataRoot) {
     try {
-        const { reloadOutboundExtensions, currentOutboundDataRoot } = await import('./ext-outbound.js');
-        // ★ 2026-11-14（CodeRabbit）：出站还没按实例分桶（P1 待做），所以**不能假装成功**。
-        //   请求的 dataRoot 与当前已配置的不一致时，直接返回错误 —— 否则 A 会装 B 的目录、
-        //   还回一句'已重载 3 个'，调用方完全无从察觉。
-        const cur = currentOutboundDataRoot();
-        if (dataRoot && cur && rlKey(cur) !== rlKey(dataRoot)) {
-            return { error: '出站扩展尚未按实例分桶（P1 待做）：当前配置的是 ' + cur + '，你请求的是 ' + dataRoot + '；为避免装错目录已中止' };
-        }
-        const r = await reloadOutboundExtensions();
+        const { reloadOutboundExtensions } = await import('./ext-outbound.js');
+        // ★★ 2026-11-14（CodeRabbit 复审）：P1 之后 reloadOutboundExtensions 已按 dataRoot 取桶，
+        //   这里不再需要「当前配置对比」—— 那个判断在配了 A、B 之后永远只返回最后一个，
+        //   导致请求 A 反而报目录不匹配、A 永远热刷不了。直接下传 dataRoot 即可。
+        const r = await reloadOutboundExtensions(dataRoot);
         return { count: r.total, names: r.extensions.map((e) => e.name) };
     }
     catch (err) {

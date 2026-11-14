@@ -48,34 +48,73 @@ export const OUTBOUND_API_KEY = Symbol.for('im-qqbot.outbound');
 export function outboundExtensionsDir(dataRoot) {
     return join(String(dataRoot || ''), '.qqbot-extensions', EXT_OUTBOUND_SUBDIR);
 }
-/**
- * ★ 2026-10-16：**配置一次**（dataRoot + logger），之后 `loadOutboundExtensions()` 可以不传参。
- *
- * 为什么这么设计：出站链的挂载点在 `transport/outbound-buffer.ts`（很热、每轮都跑），
- * 而"装到哪些扩展"是启动/热刷时才关心的事。让本模块自己记住配置，
- * `features/ext-reload.ts` 的 `reloadExtOutbound()` 就能**直接调装载器**，
- * 不必像 inbound 那样再往 `gateway/middleware-setup.ts` 里塞一个注册表回调（少改一个大文件）。
- */
-let cfg = null;
+const buckets = new Map();
+const ownerKey = new WeakMap();
+let fallbackKey = '';
+/** 归一化 key：反斜杠/大小写只在 Windows 折叠（POSIX 上它们是合法文件名字符） */
+function obKey(dataRoot) {
+    const raw = String(dataRoot || '');
+    if (process.platform !== 'win32')
+        return raw.replace(/\/+$/, '');
+    return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+function ensureBucket(dataRoot, logger) {
+    const k = obKey(dataRoot);
+    let b = buckets.get(k);
+    if (!b) {
+        b = { cfg: { dataRoot: String(dataRoot ?? ''), logger }, loaded: [], breaker: new Map() };
+        buckets.set(k, b);
+    }
+    else {
+        b.cfg = { dataRoot: String(dataRoot ?? ''), logger };
+    }
+    fallbackKey = k;
+    return b;
+}
+/** 按发送方（bot 对象）反查它所属实例的桶；单实例时兜底唯一桶；多实例且无身份 → undefined */
+function bucketOf(sender) {
+    if (sender && typeof sender === 'object') {
+        const k = ownerKey.get(sender);
+        if (k)
+            return buckets.get(k);
+    }
+    if (buckets.size === 1)
+        return Array.from(buckets.values())[0];
+    return undefined;
+}
 /** 配置出站扩展的数据根与日志器（插件启动时调一次；热刷时复用） */
 export function configureOutboundExtensions(opts) {
-    cfg = { dataRoot: String(opts.dataRoot ?? ''), logger: opts.logger };
+    ensureBucket(opts.dataRoot, opts.logger);
+    // owner = 该实例的 QQBotSender（bot）对象：runOutboundChain 从 opts.sender 反查它
+    if (opts.owner)
+        ownerKey.set(opts.owner, obKey(opts.dataRoot));
 }
 /** 当前已配置的出站扩展数据根（空串=没配）—— 供热刷判断"刷的是不是你要的那个实例" */
+/**
+ * 登记真正走发送链的对象，用于 runOutboundChain / notifyOutboundSent 反查桶。
+ *
+ * ★★ 2026-11-14（CodeRabbit）：**不能用 middleware-setup 里的 SDK bot 当 owner** ——
+ *   实际走链的是 bootstrap 另建的 sender 字面量（createOutboundHandler 传的是它），
+ *   两个对象不是同一个 ⇒ WeakMap 永远 miss ⇒ 多实例下所有出站都会跳过扩展。
+ *   所以 sender 创建后要单独登记一次（SDK bot 可同时登记，无害）。
+ */
+export function registerOutboundOwner(dataRoot, owner) {
+    if (owner && typeof owner === 'object')
+        ownerKey.set(owner, obKey(dataRoot));
+}
 export function currentOutboundDataRoot() {
-    return String(cfg?.dataRoot ?? '');
+    return String(buckets.get(fallbackKey)?.cfg.dataRoot ?? '');
 }
 /** 重新装载（供热刷用）：没配置过则安静返回空结果 */
-export async function reloadOutboundExtensions() {
-    // ⚠️ 2026-11-14：**出站扩展还没按实例分桶**（P1 待做）。
-    //   所以这里刻意不收 dataRoot —— 收下却不按它取桶，等于对外撒谎'指定实例已经重载'。
-    //   P1 会把 cfg/loaded 改成 Map<rlKey(dataRoot), …> 并让 runOutboundChain 按 opts.sender 查桶。
-    if (!cfg)
+export async function reloadOutboundExtensions(dataRoot) {
+    // ★ P1：按 dataRoot 取桶（不传就用当前 fallback 桶，兼容旧的单实例调用）
+    const b = buckets.get(dataRoot ? obKey(dataRoot) : fallbackKey);
+    if (!b)
         return emptyResult();
-    return loadOutboundExtensions(cfg);
+    return loadOutboundExtensions(b.cfg);
 }
 // ─────────────────────────── 装载 ───────────────────────────
-let loaded = [];
+// （P1：全局 loaded 已并入 buckets，各实例一份）
 function emptyResult(files = []) {
     return { total: 0, skipped: 0, middleware: [], extensions: [], files };
 }
@@ -121,8 +160,10 @@ export async function loadOutboundExtensions(opts) {
     const { dataRoot, logger } = opts;
     // ★ 2026-10-24：内置目录 + 所有扩展包（只取直接子文件）
     const hits = scanExtFiles(dataRoot, 'outbound', ALLOWED_EXT);
+    const bucket = buckets.get(obKey(dataRoot));
     if (hits.length === 0) {
-        loaded = [];
+        if (bucket)
+            bucket.loaded = [];
         return emptyResult();
     }
     const files = hits.map((h) => h.name);
@@ -147,7 +188,8 @@ export async function loadOutboundExtensions(opts) {
             logger.warn(`[ext-outbound] ✗ ${f} 装载失败(已跳过, 不影响其它出站扩展): ${err instanceof Error ? err.message : String(err)}`);
         }
     }
-    loaded = result.extensions;
+    if (bucket)
+        bucket.loaded = result.extensions;
     if (result.total > 0) {
         logger.info(`[ext-outbound] 已装载 ${result.total} 个出站扩展: ${result.extensions.map((e) => e.name).join(', ')}` +
             (result.skipped > 0 ? `（跳过 ${result.skipped} 个）` : ''));
@@ -161,10 +203,11 @@ export async function loadOutboundExtensions(opts) {
  * 调用方是 `transport/outbound-buffer.ts`：**消息真的发完之后**才调。
  * 每个扩展独立 try/catch + 单次超时保护，**绝不因为扩展报错影响发送结果**。
  */
-export async function notifyOutboundSent(result) {
-    if (loaded.length === 0)
+export async function notifyOutboundSent(result, owner) {
+    const exts = bucketOf(owner)?.loaded ?? [];
+    if (exts.length === 0)
         return;
-    for (const ext of loaded) {
+    for (const ext of exts) {
         if (typeof ext.onSent !== 'function')
             continue;
         try {
@@ -174,7 +217,10 @@ export async function notifyOutboundSent(result) {
     }
 }
 export function listOutboundExtensions() {
-    return loaded.slice();
+    const out = [];
+    for (const b of buckets.values())
+        out.push(...b.loaded);
+    return out;
 }
 // ─────────────────────────── 执行 ───────────────────────────
 /** 熔断：某扩展连续把消息改坏/抛错到阈值就停用它（与 inbound 的熔断同思路） */
@@ -291,13 +337,15 @@ export async function runOutboundChain(text, opts = {}) {
     // ★ 配置兜底：挂载点（transport 层）只关心正文，拿不到 dataRoot/logger 是常态
     //   ⇒ 这里用启动时 `configureOutboundExtensions()` 记住的那份补上，
     //     扩展的 `ctx.dataRoot` / `ctx.logger` 才不会空（示范"读表情包库"就靠它）。
+    const bucket = bucketOf(opts.sender);
     const merged = {
-        ...(cfg?.dataRoot ? { dataRoot: cfg.dataRoot } : {}),
-        ...(cfg?.logger ? { logger: cfg.logger } : {}),
+        ...(bucket?.cfg.dataRoot ? { dataRoot: bucket.cfg.dataRoot } : {}),
+        ...(bucket?.cfg.logger ? { logger: bucket.cfg.logger } : {}),
         ...opts,
     };
     const logger = merged.logger ?? { info() { }, warn() { }, debug() { }, error() { } };
-    const exts = loaded;
+    // ★ P1：多实例且查不到归属 ⇒ exts 为空 = **直通**（fail-closed，绝不拿别人的扩展规则处理这条消息）
+    const exts = bucket?.loaded ?? [];
     if (exts.length === 0)
         return { text, killed: false, reason: '', ran: 0 };
     const state = { text: String(text ?? ''), killed: false, reason: '' };
@@ -458,7 +506,7 @@ async function embedScores(query, passages) {
         return null;
     try {
         const { createLocalEmbedder } = await import('./local-embed.js');
-        const e = createLocalEmbedder({ ...(cfg?.logger ? { logger: cfg.logger } : {}) });
+        const e = createLocalEmbedder({ ...(buckets.get(fallbackKey)?.cfg.logger ? { logger: buckets.get(fallbackKey).cfg.logger } : {}) });
         if (!e.available())
             return null;
         const keys = passages.map((s) => String(s ?? ''));
