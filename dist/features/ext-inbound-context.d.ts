@@ -125,6 +125,7 @@ export interface ExtCtxSession {
     current?: {
         file: string;
         name: string;
+        path?: string;
     };
     /** 已请求消灭（读它的地方是运行器的 next 包装：置位后再调 next() 也不会往下走） */
     annihilate?: {
@@ -178,6 +179,7 @@ export interface ExtCtxSession {
 export declare function ensureExtSession(ctx: MiddlewareContext, env: ExtRunEnv, current?: {
     file: string;
     name: string;
+    path?: string;
 }): ExtCtxSession;
 /** 只读会话（没挂过则 undefined） */
 export declare function sessionOf(ctx: MiddlewareContext): ExtCtxSession | undefined;
@@ -188,6 +190,7 @@ export declare function sessionOf(ctx: MiddlewareContext): ExtCtxSession | undef
 export declare function enterExtension(ctx: MiddlewareContext, env: ExtRunEnv, ext: {
     file: string;
     name: string;
+    path?: string;
 }, phase: 'inbound' | 'decide'): ExtCtxSession;
 export declare function inboundCapsOf(ctx: MiddlewareContext, s: ExtCtxSession): ExtInboundCaps;
 //# sourceMappingURL=ext-inbound-context.d.ts.map

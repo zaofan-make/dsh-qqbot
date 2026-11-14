@@ -99,7 +99,13 @@ function normalizeMute(raw: unknown): ExtMute | null {
     const o = raw as { id?: unknown; until?: unknown; reason?: unknown; by?: unknown; at?: unknown };
     const id = String(o?.id ?? '').trim();
     if (!id) return null;
-    const until = Number(o?.until);
+    // ★★ 2026-11-14（CodeRabbit）：**必须在校验前看原始类型** ——
+    //   Number(null) / Number("") / Number(false) 全都是 0，而 0 = 永久禁言，
+    //   于是手改或损坏的记录会静默变成永久。程序自己写的是数字（见本文件 :188），
+    //   所以这里只认 number 类型；数字字符串("123") 会被拒（行为变化，但更安全）。
+    const rawUntil = o?.until;
+    if (typeof rawUntil !== "number" || !Number.isFinite(rawUntil) || rawUntil < 0) return null;
+    const until = rawUntil;
     // ★★ 2026-11-14 修（审查发现）：原来非法/缺失的 until 被归一成 0，
     //   而 0 的语义是「**永久**禁言」（见本文件 :17/:60/:93，minutes <= 0 时写 0）。
     //   于是手改记录、旧版本写入、或文件被截断时，一条本该无效的记录会**静默升级成永久禁言**。
@@ -368,7 +374,15 @@ export function breakerTrippedReason(file: string): string | undefined {
 
 /** 熔断：幂等（已熔断时保留最早那次的原因与时刻） */
 export function tripBreaker(file: string, reason: string): string {
-  const s = breakerOf(file);
+  // ★ 2026-11-14：key 已改成绝对路径，但诊断/测试常传短名（breaker.mjs）。
+  //   精确查不到时按「路径后缀」兜底匹配一次，避免为改 key 而改一堆调用点。
+  let s = breakerOf(file);
+  if (!s.tripped && s.ring.length === 0) {
+    const short = String(file || "");
+    for (const [k, v] of breakers) {
+      if (k === short || k.endsWith("/" + short) || k.endsWith("\\" + short)) { s = v; break; }
+    }
+  }
   if (!s.tripped) s.tripped = { at: Date.now(), reason };
   return s.tripped.reason;
 }
@@ -448,7 +462,15 @@ export function upgradeLastParticipation(file: string): void {
 
 /** 诊断：某扩展的熔断状态快照 */
 export function breakerStatus(file: string): { tripped?: { at: number; reason: string }; participated: number; destructive: number } {
-  const s = breakerOf(file);
+  // ★ 2026-11-14：熔断 key 已改成绝对路径，但诊断/测试常传短名（breaker.mjs）。
+  //   精确查不到时按「路径后缀」兜底匹配一次，避免为改 key 而改一堆调用点。
+  let s = breakerOf(file);
+  if (!s.tripped && s.ring.length === 0) {
+    const short = String(file || "");
+    for (const [k, v] of breakers) {
+      if (k === short || k.endsWith("/" + short) || k.endsWith("\\" + short)) { s = v; break; }
+    }
+  }
   const out: { tripped?: { at: number; reason: string }; participated: number; destructive: number } = {
     participated: s.ring.length,
     destructive: s.ring.filter(Boolean).length,

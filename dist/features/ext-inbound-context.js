@@ -46,7 +46,9 @@ export function sessionOf(ctx) {
  * 调用方（运行器）负责在用完之后吞掉异常 —— 本模块的动作自己不会抛。
  */
 export function enterExtension(ctx, env, ext, phase) {
-    const cur = { file: ext.file, name: ext.name };
+    // ★ 2026-11-14：把绝对路径一起带进会话归属 —— 熔断/参与的 key 统一用它，
+    //   否则两个目录下的同名扩展会共享一份熔断计数（A 熔断连带停掉 B 的消灭能力）。
+    const cur = { file: ext.file, name: ext.name, ...(ext.path ? { path: ext.path } : {}) };
     const s = ensureExtSession(ctx, env, cur);
     s.current = cur;
     s.phase = phase;
@@ -216,7 +218,7 @@ function annihilate(ctx, s, opts) {
                 + '）—— 扩展已声明「内容已另行处置」');
         }
         // ③ 熔断
-        const gate = checkDestructiveAllowed(s.current?.file ?? '');
+        const gate = checkDestructiveAllowed((s.current?.path || s.current?.file) ?? '');
         if (!gate.ok) {
             warn(s, `熔断中，annihilate 被拒（${gate.reason}）—— 本条消息照常放行`);
             audit(s, { action: 'annihilate', target: sender, reason, result: 'refused-breaker' });
@@ -225,7 +227,7 @@ function annihilate(ctx, s, opts) {
         }
         s.annihilate = reason ? { reason } : {};
         s.destructiveCount += 1;
-        noteDestructive(s.current?.file ?? '');
+        noteDestructive((s.current?.path || s.current?.file) ?? '');
         audit(s, { action: 'annihilate', target: sender, reason, text: textOf(ctx), result: ownerAck ? 'ok-owner-ack' : 'ok' });
         return true;
     }
@@ -368,7 +370,7 @@ function silentInto(ctx, s, arg) {
             return true; // 内容是**在**上下文里的（先前那次已成功），所以这里算成功
         }
         // ④ 熔断：silentInto 计入"破坏性动作"（它同样能大规模改变会话内容），超阈值与 annihilate 一起停
-        const gate = checkDestructiveAllowed(s.current?.file ?? '');
+        const gate = checkDestructiveAllowed((s.current?.path || s.current?.file) ?? '');
         if (!gate.ok) {
             warn(s, `熔断中，silentInto 被拒（${gate.reason}）—— 没注入成功；` +
                 '要稳妥请自己判返回值（`if (!ctx.silentInto()) return next()`）');
@@ -391,7 +393,7 @@ function silentInto(ctx, s, arg) {
         inject.call(agent, msg);
         s.silentInto = { injected: true, result: 'ok', chars: body.length };
         s.destructiveCount += 1; // 熔断统计认它（与 annihilate/muteUser 同一本账）
-        noteDestructive(s.current?.file ?? '');
+        noteDestructive((s.current?.path || s.current?.file) ?? '');
         audit(s, { action: 'silentInto', target: senderOf(ctx), reason, text: body, result: 'ok' });
         return true;
     }
@@ -478,7 +480,7 @@ function muteUser(ctx, s, opts) {
             audit(s, { action: 'muteUser', target: id, reason, result: 'refused-owner' });
             return false;
         }
-        const gate = checkDestructiveAllowed(s.current?.file ?? '');
+        const gate = checkDestructiveAllowed((s.current?.path || s.current?.file) ?? '');
         if (!gate.ok) {
             warn(s, `熔断中，muteUser 被拒（${gate.reason}）`);
             audit(s, { action: 'muteUser', target: id, reason, result: 'refused-breaker' });
@@ -499,7 +501,7 @@ function muteUser(ctx, s, opts) {
             return false;
         }
         s.destructiveCount += 1;
-        noteDestructive(s.current?.file ?? '');
+        noteDestructive((s.current?.path || s.current?.file) ?? '');
         audit(s, {
             action: 'muteUser',
             target: id,

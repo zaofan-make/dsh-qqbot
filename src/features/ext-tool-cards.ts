@@ -74,8 +74,13 @@ function writeTable(dataRoot: string, cards: ExtToolCardRecord[]): boolean {
     //   A 的 tmp 会被 B 覆盖，A 的 rename 可能拿到半个文件或 ENOENT（被 catch 吞成 false，
     //   表现是「这张卡点了没反应」）。改成带 pid + 随机后缀的唯一 tmp 名。
     const tmp = file + '.tmp.' + process.pid + '.' + Math.random().toString(36).slice(2, 10);
-    writeFileSync(tmp, JSON.stringify({ version: 1, cards }, null, 2), 'utf8');
-    try { renameSync(tmp, file); } catch (e) {
+    // ★★ 2026-11-14（CodeRabbit）：**write 和 rename 要在同一个清理保护内** ——
+    //   writeFileSync 因磁盘满/配额失败时可能留下空文件或半截内容，而它原来在 try 之外，
+    //   异常直接进外层 catch，rmSync 不会执行；加上每次都是新文件名，重复失败会累积残留。
+    try {
+      writeFileSync(tmp, JSON.stringify({ version: 1, cards }, null, 2), 'utf8');
+      renameSync(tmp, file);
+    } catch (e) {
       try { rmSync(tmp, { force: true }); } catch { /* ignore */ }
       throw e;
     }

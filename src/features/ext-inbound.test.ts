@@ -559,7 +559,9 @@ function groupMsg(over: Record<string, unknown> = {}): Record<string, unknown> {
 function asBoth(file: string, onInbound?: Middleware, onDecide?: Middleware): InboundExtension {
   return {
     file,
-    path: `/tmp/${file}`,
+    // ★ 2026-11-14：熔断 key 已改为「绝对路径」，测试里的 path 也要与**真实装载路径**一致，
+    //   否则「重新装载复位熔断」这条断言会跨两种 key 而永远失败。
+    path: join(dataRoot, '.qqbot-extensions', 'inbound', file),
     name: file.replace(/\.mjs$/, ''),
     middleware: onDecide ?? (async (_c, n) => { await n(); }),
     ...(onInbound ? { onInbound } : {}),

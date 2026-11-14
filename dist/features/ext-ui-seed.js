@@ -76,7 +76,12 @@ function pickRoots(opts) {
         const s = String(r ?? '').trim();
         if (!s)
             return;
-        const key = s.replace(/[\/]+/g, "/").toLowerCase();
+        // ★★ 2026-11-14 修（审查发现）：去重键原来只折 `/`、且**无条件 toLowerCase**。
+        //   Windows 上 D:\a\b 与 D:/a/b 是同一个目录，但 key 不同 ⇒ 同一份数据根被扫两遍；
+        //   POSIX 上大小写是区分的，无条件小写又会把两个真实目录合并。
+        //   统一成：反斜杠/大小写只在 Windows 折叠。
+        const plain = s.replace(/[\\/]+/g, "/");
+        const key = process.platform === "win32" ? plain.toLowerCase() : s.replace(/\/+$/, "");
         if (seen.has(key))
             return;
         seen.add(key);

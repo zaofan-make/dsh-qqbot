@@ -333,7 +333,10 @@ export async function loadInboundExtensions(opts: LoadInboundOptions): Promise<I
       result.middleware.push(ext.middleware);
       if (ext.onInbound) result.early.push(ext.onInbound);
       // 装载 = 熔断复位（改文件后 /tools-reload 就是文档里的"恢复通道"）
-      resetBreaker(f);
+      // ★★ 2026-11-14 修（审查发现）：熔断 key 用**绝对路径**而不是文件名 ——
+      //   两个目录下的同名扩展（各自 pack 里的 breaker.mjs）原本共享一份熔断计数：
+      //   A 被熔断会连带停掉 B 的消灭/静默能力，诊断里还看不出是谁。
+      resetBreaker(ext.path || ext.file);
       // 身份 = 中间件函数引用（同一模块重复装载时是同一个引用 → 不会重复 dispose）
       if (!known.has(ext.middleware)) known.set(ext.middleware, ext);
     } catch (err) {
@@ -375,15 +378,17 @@ function runEnvOf(opts: ExtRunOptions | undefined, logger: Logger): ExtRunEnv {
 /** 记一次"该扩展参与了这条消息"，返回熔断原因（有的话由调用方告警） */
 function noteHook(s: ExtCtxSession, ext: InboundExtension, destructiveBefore: number, logger: Logger): void {
   const destructive = s.destructiveCount > destructiveBefore;
-  if (s.noted.has(ext.file)) {
+  // ★ 2026-11-14：参与/熔断的 key 一律用**绝对路径**（与 resetBreaker 对齐）
+  const key = ext.path || ext.file;
+  if (s.noted.has(key)) {
     // 早+晚两个挂点：同一条消息只记一次参与；但晚挂点又做了破坏性动作 → 把那条记录升级成 true
     if (destructive) {
-      try { upgradeLastParticipation(ext.file); } catch { /* ignore */ }
+      try { upgradeLastParticipation(key); } catch { /* ignore */ }
     }
     return;
   }
-  s.noted.add(ext.file);
-  const reason = noteParticipation(ext.file, destructive);
+  s.noted.add(key);
+  const reason = noteParticipation(key, destructive);
   if (reason) {
     logger.warn?.(
       `[ext-inbound] ⚠ 熔断「${ext.name}」(${ext.file}): ${reason} —— ` +
