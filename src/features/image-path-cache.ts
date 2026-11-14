@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 /**
  * image-path-cache.ts — QQ 图片 URL → 本地文件路径 的小缓存
  *
@@ -76,6 +77,15 @@ export function lookupImagePath(url: string | undefined, logger?: Logger): strin
     logger?.debug(`[img-path] 缓存过期, 回退 URL: ${url.slice(0, 60)}…`);
     return undefined;
   }
+    // ★★ 2026-11-14（CodeRabbit）：缓存命中也要**确认文件还在** ——
+    //   quote-images 的定期回收会删掉超过 KEEP_DAYS 的文件，而缓存时间没到，
+    //   这里就会把一个已删除的路径返回给上层（AI 读图直接失败，还查不出原因）。
+    if (!existsSync(e.p)) {
+      cache.delete(url);
+      if (k) cache.delete(k);
+      logger?.debug(`[img-path] 缓存指向的文件已不存在, 回退 URL: ${String(e.p).slice(0, 80)}`);
+      return undefined;
+    }
   return e.p;
 }
 

@@ -189,13 +189,6 @@ export declare function reloadOutboundExtensions(dataRoot?: string): Promise<Out
  * 重新调用 = 热重载（`loaded` 整体替换）。
  */
 export declare function loadOutboundExtensions(opts: LoadOutboundOptions): Promise<OutboundLoadResult>;
-/** 当前已装载的出站扩展（诊断用） */
-/**
- * 把一次出站的结果回执给所有出站扩展的 `onSent(result)`（2026-11-11）。
- *
- * 调用方是 `transport/outbound-buffer.ts`：**消息真的发完之后**才调。
- * 每个扩展独立 try/catch + 单次超时保护，**绝不因为扩展报错影响发送结果**。
- */
 export declare function notifyOutboundSent(result: OutboundSentResult, owner?: unknown): Promise<void>;
 export declare function listOutboundExtensions(): OutboundExtension[];
 /** 改文件 + tools_reload = 复位通道 */

@@ -16,6 +16,7 @@ export declare class SessionManager {
     /** QQ 通道发送能力(由 bootstrap 注入)；仅作为 qqChannel service 暴露给通道工具，不在此注册工具 */
     private channelSender;
     /** 最近一次 setup 收到的 agent ctx(工具自愈用；getOrCreate 完成后读走并清空) */
+    private lastSetupCtx;
     /** 群守则热更新: 每次 system prompt 渲染现读 settings.yaml(SettingsReader fresh 模式) */
     private liveSettingsReader;
     /** 注入 QQ 通道发送能力(供通道工具)；bootstrap 调用 */
@@ -140,13 +141,6 @@ export declare class SessionManager {
     private sessionKey;
     private deriveSessionId;
     private currentSessionId;
-    /**
-     * ★ 2026-11-14 修（审查确认：并发建会话会串号）：原来把 setup 拿到的 agentCtx 存进
-     *   **实例字段** this.lastSetupCtx，而 agents.create({setup}) 是 await 的 ——
-     *   群1 的 setup 写 ctxA、群2 的 setup 覆盖成 ctxB，群1 的续体读到 ctxB
-     *   ⇒ 群1 的 record.agentCtx 指向群2 的作用域，工具全注册到别人的 ctx。
-     *   改成**调用方传进来的 holder**（每次调用一个局部对象），天然隔离。
-     */
     private composePreset;
     /** 获取或恢复或创建会话（get → resume → create） */
     getOrCreate(scope: ChatScope, peerId: string, senderId: string, replyTarget: ReplyTarget, opts?: {

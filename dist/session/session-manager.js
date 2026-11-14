@@ -84,6 +84,7 @@ export class SessionManager {
     /** QQ 通道发送能力(由 bootstrap 注入)；仅作为 qqChannel service 暴露给通道工具，不在此注册工具 */
     channelSender;
     /** 最近一次 setup 收到的 agent ctx(工具自愈用；getOrCreate 完成后读走并清空) */
+    lastSetupCtx;
     /** 群守则热更新: 每次 system prompt 渲染现读 settings.yaml(SettingsReader fresh 模式) */
     liveSettingsReader;
     /** 注入 QQ 通道发送能力(供通道工具)；bootstrap 调用 */
@@ -603,14 +604,7 @@ export class SessionManager {
     currentSessionId(sessionKey) {
         return this.modelResolver.getSessionId(sessionKey) ?? this.deriveSessionId(sessionKey);
     }
-    /**
-     * ★ 2026-11-14 修（审查确认：并发建会话会串号）：原来把 setup 拿到的 agentCtx 存进
-     *   **实例字段** this.lastSetupCtx，而 agents.create({setup}) 是 await 的 ——
-     *   群1 的 setup 写 ctxA、群2 的 setup 覆盖成 ctxB，群1 的续体读到 ctxB
-     *   ⇒ 群1 的 record.agentCtx 指向群2 的作用域，工具全注册到别人的 ctx。
-     *   改成**调用方传进来的 holder**（每次调用一个局部对象），天然隔离。
-     */
-    async composePreset(presetId, ctxHolder) {
+    async composePreset(presetId) {
         let presets;
         try {
             presets = this.ctx.get('agentPresets');
@@ -627,8 +621,7 @@ export class SessionManager {
         const provideChannel = this.channelSender === undefined
             ? undefined
             : (agentCtx) => {
-                if (ctxHolder)
-                    ctxHolder.ctx = agentCtx;
+                this.lastSetupCtx = agentCtx;
                 try {
                     agentCtx.provide?.('qqChannel', {
                         manager: this,
@@ -757,17 +750,12 @@ export class SessionManager {
             this.logger.info(`getOrCreate(forceNew): 弃档重开 key=${key} new=${rotated}`);
         }
         // 2026-09-11: 先定 sessionId, 再按「会话级」查模型路由 —— 新会话(sessionId 无 override)回落全局默认
-        // ★ 2026-11-14 修（审查确认）：轮换分支要给这个变量重新赋值，所以不能是 const。
-        //   原来轮换成功后 record.sessionId 与真实会话永久不一致 → findBySessionId 查不到、
-        //   工作区挂错、该 peer 后续 send_media 报通道未就绪，直到重启。
-        let sessionId = SessionId(this.currentSessionId(key));
+        const sessionId = SessionId(this.currentSessionId(key));
         const route = this.modelResolver.getEffectiveRoute(key, sessionId);
         this.logger.info(`getOrCreate: key=${key} route=${route ? `${route.provider}/${route.model}` : 'host-default'} sessionId=${sessionId}`);
         let agent;
         let handle;
         let agentPreset;
-        // ★ 2026-11-14：本次调用的 setup 归属容器（局部，天然隔离并发）
-        const ctxHolder = {};
         const live = this.agents.get(sessionId);
         if (live) {
             agent = live;
@@ -782,7 +770,7 @@ export class SessionManager {
         }
         else {
             // preset 只解析一次：resume/create 共用同一组合(会话覆盖 > config), 避免重复 resolve/mount 目录
-            const composed = await this.composePreset(this.effectivePreset(key), ctxHolder);
+            const composed = await this.composePreset(this.effectivePreset(key));
             agentPreset = composed.agentPreset;
             try {
                 const resumeRoute = this.modelResolver.getResumeRoute(key, sessionId);
@@ -854,7 +842,6 @@ export class SessionManager {
                     });
                     agent = created2.agent;
                     handle = created2;
-                    sessionId = rotated; // ★ 轮换后必须把变量也更新，否则下面的 record/attach 用的还是撞车那个旧 id
                     this.logger.info(`created new session(轮换后): key=${key} sessionId=${rotated} preset=${agentPreset ?? 'none'}`);
                     try {
                         this.modelResolver.setSessionCfg(key, { cwd: wantCwd });
@@ -875,9 +862,10 @@ export class SessionManager {
             lastActivity: Date.now(),
             agentPreset,
             // 自愈用：setup 若正常跑到 channelSetup，此处拿到 agent ctx 且标记已装载
-            agentCtx: ctxHolder?.ctx,
-            channelToolsReady: ctxHolder?.ctx?.[CTX_TOOLS_READY] === true,
+            agentCtx: this.lastSetupCtx,
+            channelToolsReady: this.lastSetupCtx?.[CTX_TOOLS_READY] === true,
         };
+        this.lastSetupCtx = undefined;
         this.sessions.set(key, record);
         // 修复侧边栏归属(上游 PR #21 移植): 创建/恢复会话后挂到 cwd 对应工作区分组,
         // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。
@@ -1132,10 +1120,10 @@ export class SessionManager {
         const cmdLine = describeExtCommandReload(await reloadExtCommands(this.dataRoot));
         // 2026-10-12 追加：入站中间件扩展（`.qqbot-extensions/inbound/*.mjs`）同一时机一起重扫。
         //   挂载点是个"现读可变列表"的代理，重扫只是换内容 ⇒ **不重启即生效**，不用另加一条热刷入口。
-        const inboundLine = describeExtInboundReload(await reloadExtInbound(this.dataRoot));
+        const inboundLine = describeExtInboundReload(await reloadExtInbound());
         // 2026-10-16 追加：**出站**中间件扩展（`.qqbot-extensions/outbound/*.mjs`）同一时机一起重扫。
         //   链读的是模块级 `loaded` 列表 ⇒ 重扫只是换内容，**不重启即生效**，不用另加热刷入口。
-        const outboundLine = describeExtOutboundReload(await reloadExtOutbound(this.dataRoot));
+        const outboundLine = describeExtOutboundReload(await reloadExtOutbound());
         const extLines = `${cmdLine}\n${inboundLine}\n${outboundLine}`;
         if (targets.length === 0) {
             return `当前没有活动会话可热刷(先随便发条消息让会话跑起来, 再试 /tools-reload)\n${extLines}`;

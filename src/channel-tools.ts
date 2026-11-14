@@ -11,7 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage } from './features/md-media.js';
 import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import type { Context } from '@deepseek-ai/cordis';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { dataRootOf } from './gateway/data-root.js';
 import { homedir } from 'node:os';
@@ -443,40 +443,15 @@ function channelOf(exec: { agent?: unknown }): QQChannel | undefined {
       } catch { /* ignore */ }
     }
   }
-  // ★★ 2026-11-14 修（审查发现）：**多实例时绝不猜第 0 个**。
-  //   原来直接 return channelBridges[0] —— 两个机器人同时跑时，B 的会话会解析到 A 的
-  //   dataRoot/replyTarget（图存进 A 的图库、消息发到 A 的群）。
-  //   只有唯一实例才允许兜底；多实例返回 undefined，让调用方报'通道未就绪'。
-  if (channelBridges.length === 1) {
-    diag('channelOf: 走全局桥成功(唯一实例)');
+  if (channelBridges.length) {
+    diag('channelOf: 走全局桥成功');
     return channelBridges[0];
-  }
-  if (channelBridges.length > 1) {
-    diag('channelOf: 多实例(' + channelBridges.length + ')，拒绝猜测，返回 undefined');
-    return undefined;
   }
   return undefined;
 }
 
 /** findByAgent 返回的非空记录类型 */
 type SessionRec = Exclude<ReturnType<SessionManager['findByAgent']>, undefined>;
-
-/**
- * 当前执行上下文归属的 dataRoot。
- *
- * ★ 2026-11-14（CodeRabbit 复审）：广播 / target_group 原来写的是
- *   ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot —— channelOf 拒绝猜测之后，
- *   这里又回退到第 0 个实例：任务写进 A 的目录、分组读 A 的文件，消息却由 B 的客户端发出。
- *   现在：有归属用归属；只有唯一实例才兜底；多实例返回 undefined 让调用方拒绝。
- */
-function dataRootOfExec(ch: ReturnType<typeof channelOf>, exec: unknown): string | undefined {
-  const own = (ch ?? channelOf(exec as never))?.manager?.dataRoot;
-  if (own) return String(own);
-  const all = managersOf();
-  if (all.length === 1) return all[0]?.dataRoot ?? all[0]?.cwd;
-  diag('dataRootOfExec: 多实例(' + all.length + ')且根上下文无通道，拒绝猜测第 0 个');
-  return undefined;
-}
 /**
  * 解析"当前执行 agent → 会话 + 通道"(多账号/热更新后 agent 引用可能跨实例或换新对象):
  * ① ctx 通道的 manager 按引用/id 找(findByAgent 已含 id 兜底); ② 找不到→遍历所有实例桥再找。
@@ -1675,8 +1650,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       // ⚠️ 数据根 ≠ 工作目录: manager.dataRoot = dataRootOf(config)(本机=<cwd>\AI\dshqqbot),
       // 而 manager.cwd = config.cwd(本机=<cwd>\AI)。2026-09-12 主人实测发现我一开始写成了 cwd,
       // 结果广播任务落到 AI\.qqbot\(旧位置), dock 在 dshqqbot\.qqbot\ 里根本看不到。
-      const root = dataRootOfExec(ch, exec as never);
-      if (!root) return { ok: false, msg: '无法确定所属实例（多实例下请在本机会话里操作，或指定唯一实例）' };
+      const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+      if (!root) return { ok: false, msg: '找不到数据根(无已注册实例)' };
       if (!ga) return { ok: false, msg: '群管理未开启(设置页→QQ群管理): 群发要走官方接口, 需要机器人凭据' };
       const action = String(a.action ?? 'send');
       const rawTargets = Array.isArray(a.targets) ? (a.targets as unknown[]).map((t) => String(t).trim()).filter(Boolean) : [];
@@ -1766,8 +1741,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
     async execute(args, exec) {
       const a = args as { action?: unknown; name?: unknown; new_name?: unknown; targets?: unknown };
       const ch = channelOf(exec as never);
-      const root = dataRootOfExec(ch, exec as never);
-      if (!root) return { ok: false, msg: '无法确定所属实例（多实例下请在本机会话里操作，或指定唯一实例）' };
+      const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+      if (!root) return { ok: false, msg: '找不到数据根(无已注册实例)' };
       const file = join(root, '.qqbot', 'target-groups.json');
       type TG = { id?: string; name?: string; members?: string[] };
       const read = (): TG[] => {
@@ -2206,63 +2181,16 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       },
       render: (_a, v) => [{ type: 'text', text: v.ok ? String(v.msg || '') : `失败: ${String(v.msg || '')}` }],
     },
-    execute: async (args: { action?: string; words?: string; muteSeconds?: number; enable?: boolean }, exec?: unknown) => {
+    execute: async (args: { action?: string; words?: string; muteSeconds?: number; enable?: boolean }) => {
       try {
         const prof = process.env.DSH_PROFILE || 'web';
         const base = join(homedir(), '.dsh', 'qqbot-settings', prof);
-        // ★★ 2026-11-14 修（审查发现，这条最危险）：原来写死 'im-qqbot-2.json'，找不到就
-        //   **挑 mtime 最新的** —— 那可能是**别的实例**的配置，而下面会整份写回去（含 appId/appSecret）。
-        //   现在：优先用本实例的 settingsNs；拿不到就退回主账号默认 'im-qqbot'（与 index.ts 一致）；
-        //   绝不猜别的实例的文件。
-        // ★★ 2026-11-14（CodeRabbit 复审）：判定不出实例就必须停手，不许回退默认实例。
-        //   宿主的 web/桌面回合里 agent 对象可能换新（同一 sessionId 不同 agent），
-        //   channelOf 会返回 undefined；此时若退回 im-qqbot，就会把默认实例的配置写回去
-        //   （action=list 也一样写），当前实例的关键词根本不更新、却误改了别人。
-        //   用 findSessionRec 补一条按 session.id 反查；仍判定不出就报错中止。
-        let ns = '';
-        try {
-          const ch0 = channelOf(exec as never);
-          const hit = findSessionRec(ch0, exec as { agent?: unknown });
-          // ★★ 2026-11-14（CodeRabbit 复审）：用 SessionManager 的 **settingsNs getter** ——
-          //   它已经把「配置里没写」映射成主账号默认 im-qqbot（见 session-manager:202）。
-          //   原来自己读 config.settingsNs，空值时直接报错，连默认实例都用不了。
-          // ★★ 2026-11-14（CodeRabbit）：findSessionRec **只遍历 channelBridges**，
-          //   而本文件 198 行注释自己写着「channelBridges 实测是空的」——
-          //   所以这条路径常常拿不到 manager，recall_keywords 就总是中止。
-          //   补一条按 agent.session.id 在 managersOf() 里反查（sessionId 跨 agent 实例稳定）。
-          let mgr = (hit?.ch?.manager ?? ch0?.manager) as { settingsNs?: string } | undefined;
-          if (!mgr) {
-            const sid = String((exec as { agent?: { session?: { id?: unknown } } } | undefined)?.agent?.session?.id ?? '');
-            if (sid) {
-              // ★★ 2026-11-14（CodeRabbit）：**先按完整 id 跨全部 manager 找，再退回前缀**。
-              //   原来在同一个循环里同时接受前 8 位：只要较早的 manager 里有同前缀的别的会话，
-              //   就会先命中它，然后把 settingsNs 写到**那个实例**的配置文件
-              //   （文件里有 appId/appSecret）；action=list 也一样写。
-              const idOf = (r: { sessionId?: string } | undefined): string => String(r?.sessionId ?? '');
-              const scan = (exact: boolean, needle: string): void => {
-                for (const m of managersOf()) {
-                  const ss = (m as unknown as { sessions?: Map<string, { sessionId?: string }> }).sessions;
-                  if (!ss || typeof ss.values !== 'function') continue;
-                  for (const r of ss.values()) {
-                    const rid = idOf(r);
-                    if (!rid) continue;
-                    if (exact ? rid === needle : rid.slice(0, 8) === needle) { mgr = m as unknown as { settingsNs?: string }; return; }
-                  }
-                }
-              };
-              scan(true, sid);                                  // ① 完整 id（唯一可靠）
-              if (!mgr) scan(false, sid.slice(0, 8));            // ② 才退到前 8 位短码
-            }
-          }
-          const own = String(mgr?.settingsNs ?? '').trim();
-          if (own) ns = own;
-        } catch { /* 下面统一判空 */ }
-        if (!ns) {
-          return { ok: false, msg: '无法确定所属实例（多实例下请在 QQ 会话里操作）—— 为避免改到别的实例的配置，已中止', keywords: [] };
-        }
-        const file = join(base, ns + '.json');
+        let file = join(base, 'im-qqbot-2.json');
         if (!existsSync(file)) {
-          return { ok: false, msg: '找不到本实例的设置文件: ' + file + '（不会去动别的实例的配置）', keywords: [] };
+          const cands = existsSync(base) ? readdirSync(base).filter((f) => /^im-qqbot-.*\.json$/.test(f)) : [];
+          if (cands.length === 0) return { ok: false, msg: '找不到设置文件: ' + base, keywords: [] };
+          cands.sort((a, b) => statSync(join(base, b)).mtimeMs - statSync(join(base, a)).mtimeMs);
+          file = join(base, String(cands[0]));
         }
         const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
         const ga = (raw.groupAdmin = (raw.groupAdmin || {}) as Record<string, unknown>);
@@ -2514,8 +2442,9 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       if (secs > 0 && picked.length > 0) {
         const senders = [...new Set(picked.filter((p) => !p.me && /^[0-9A-Za-z]{32}$/u.test(p.s)).map((p) => p.s))].slice(0, 20);
         if (senders.length > 0) {
-          // ★ 2026-11-14 修：时间字段用 UTC+8 墙上时间，才配 +08:00（TZ=UTC 时原来差 8 小时）
-          const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
+          const pad = (n: number): string => String(n).padStart(2, '0');
+          const ex = new Date(Date.now() + secs * 1000);
+          const rfc = `${ex.getFullYear()}-${pad(ex.getMonth() + 1)}-${pad(ex.getDate())}T${pad(ex.getHours())}:${pad(ex.getMinutes())}:${pad(ex.getSeconds())}+08:00`;
           let mOk = 0;
           for (const sid of senders) {
             const mr = await ga.client.setMemberMute(gid, sid, rfc);
@@ -2556,9 +2485,10 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
-      // ★ 2026-11-14 修：同上，UTC+8 墙上时间 + +08:00 偏移
-      const rfc = args.action === 'mute'
-        ? new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00'
+      const pad = (n: number): string => String(n).padStart(2, '0');
+      const expire = args.action === 'mute' ? new Date(Date.now() + secs * 1000) : null;
+      const rfc = expire
+        ? `${expire.getFullYear()}-${pad(expire.getMonth() + 1)}-${pad(expire.getDate())}T${pad(expire.getHours())}:${pad(expire.getMinutes())}:${pad(expire.getSeconds())}+08:00`
         : null;
       const all = (Array.isArray(args.member_openids) ? args.member_openids : [])
         .map((v) => String(v).trim()).filter(Boolean)
@@ -3294,13 +3224,6 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
         extDiag(`注册成功: ${def.name}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // ★★ 2026-11-14 修（审查发现）：签名在循环**之前**就写进了 extSigStore，
-        //   于是「单个工具注册失败」之后 sig 仍是新的 ⇒ 下次命中「未变化」直接 return
-        //   ⇒ 这个工具**永久缺失**（tools_reload 也救不回，只有改文件让 mtime 变才重试）。
-        //   修法：真失败时删掉签名，强制下次重来。already registered 属幂等，不算失败。
-        if (!/already registered/i.test(msg)) {
-          try { extSigStore.delete(ctx as unknown as object); } catch { /* ignore */ }
-        }
         if (/already registered/i.test(msg)) {
           extDiag(`already registered: ${def.name}`);
           continue;
@@ -3945,18 +3868,8 @@ const extGranted = new WeakMap<object, Map<string, () => void>>();
  */
 const extGrantSet = new WeakMap<object, Set<string>>();
 const extRestrictState2 = new WeakMap<object, { sig: string; dispose?: () => void }>();
-/**
- * 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引重放一次剪枝）。
- *
- * ★★ 2026-11-14 修（长跑内存单调上涨）：原来是 Map<object,string> —— 强引用每个 agent
- *   作用域且从不 delete，而 ctx 挂着整棵 agent/session/事件图，等于整棵图都无法 GC；
- *   触发点是每次会话重建。改 WeakMap 后引用不再阻止回收。
- *
- * ⚠️ 重放剪枝的遍历**不能**从这张表枚举（WeakMap 不可枚举），改成遍历活跃会话表；
- *   而且必须同时看 rec.agentCtx 与 rec.agent?.ctx —— claimed / pre-step 钩子用的是
- *   agent.ctx，只查 agentCtx 会漏（上一版就漏了，表现为 disable 后工具仍可调用）。
- */
-const extSeenCtx = new WeakMap<object, string>();
+/** 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引**重放一次**剪枝） */
+const extSeenCtx = new Map<object, string>();
 /**
  * 「用户主动关掉」的工具（per agent）：`gain_qq_tools.disable` 加进来，`enable` 移出去。
  * applyExtToolVisibility 计算该注册哪些时**排除**它们 —— 否则"自己实例那份"每轮都会被
@@ -4439,22 +4352,7 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
       //   ★ 2026-10-28（主人抓到抖动："新增 7 个 → 下个 step 又移除 7 个"）：
       //   以前是「循环里边扫描边注册」⇒ 注册发生时 deny 名单还不完整 ⇒ 模型先看到一步、下一步才被剪掉。
       //   现在顺序固定为 **扫描 → 剪枝 → 注册**：注册落地时 deny 已经就位，模型永远看不到那一步。
-      // ★★ 2026-11-14：遍历来源从 extSeenCtx（已是 WeakMap，不可枚举）改成活跃会话表；
-      //   **两个字段都要看**：claimed / pre-step 用 agent.ctx 登记，ensureExtToolsGlobal 用
-      //   rec.agentCtx —— 只查后者会漏掉整整一类作用域（表现为 disable 后工具仍可调用）。
-      //   同一作用域重复调用是安全的：applyExtToolVisibility 会比较签名并跳过未变化的。
-      for (const mgr of managersOf()) {
-        const sessions = (mgr as unknown as { sessions?: Map<string, { agentCtx?: object; agent?: { ctx?: object } }> }).sessions;
-        if (!sessions || typeof sessions.values !== 'function') continue;
-        for (const rec of sessions.values()) {
-          const cands = [rec?.agentCtx, rec?.agent?.ctx];
-          for (const c of cands) {
-            if (!c) continue;
-            const tg = extSeenCtx.get(c);
-            if (tg) applyExtToolVisibility(c, tg);
-          }
-        }
-      }
+      for (const [c, tg] of extSeenCtx) applyExtToolVisibility(c, tg);
       // ── 阶段 3：**不再全局注册**（2026-10-31 实测定论）──────────────
       //   实测对照：注册到 apply(ctx) 后 QQ 会话调不到（unknown tool），
       //   而 gain_qq_tools.enable 用 agent.ctx 注册**立刻可用**。

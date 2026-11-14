@@ -13,7 +13,7 @@
  *   已缓存过的直接跳过；任何失败都静默（引用块照旧回退 URL，不影响主链）。
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
 
@@ -21,6 +21,17 @@ import { lookupImagePath, rememberImagePath } from '../features/image-path-cache
 const MAX_IMAGES = 3;
 /** 单张下载超时 */
 const TIMEOUT_MS = 8000;
+/**
+ * 预取目录里保留多少天（★ 2026-11-14 修：原来**只写不删**，长跑后 `.qqbot/referenced/` 会无限涨）。
+ * 内容寻址（sha1）所以同一张图不会重复写入；这里只负责回收"再也不会被引用到"的旧文件。
+ * 每 24 小时最多清理一次，避免每次入站都读目录。
+ */
+const KEEP_DAYS = 7;
+const PRUNE_INTERVAL_MS = 24 * 3600 * 1000;
+// ★★ 2026-11-14（CodeRabbit）：**按目录分别记**清理时间 ——
+//   原来是模块级单值，同进程两个实例共用：A 清理后 24h 内 B 直接 return，
+//   B 的过期图片会长期留在盘上（今天一整天的老毛病：模块级状态没按实例分桶）。
+const lastPruneAtByDir = new Map<string, number>();
 
 /** 引用里能拿到的附件形状（SDK 的 QuotedAttachment） */
 export interface QuoteImageAttachment {
@@ -61,6 +72,14 @@ export async function prefetchQuoteImages(
   const atts = Array.isArray(quote?.attachments) ? quote.attachments : [];
   if (!atts.length || !dataRoot) return 0;
   let done = 0;
+  // ★★ 2026-11-14（CodeRabbit）：**先清理，再检查/写入** ——
+  //   原来清理在写入之后：同内容文件刚好超过 KEEP_DAYS 且 URL 缓存已过期时，
+  //   会「判已存在 → 跳过写入 → 立刻被清理删掉 → 仍然 remember 这个已删路径」。
+  //   放到循环前（内部有 24h 限流，只会真扫一次）。
+  try {
+    pruneOldReferenced(join(dataRoot, '.qqbot', 'referenced'));
+  } catch { /* 清理失败不影响预取 */ }
+
   for (const a of atts) {
     if (done >= MAX_IMAGES) break;
     const url = String(a?.url ?? '').trim();
@@ -76,7 +95,8 @@ export async function prefetchQuoteImages(
       mkdirSync(dir, { recursive: true });
       const sha1 = createHash('sha1').update(buf).digest('hex').slice(0, 12);
       const file = join(dir, sha1 + extOf(a));
-      writeFileSync(file, buf);
+      // ★ 内容寻址：同内容只写一次（原来每次都 writeFileSync 覆盖同名文件，白写）
+      if (!existsSync(file)) writeFileSync(file, buf);
       rememberImagePath(url, file);
       done++;
       logger?.debug?.(`[引用图片预取] 已落盘 ${file} (${buf.length}B)`);
@@ -85,4 +105,19 @@ export async function prefetchQuoteImages(
     }
   }
   return done;
+}
+
+/** 回收预取目录里的旧图片（超过 {@link KEEP_DAYS} 天；24 小时内最多扫一次） */
+function pruneOldReferenced(dir: string): void {
+  const now = Date.now();
+  const last = lastPruneAtByDir.get(dir) ?? 0;
+  if (now - last < PRUNE_INTERVAL_MS) return;
+  lastPruneAtByDir.set(dir, now);
+  const cutoff = now - KEEP_DAYS * 24 * 3600 * 1000;
+  try {
+    for (const name of readdirSync(dir)) {
+      const f = join(dir, name);
+      try { if (statSync(f).mtimeMs < cutoff) unlinkSync(f); } catch { /* 单个失败不影响其它 */ }
+    }
+  } catch { /* 目录读不了就算了，别影响预取 */ }
 }

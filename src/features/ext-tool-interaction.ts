@@ -23,7 +23,7 @@
 import type { Logger } from '../types.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { loadExtensionTools, loadExtensionCommands } from './extension-store.js';
 import { lookupExtToolCard, parseExtToolButtonData } from './ext-tool-cards.js';
@@ -40,10 +40,22 @@ import { lookupExtToolCard, parseExtToolButtonData } from './ext-tool-cards.js';
  */
 const DISPATCH_DIAG = process.env.QQBOT_DISPATCH_DIAG
   || join(homedir(), '.dsh', 'qqbot-dispatch-diag.log');
+/** 诊断文件大小上限；超了就轮转成 .1（只留一份，避免无限涨） */
+const DIAG_MAX_BYTES = 512 * 1024;
+/** 每次 append 都 stat 太浪费：每 N 次检查一次 */
+const DIAG_CHECK_EVERY = 50;
+let diagWrites = 0;
 function dlog(msg: string): void {
   try {
     mkdirSync(dirname(DISPATCH_DIAG), { recursive: true });
-    appendFileSync(DISPATCH_DIAG, `${new Date().toISOString()} ${msg}\n`);
+    // ★★ 2026-11-14 修（审查发现）：原来只 append **从不轮转** ——
+    //   派发诊断默认常开（主人 2026-10-13 要求），长跑后文件无限涨；
+    //   而且每次按钮点击都同步写一次。现在超过 512KB 就轮转成 .1（留一份够排查）。
+    diagWrites += 1;
+    if (diagWrites % DIAG_CHECK_EVERY === 1) {
+      try { if (statSync(DISPATCH_DIAG).size > DIAG_MAX_BYTES) renameSync(DISPATCH_DIAG, DISPATCH_DIAG + '.1'); } catch { /* 文件还不存在 */ }
+    }
+    appendFileSync(DISPATCH_DIAG, new Date().toISOString() + ' ' + msg + '\n');
   } catch { /* ignore */ }
 }
 
@@ -156,6 +168,9 @@ export function createExtToolInteractionController(deps: ExtToolInteractionDeps)
       // ④ 点击者身份：群聊看 group_member_openid，单聊看 user_openid
       const openid = String(e.group_member_openid ?? e.user_openid ?? '');
       const scope = e.group_member_openid ? 'group' : 'c2c';
+      // 2026-11-14 记：曾想改成 e.group_openid 优先（防"卡片转发后在别的群点击写回原群"），
+      //   但主人实测：**按钮卡片转发后会直接变成纯文本，按钮消失** ⇒ 点击事件根本不会发生，
+      //   两个值永远相同。故保持原样，不为不存在的情况增加分支。
       const peerId = scope === 'group' ? String(hit.targetId || e.group_openid || '') : openid;
       const clickedBefore = noteClicked(cardId, buttonId, openid);
 
