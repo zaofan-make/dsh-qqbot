@@ -13,7 +13,7 @@
  *   已缓存过的直接跳过；任何失败都静默（引用块照旧回退 URL，不影响主链）。
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lookupImagePath, rememberImagePath } from '../features/image-path-cache.js';
 
@@ -21,6 +21,14 @@ import { lookupImagePath, rememberImagePath } from '../features/image-path-cache
 const MAX_IMAGES = 3;
 /** 单张下载超时 */
 const TIMEOUT_MS = 8000;
+/**
+ * 预取目录里保留多少天（★ 2026-11-14 修：原来**只写不删**，长跑后 `.qqbot/referenced/` 会无限涨）。
+ * 内容寻址（sha1）所以同一张图不会重复写入；这里只负责回收"再也不会被引用到"的旧文件。
+ * 每 24 小时最多清理一次，避免每次入站都读目录。
+ */
+const KEEP_DAYS = 7;
+const PRUNE_INTERVAL_MS = 24 * 3600 * 1000;
+let lastPruneAt = 0;
 
 /** 引用里能拿到的附件形状（SDK 的 QuotedAttachment） */
 export interface QuoteImageAttachment {
@@ -76,7 +84,10 @@ export async function prefetchQuoteImages(
       mkdirSync(dir, { recursive: true });
       const sha1 = createHash('sha1').update(buf).digest('hex').slice(0, 12);
       const file = join(dir, sha1 + extOf(a));
-      writeFileSync(file, buf);
+      // ★ 内容寻址：同内容只写一次（原来每次都 writeFileSync 覆盖同名文件，白写）
+      if (!existsSync(file)) writeFileSync(file, buf);
+      // ★ 周期性回收：只删超过 KEEP_DAYS 的，且 24 小时内最多扫一次
+      pruneOldReferenced(dir);
       rememberImagePath(url, file);
       done++;
       logger?.debug?.(`[引用图片预取] 已落盘 ${file} (${buf.length}B)`);
@@ -85,4 +96,18 @@ export async function prefetchQuoteImages(
     }
   }
   return done;
+}
+
+/** 回收预取目录里的旧图片（超过 {@link KEEP_DAYS} 天；24 小时内最多扫一次） */
+function pruneOldReferenced(dir: string): void {
+  const now = Date.now();
+  if (now - lastPruneAt < PRUNE_INTERVAL_MS) return;
+  lastPruneAt = now;
+  const cutoff = now - KEEP_DAYS * 24 * 3600 * 1000;
+  try {
+    for (const name of readdirSync(dir)) {
+      const f = join(dir, name);
+      try { if (statSync(f).mtimeMs < cutoff) unlinkSync(f); } catch { /* 单个失败不影响其它 */ }
+    }
+  } catch { /* 目录读不了就算了，别影响预取 */ }
 }

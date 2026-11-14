@@ -634,6 +634,18 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
                 live.injectRules = next.injectRules;
             if (typeof next.imageHint === 'boolean')
                 live.imageHint = next.imageHint;
+            // ★★ 2026-11-14 修（审查发现）：`EditableConfigSchema` 里这几个字段**面板能改但 sync 没同步** ——
+            //   保存后旧值一直生效，只有重启才变。逐项补齐（与 schema 对齐）。
+            if (typeof next.imageOffload === 'boolean')
+                live.imageOffload = next.imageOffload;
+            if (next.imageAggregate && typeof next.imageAggregate === 'object')
+                live.imageAggregate = next.imageAggregate;
+            if (typeof next.messageReference === 'boolean')
+                live.messageReference = next.messageReference;
+            if (typeof next.extMetaTool === 'boolean')
+                live.extMetaTool = next.extMetaTool;
+            if (typeof next.webTurnSilent === 'boolean')
+                live.webTurnSilent = next.webTurnSilent;
             // 本地小模型: 整块替换(面板发的是完整对象; overrides 也在里面) —— 改了就地生效, 不用重启
             if (next.localModel && typeof next.localModel === 'object')
                 live.localModel = next.localModel;
@@ -658,7 +670,7 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             //    (实测症状: dock 保存后 /botplay 报"还没有装配任何互动事件")。
             if (Array.isArray(next.botplayEvents) && next.botplayEvents.length > 0)
                 live.botplayEvents = next.botplayEvents;
-            logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
+            logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
         }
         catch (err) {
             logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);
