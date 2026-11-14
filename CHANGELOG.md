@@ -1,3 +1,38 @@
+## 1.12.32 (2026-11-14)
+
+### 🔴 修复：扩展能力包里 `sender` 被展开，原型方法全丢
+
+组装扩展工具的能力包时写的是：
+
+```js
+sender: { ...sess.ch.sender, openid }     // ← 错
+```
+
+`sess.ch.sender` 是 `QQBotSender` 的**实例**，`sendMedia / sendMarkdown / sendTuwenCard /
+recallLast` 这些方法都在**原型**上。对象展开只复制**自有属性** ⇒ 方法一个都带不过去
+⇒ 能力包里 `deps.sender?.sendMedia` 是 `undefined` ⇒ 所有扩展的
+`env.voice / env.image / env.media / env.markdown` **静默返回 false**。
+
+**实测症状**（主人报的）：`dskit_tts` 合成成功，却提示"发送失败（文件还在）"。
+同一个文件用内置 `send_media` 工具能正常发 —— 因为那条路用的是 `ch.sender.sendMedia(...)`（原对象，没展开）。
+`bili_share` 的 `env.card` 其实也一直是坏的，它能发出卡片全靠后面 `env.api` 直连 HTTP 兜回来。
+
+修法：**同原型的新对象 + 自有属性 + openid**
+
+```js
+Object.assign(Object.create(Object.getPrototypeOf(raw)), raw, { openid })
+```
+
+方法在、`env.sender.openid` 也在，所有走能力包发消息的扩展一起修好。
+
+### 修复：扩展工具的签名缓存不认「改实现」
+
+签名只比 `name/description/schema/expose`，改 `tools/*.mjs` 的实现而 schema 没动时签名不变
+⇒ 走「未变化，跳过重复注册」⇒ `tools_reload` 之后跑的还是旧模块。
+现在 `extension-store` 加载时带出 `def.mtime`，签名把它算进去。
+
+（这两处都是 `deepseek-kit` 上架过程中踩出来的，详见市场 PR。）
+
 ## 1.12.31 (2026-11-14)
 
 ### 扩展市场：DeepSeek 全家桶已上架 ✅

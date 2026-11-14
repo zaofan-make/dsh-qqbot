@@ -3344,10 +3344,27 @@ export async function apply(ctx, opts) {
                                 openid: recAny?.senderId,
                                 // sender 合并而非覆盖：保留原字段（别的扩展可能读 name/card 等）
                                 // 额外带上 openid —— 部分扩展按 `ctx.sender.openid` 找发送者
-                                sender: ({
-                                    ...((sess?.ch.sender && typeof sess.ch.sender === 'object') ? sess.ch.sender : {}),
-                                    openid: recAny?.senderId,
-                                }),
+                                // ★★ 2026-11-14 修（**不能展开**）：`sess.ch.sender` 是 `QQBotSender` 的**实例**，
+                                //   `sendMedia / sendMarkdown / sendTuwenCard / recallLast…` 这些方法在**原型**上。
+                                //   原来写 `{...sess.ch.sender, openid}` —— 展开只复制**自有属性**，原型方法全丢
+                                //   ⇒ caps 里 `deps.sender?.sendMedia` 是 undefined ⇒ 所有扩展的
+                                //   `env.voice / env.image / env.media / env.markdown` **静默返回 false**
+                                //   （实测症状：dskit_tts 合成成功、却说"发送失败（文件还在）"；
+                                //     bili_share 的 env.card 也是失败后才靠 env.api 直连兜回来的）。
+                                //   现在用「同原型的新对象 + 自有属性 + openid」：方法可用，openid 也还在。
+                                sender: (() => {
+                                    const raw = sess?.ch.sender;
+                                    if (!raw)
+                                        return { openid: recAny?.senderId };
+                                    let proto = null;
+                                    try {
+                                        proto = Object.getPrototypeOf(raw);
+                                    }
+                                    catch {
+                                        proto = null;
+                                    }
+                                    return Object.assign(Object.create(proto), raw, { openid: recAny?.senderId });
+                                })(),
                                 // ★ 2026-10-25：补齐 docs/extension-contract.md §2 承诺的命名空间
                                 //   文档写的是 `env.user.openid/name/isOwner` 与 `env.peer.scope/peerId`，
                                 //   但实现一直没给 —— 文档声明「本文写的就是当前真实实现」，
