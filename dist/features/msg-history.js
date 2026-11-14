@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { md5sInText, normQuoteText } from '../shared/quote-match.js';
-import { appendLine, closeFile, ensureDir, forgetDirTree } from '../shared/async-append.js';
+import { appendLine, closeFile, ensureDir, forgetDirTree, hasActiveStream } from '../shared/async-append.js';
 /** 默认保留天数（主人定：7 天） */
 export const KEEP_DAYS = 7;
 /** 单日文件读取上限（防御：一天消息特别多时别把内存吃爆） */
@@ -192,15 +192,16 @@ export function pruneOld() {
             const st = statSync(dir);
             if (!st.isDirectory())
                 continue;
-            // ★ 2026-11-15（CodeRabbit 那条"目录被删后缓存没失效"引出的**更深的问题**）：
-            //   写入改成异步 WriteStream 之后，目录里可能**暂时只有名字 .txt、还没有 .jsonl**
-            //   （open 是异步的，同步循环里连着写很多条时尤其明显）。
-            //   这时下面的 `alive === 0` 判断会把**正在使用的会话目录整个删掉**，
-            //   之后的写入就落进已被删除的 fd，那个群从此没有历史。
-            //   保护：最近 2 小时内动过的目录一律不碰（pruneOld 本来就是清 7 天前的东西，不急）。
-            if (Date.now() - st.mtimeMs < 2 * 60 * 60 * 1000)
-                continue;
+            // ★ 2026-11-15（CodeRabbit 第二轮）：**不能靠 mtime 判断目录是否活跃** ——
+            //   追加写是 `open(file,'a')`，只更新**文件**的 mtime，目录 mtime 一直是旧的。
+            //   所以闲置 8 天的目录即使刚刚写过，也会被判成"过期"，照样误删。
+            //   可靠判据只有两个：① 这个目录下还有挂着写入流的文件；
+            //                     ② 这个目录的文件还在内存缓存里（说明刚被读过/写过）。
             files = readdirSync(dir);
+            if (files.some((f) => hasActiveStream(join(dir, f))))
+                continue;
+            if ([...dayCache.keys()].some((k) => k.startsWith(dir)))
+                continue;
         }
         catch {
             continue;
@@ -478,6 +479,19 @@ export function findSenderByQuote(scope, peerId, text, imageMd5s) {
     return undefined;
 }
 /**
+ * 把 dayCache 控制在 8 项以内，并保住 `keep` 对应的文件。
+ * ★ 2026-11-15（CodeRabbit 第二轮）：原来只有"成功读文件"那条路径会淘汰，
+ *   "首建空缓存"的路径不会 —— 每来一个新会话就多一项，能突破上限。
+ */
+function evictDayCache(keep) {
+    for (const k of [...dayCache.keys()]) {
+        if (dayCache.size <= 8)
+            break;
+        if (k !== keep)
+            dayCache.delete(k);
+    }
+}
+/**
  * 读某一天的行（新→旧，最多 {@link MAX_READ_LINES} 行）。
  * `cacheable=true` 时把解析结果留在内存（只给"今天"用，见 {@link dayCache}）。
  */
@@ -510,6 +524,8 @@ function readDayRows(file, cacheable) {
         //   否则"刚接受的那条消息"对同进程的紧随查询不可见（要等它落盘）。
         if (cacheable && !dayCache.has(file)) {
             dayCache.set(file, { key: 'dirty', rows: [], sorted: [], byNx: new Map(), byMd5: new Map() });
+            // ★ CodeRabbit 第二轮：首建空缓存也要走淘汰，否则新会话一条就加一个、能超 8 项
+            evictDayCache(file);
         }
         return dayCache.get(file)?.rows ?? [];
     }
@@ -540,12 +556,7 @@ function readDayRows(file, cacheable) {
         // 建索引时顺手预归一化（`_nx`）：匹配时要拿每条正文跟被引原文比，
         // 若每次现算 `normQuoteText`（5 条正则替换），几百条就是上千次正则 —— 实测占 7ms 的大头。
         dayCache.set(file, { key, rows, ...buildIndex(rows) });
-        // 控制缓存规模：只留最近几天（跨天时把最老的挤掉）
-        if (dayCache.size > 8) {
-            const oldest = dayCache.keys().next().value;
-            if (oldest !== undefined && oldest !== file)
-                dayCache.delete(oldest);
-        }
+        evictDayCache(file);
     }
     return rows;
 }

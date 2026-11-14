@@ -67,6 +67,10 @@ export function forgetDirTree(dir) {
             closeFile(key);
     }
 }
+/** 这个路径当前是否挂着写入流（= 有写入正在进行/已排队，目录不能删） */
+export function hasActiveStream(file) {
+    return streams.has(file);
+}
 /** 关掉某个文件的流；**关之前先把内核缓冲刷到盘**（见函数内注释） */
 export function closeFile(file) {
     const s = streams.get(file);

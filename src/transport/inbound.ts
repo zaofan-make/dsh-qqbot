@@ -1363,7 +1363,10 @@ function enrichQuoteFromCache(q: ResolvedQuote | undefined, dataRoot: string, pe
   // ★ 数据源只有一个：**消息历史台账**（主人 2026-11-14 定："不能独立台账"）。
   //   之前那本 attribution.jsonl 已撤 —— 历史台账本来就记着每条消息的 s/n/x，
   //   这次又补了 f（图片内容 MD5），正文和纯图两条路都能查。
-  if (!out.senderName && !out.senderId) {
+  //   命中后只在"完全没有发送者"时才补，绝不覆盖来源更硬的信号。
+  //   ★ 2026-11-15（CodeRabbit 第二轮）：`entry.senderId` 也是 SDK 给的**明确**发送者，
+  //     不检查它的话，正文推断会把 A 盖成 B —— 优先顺序应当是 SDK > 正文推断。
+  if (!out.senderName && !out.senderId && !out.entry?.senderId) {
     const probeMd: string[] = [];
     for (const att of Array.isArray(q.attachments) ? q.attachments : []) {
       const v = md5OfFilename(att?.filename);
@@ -1412,8 +1415,13 @@ export function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: st
   //   目标形态：`[做早饭]我喜欢鲸鱼`，比"引用 X 的消息：\n 内容"省一条换行和几个字。
   //   名字来源见 ResolvedQuote.senderName（API 不给 → 走消息历史台账）。
   //   只有 openid 时退化成 id 前几位；两样都没有就什么都不加（保持原样，不加噪音）。
-  const qSender = String(quote?.senderName ?? '').trim()
+  const qSenderRaw = String(quote?.senderName ?? '').trim()
     || shortSenderId(String(quote?.senderId ?? quote?.entry?.senderId ?? '').trim());
+  // ★ 2026-11-15（CodeRabbit 第二轮）：昵称要**清洗**再内联 ——
+  //   若昵称里带 `]` 或超长，拼出来是 `[A]B]📷 被引用的图片: …`，
+  //   `ATT_LINE_RE` 认不出这是附件行，图片路径就会在限长截断里被切掉。
+  //   规则与 ATT_LINE_RE 的"可选 `[发送者]` 前缀"保持一致：去掉方括号/换行、限 32 字。
+  const qSender = qSenderRaw.replace(/[[\]\r\n]/g, '').slice(0, 32);
   if (qSender) lines[0] = escapeBlockMarkers(`[${qSender}]`) + lines[0];
 
   // 排版(2026-10-01 专家团共识): 引用内容整体退 2 格 —— 视觉上从属, 不再和正文同权重
