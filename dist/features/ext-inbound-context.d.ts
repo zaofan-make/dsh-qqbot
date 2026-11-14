@@ -175,7 +175,10 @@ export interface ExtCtxSession {
     warned: Set<string>;
 }
 /** 取（必要时建）某个 ctx 的扩展会话，并把动作 API 挂上去（幂等） */
-export declare function ensureExtSession(ctx: MiddlewareContext, env: ExtRunEnv): ExtCtxSession;
+export declare function ensureExtSession(ctx: MiddlewareContext, env: ExtRunEnv, current?: {
+    file: string;
+    name: string;
+}): ExtCtxSession;
 /** 只读会话（没挂过则 undefined） */
 export declare function sessionOf(ctx: MiddlewareContext): ExtCtxSession | undefined;
 /**

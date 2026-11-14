@@ -394,7 +394,10 @@ function toMediaSource(src: ExtMediaSource | string): ExtMediaSource {
  */
 export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
   const logger = deps.logger;
-  const self = String(deps.selfName ?? 'ext');
+  // ★★ 2026-11-14 修（审查发现）：selfName 必须**惰性求值**。
+  //   能力包在"扩展进入之前"就构造好了，那时 deps.selfName 还是上一条消息的值/空值
+  //   ⇒ 固化下来会让**所有扩展共用同一个 store 文件**（实测：两个入站扩展互相覆盖数据）。
+  const selfNow = (): string => String(deps.selfName ?? 'ext');
   const kind = String(deps.kind ?? 'ext');
   const owners = Array.isArray(deps.owners) ? deps.owners.map(String) : [];
   const appId = String(deps.appId ?? '');
@@ -402,11 +405,15 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
   const actorOpenid = String(deps.actorOpenid ?? '');
 
   const storeDir = deps.dataRoot ? join(deps.dataRoot, '.qqbot-extensions', kind, 'data') : '';
-  const storeFile = storeDir ? join(storeDir, `${self.replace(/\.(mjs?|cjs|js)$/i, '')}.json`) : '';
+  /** store 文件路径 —— **惰性**：每次读写都按当前的 selfName 算（agent 可能还没进扩展） */
+  const storePath = (): string => {
+    const s = selfNow().replace(/\.(mjs?|cjs|js)$/i, '');
+    return storeDir ? join(storeDir, `${s}.json`) : '';
+  };
 
   const warn = (what: string, err: unknown): void => {
     try {
-      logger?.warn?.(`[ext-caps] ${self} ${what} 失败: ${err instanceof Error ? err.message : String(err)}`);
+      logger?.warn?.(`[ext-caps] ${selfNow()} ${what} 失败: ${err instanceof Error ? err.message : String(err)}`);
     } catch { /* 日志失败忽略 */ }
   };
 
@@ -431,7 +438,7 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         if (statSync(file).size > 2 * 1024 * 1024) renameSync(file, `${file}.1`);
       } catch { /* 文件不存在/读不到都无所谓 */ }
       const msg = err === undefined ? '' : ` err=${err instanceof Error ? err.message : String(err)}`.slice(0, 400);
-      appendFileSync(file, `[${new Date().toISOString()}] ${self} ${what} ok=${ok}${msg}
+      appendFileSync(file, `[${new Date().toISOString()}] ${selfNow()} ${what} ok=${ok}${msg}
 `, 'utf8');
     } catch { /* 观测失败绝不影响发送 */ }
   };
@@ -579,19 +586,19 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
 
     // ── 持久化（落数据根，插件升级/重装不丢）─────────────────────────
     store: {
-      path: storeFile,
+      path: storePath(),
       load<T = unknown>(): T | undefined {
-        if (!storeFile) return undefined;
+        if (!storePath()) return undefined;
         try {
-          if (!existsSync(storeFile)) return undefined;
-          return JSON.parse(readFileSync(storeFile, 'utf8')) as T;
+          if (!existsSync(storePath())) return undefined;
+          return JSON.parse(readFileSync(storePath(), 'utf8')) as T;
         } catch (err) { warn('store.load', err); return undefined; }
       },
       save(value: unknown): boolean {
-        if (!storeFile) return false;
+        if (!storePath()) return false;
         try {
-          mkdirSync(dirname(storeFile), { recursive: true });
-          writeFileSync(storeFile, JSON.stringify(value ?? null, null, 2), 'utf8');
+          mkdirSync(dirname(storePath()), { recursive: true });
+          writeFileSync(storePath(), JSON.stringify(value ?? null, null, 2), 'utf8');
           return true;
         } catch (err) { warn('store.save', err); return false; }
       },
@@ -613,7 +620,7 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         const expireAt = Number(input?.expireAt);
         const ttlMs = Number.isFinite(expireAt) && expireAt > Date.now() ? expireAt - Date.now() : undefined;
         return registerExtToolCard(deps.dataRoot, {
-          toolName: self,
+          toolName: selfNow(),
           cardId,
           buttonIds,
           scope: String(deps.scope ?? ''),
@@ -747,7 +754,7 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
     peerSessionId: String(deps.peerSessionId ?? ''),
 
     log: (...args: unknown[]) => {
-      try { logger?.info?.(`[ext:${self}] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`); }
+      try { logger?.info?.(`[ext:${selfNow()}] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`); }
       catch { /* ignore */ }
     },
 
@@ -778,9 +785,17 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
       try {
         const g = globalThis as unknown as { __qqbotExtRoutes?: Map<string, unknown> };
         if (!g.__qqbotExtRoutes) g.__qqbotExtRoutes = new Map<string, unknown>();
-        // extId 优先用能力包里的（若上游填了），否则用扩展自己传的 idHint
-        const extId = String((deps as { extId?: string }).extId || idHint || '').trim();
-        if (!extId) return false;
+        // ★★ 2026-11-14 修（审查发现：这个接口**从来没成功注册过**）：
+        //   原来只从 deps.extId / idHint 取，而全仓库没有任何构造方传 deps.extId，
+        //   文档示例也不传 idHint ⇒ extId 恒为空 ⇒ 静默 return false，前端 404 且无日志。
+        //   现在回落到扩展自己的 selfName（扩展在 run 里调用时它已经有值），
+        //   并把非法字符洗成下划线（settings-host 的 SAFE_ID 只认 [A-Za-z0-9_-]）。
+        const rawId = String((deps as { extId?: string }).extId || idHint || selfNow() || '').trim();
+        const extId = rawId.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+        if (!extId) {
+          logger?.warn?.('[ext-caps] registerRoute 没有可用的扩展 id（selfName/extId/idHint 全空），路由未注册');
+          return false;
+        }
         const m = String(method || 'GET').toUpperCase();
         const p = String(path || '/').trim() || '/';
         g.__qqbotExtRoutes.set(extId + '|' + m + '|' + p, handler);
@@ -800,12 +815,12 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
       const requireOwner = opts?.requireOwner !== false;   // 默认：仅主人
       const isOwner = actorOpenid !== '' && owners.includes(actorOpenid);
       if (requireOwner && !isOwner) {
-        try { logger?.warn?.(`[ext-caps] ${self} restart 被拒：仅主人可触发（想放开就传 { requireOwner: false }）`); }
+        try { logger?.warn?.(`[ext-caps] ${selfNow()} restart 被拒：仅主人可触发（想放开就传 { requireOwner: false }）`); }
         catch { /* ignore */ }
         return false;
       }
       try {
-        logger?.warn?.(`[ext-caps] ${self} 触发了宿主自重启（owner=${isOwner} actor=${actorOpenid || '(未知)'}）`);
+        logger?.warn?.(`[ext-caps] ${selfNow()} 触发了宿主自重启（owner=${isOwner} actor=${actorOpenid || '(未知)'}）`);
       } catch { /* ignore */ }
       return (deps.restartImpl ?? selfRestart)(opts?.delayMs);
     },
