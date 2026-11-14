@@ -750,7 +750,10 @@ export class SessionManager {
             this.logger.info(`getOrCreate(forceNew): 弃档重开 key=${key} new=${rotated}`);
         }
         // 2026-09-11: 先定 sessionId, 再按「会话级」查模型路由 —— 新会话(sessionId 无 override)回落全局默认
-        const sessionId = SessionId(this.currentSessionId(key));
+        // ★ 2026-11-14 修（审查确认）：轮换分支要给这个变量重新赋值，所以不能是 const。
+        //   原来轮换成功后 record.sessionId 与真实会话永久不一致 → findBySessionId 查不到、
+        //   工作区挂错、该 peer 后续 send_media 报通道未就绪，直到重启。
+        let sessionId = SessionId(this.currentSessionId(key));
         const route = this.modelResolver.getEffectiveRoute(key, sessionId);
         this.logger.info(`getOrCreate: key=${key} route=${route ? `${route.provider}/${route.model}` : 'host-default'} sessionId=${sessionId}`);
         let agent;
@@ -842,6 +845,7 @@ export class SessionManager {
                     });
                     agent = created2.agent;
                     handle = created2;
+                    sessionId = rotated; // ★ 轮换后必须把变量也更新，否则下面的 record/attach 用的还是撞车那个旧 id
                     this.logger.info(`created new session(轮换后): key=${key} sessionId=${rotated} preset=${agentPreset ?? 'none'}`);
                     try {
                         this.modelResolver.setSessionCfg(key, { cwd: wantCwd });
