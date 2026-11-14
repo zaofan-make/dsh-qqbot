@@ -585,6 +585,15 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     },
     injectRules: live.injectRules,
     imageHint: live.imageHint,
+    // ★★ 2026-11-14（CodeRabbit Major）：**sync 里同步的字段，entry 必须也带上当前 live 值**。
+    //   否则 hooks.setSource 立刻调第一次 sync 时，source() 返回的是 schema 解析结果（含默认值），
+    //   而 entry 缺这几个键 ⇒ 用**默认值**覆盖用户的真实配置：
+    //   例 extMetaTool 默认 true（用户关了会被掀回 true）、webTurnSilent 默认 false（用户开了会被关掉）。
+    imageOffload: live.imageOffload,
+    imageAggregate: live.imageAggregate,
+    messageReference: live.messageReference,
+    extMetaTool: live.extMetaTool,
+    webTurnSilent: live.webTurnSilent,
     // ⚠️ 2026-09-13 补(主人实测: "面板把评分模式改成 block 了, 但记录里 gate 还是 log"):
     //   本地小模型这块**原来没进 live 同步** → 面板/设置页保存后要重启宿主才生效。
     //   功效: 价值评分模式(off/log/block)、门槛、单会话 overrides 现在改完即时生效。
