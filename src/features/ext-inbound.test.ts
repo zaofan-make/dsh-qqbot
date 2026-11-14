@@ -52,6 +52,9 @@ import {
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
 import { hasExtInboundReloader, registerExtInboundReloader } from './ext-reload.js';
 
+/** ★ 2026-11-14：注册/注销/卸载现在都要求带 dataRoot（按实例分桶），测试统一用这个 */
+const TEST_DATA_ROOT = join(tmpdir(), 'dsh-qqbot-ext-inbound-test');
+
 /** 记录所有日志行（用于断言"安静"与"可读"） */
 function makeLogger(): { logger: Logger; lines: string[] } {
   const lines: string[] = [];
@@ -113,7 +116,7 @@ beforeEach(() => {
 afterEach(async () => {
   __resetInboundExtensionsForTest();
   __resetBreakersForTest();
-  registerExtInboundReloader(undefined);
+  registerExtInboundReloader(TEST_DATA_ROOT, undefined);
   try { rmSync(root, { recursive: true, force: true }); } catch { /* Windows 偶发占用，忽略 */ }
 });
 
@@ -344,7 +347,7 @@ export function dispose() { globalThis.__inboundDisposeOrder.push('c'); }
     const r = await loadInboundExtensions({ dataRoot, logger });
     expect(r.total).toBe(3);
 
-    const n = await disposeInboundExtensions(logger);
+    const n = await disposeInboundExtensions(logger, TEST_DATA_ROOT);
     expect(n).toBe(3);
     // 逆序：c → b → a（b 抛错被吞，不阻断 a）
     expect(trace).toEqual(['c', 'a']);
@@ -355,16 +358,16 @@ export function dispose() { globalThis.__inboundDisposeOrder.push('c'); }
 
   it('没有登记任何扩展时 dispose 是空操作（不炸、不误报）', async () => {
     const { logger, lines } = makeLogger();
-    const n = await disposeInboundExtensions(logger);
+    const n = await disposeInboundExtensions(logger, TEST_DATA_ROOT);
     expect(n).toBe(0);
     expect(lines).toEqual([]);
   });
 
   it('dispose 会摘掉热重载入口（否则它会指向已经死掉的实例）', async () => {
     const { logger } = makeLogger();
-    registerExtInboundReloader(async () => ({ count: 1, names: ['x'] }));
+    registerExtInboundReloader(TEST_DATA_ROOT, async () => ({ count: 1, names: ['x'] }));
     expect(hasExtInboundReloader()).toBe(true);
-    await disposeInboundExtensions(logger);
+    await disposeInboundExtensions(logger, TEST_DATA_ROOT);
     expect(hasExtInboundReloader()).toBe(false);
   });
 });

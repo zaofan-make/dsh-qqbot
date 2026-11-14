@@ -1,19 +1,4 @@
-/** 从盘上直接读 autoRecall（settings 热更不落到闭包 config 时的兜底，2026-10-20） */
-function readAutoRecallFromDiskMw(cfg) {
-    try {
-        const c = cfg;
-        const prof = process.env.DSH_PROFILE || 'web';
-        const ns = String(c?.settingsNs || c?.ns || 'im-qqbot-2');
-        const f = homedir() + '/.dsh/qqbot-settings/' + prof + '/' + ns + '.json';
-        const j = JSON.parse(readFileSync(f, 'utf8'));
-        return j?.groupAdmin?.autoRecall;
-    }
-    catch {
-        return undefined;
-    }
-}
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { resolveAutoRecall } from '../features/auto-recall.js';
 import { errorHandler, messageFilter, accessPolicy, mentionGate, contentSanitizer, slashCommand, concurrencyGuard, typingIndicator, quoteRef, envelopeFormatter, } from '@tencent-connect/qqbot-nodejs';
 import { dataRootOf, stickerDirOf } from './data-root.js';
 import { stripLeadingMentions } from '../shared/mention-clean.js';
@@ -216,7 +201,7 @@ pluginCtx) {
     };
     await reloadInboundExtensions();
     // 注册给热重载入口：工具热刷（/tools-reload、tools_reload）时顺带重扫入站扩展 → **不重启也生效**
-    registerExtInboundReloader(async () => {
+    registerExtInboundReloader(dataRootOf(config), async () => {
         const r = await reloadInboundExtensions();
         return { count: r.total, names: r.extensions.map((e) => e.name) };
     });
@@ -326,8 +311,16 @@ pluginCtx) {
     bot.use(async (ctx, next) => {
         try {
             const m = ctx.message;
-            const ar = readAutoRecallFromDiskMw(config) ?? config
-                .groupAdmin?.autoRecall;
+            const ar = resolveAutoRecall(config);
+            // ★ 2026-11-14（CodeRabbit）：把**这一次**的解析结果挂到 ctx.state ——
+            //   bootstrap 的 bot.on('message') 收到的是同一个 MiddlewareContext（洋葱模型），
+            //   它直接复用这份结果，不再二次解析。否则两次调用间隔超过 1s 缓存过期，
+            //   一旦重读失败就回退闭包（dryRun=false）⇒ 演练模式照样撤回。
+            try {
+                ctx.state ??= {};
+                ctx.state.__autoRecall = ar;
+            }
+            catch { /* 只影响复用，不影响主链 */ }
             if (m && ar?.enabled === true && m.messageId && m.groupOpenid) {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);
                 const lower = String(m.content ?? "").toLowerCase();
@@ -339,14 +332,15 @@ pluginCtx) {
                         const secs = Math.max(0, Math.round(Number(ar.muteSeconds) || 0));
                         const sid = String(m.senderId ?? "");
                         if (secs > 0 && /^[0-9A-Za-z]{32}$/u.test(sid)) {
-                            const p2 = (n) => String(n).padStart(2, "0");
-                            const ex = new Date(Date.now() + secs * 1000);
-                            const rfc = `${ex.getFullYear()}-${p2(ex.getMonth() + 1)}-${p2(ex.getDate())}T${p2(ex.getHours())}:${p2(ex.getMinutes())}:${p2(ex.getSeconds())}+08:00`;
+                            // ★★ 2026-11-14 修：时间字段用 UTC+8 墙上时间，才配得上 +08:00（TZ=UTC 时原来差 8 小时）
+                            const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
                             void ga.setMemberMute(String(m.groupOpenid), sid, rfc).catch(() => undefined);
                         }
                     }
                     logger.info("auto-recall(mw) hit: " + String(m.content ?? "").slice(0, 20) + " drop=" + String(ar.mode === "drop"));
-                    if (ar.mode === "drop")
+                    // ★ 2026-11-14（CodeRabbit）：bootstrap 那条我修了 dryRun，这条**漏了** —— 同一个语义必须两处一致：
+                    //   演练模式只记日志，不许把消息挡在 agent 外。
+                    if (ar.mode === "drop" && ar.dryRun !== true)
                         return;
                 }
             }

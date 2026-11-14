@@ -42,13 +42,13 @@ export interface ExtInboundReloadResult {
     /** 扩展展示名（去重前，便于回执里展示） */
     names: string[];
 }
-/** 注册/注销入站扩展重载器（注销传 undefined；插件重建时调用方会覆盖为新的） */
-export declare function registerExtInboundReloader(fn: (() => Promise<ExtInboundReloadResult>) | undefined): void;
+/** 注册/注销入站扩展重载器（注销必须带**自己的** dataRoot） */
+export declare function registerExtInboundReloader(dataRoot: string | undefined, fn: (() => Promise<ExtInboundReloadResult>) | undefined): void;
 /**
  * 热重载入站扩展。
  * 返回 `{ error }` 表示"没装成"（比如插件还没启动完）—— 不抛错，理由同 {@link reloadExtCommands}。
  */
-export declare function reloadExtInbound(): Promise<ExtInboundReloadResult | {
+export declare function reloadExtInbound(dataRoot?: string): Promise<ExtInboundReloadResult | {
     error: string;
 }>;
 /** 给回执文本用：把入站扩展重载结果拼成一句人话 */
@@ -64,10 +64,13 @@ export interface ExtOutboundReloadResult {
     /** 扩展展示名（便于回执里展示） */
     names: string[];
 }
-/** 注册/注销出站扩展重载器（注销传 undefined；插件重建时调用方会覆盖为新的） */
-export declare function registerExtOutboundReloader(fn: (() => Promise<ExtOutboundReloadResult>) | undefined): void;
-/** 热重载出站扩展；返回 `{ error }` 表示"没装成"，理由同 {@link reloadExtCommands} —— 不抛错 */
-export declare function reloadExtOutbound(): Promise<ExtOutboundReloadResult | {
+/**
+ * ★ 2026-11-14：**删掉死单例** `outboundReloader` / `registerExtOutboundReloader` ——
+ *   全仓无任何调用者（审查确认），出站热刷一直走下面的动态 import。
+ *   但 `reloadExtOutbound()` 本身有活调用者（session-manager.reloadAllChannelTools），
+ *   而且**它不传 dataRoot** ⇒ 在 A 上敲 /tools-reload 会刷到 B 的目录。现在补参数。
+ */
+export declare function reloadExtOutbound(dataRoot?: string): Promise<ExtOutboundReloadResult | {
     error: string;
 }>;
 /** 给回执文本用：把出站扩展重载结果拼成一句人话 */

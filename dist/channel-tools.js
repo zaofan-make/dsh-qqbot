@@ -481,10 +481,36 @@ function channelOf(exec) {
             catch { /* ignore */ }
         }
     }
-    if (channelBridges.length) {
-        diag('channelOf: 走全局桥成功');
+    // ★★ 2026-11-14 修（审查发现）：**多实例时绝不猜第 0 个**。
+    //   原来直接 return channelBridges[0] —— 两个机器人同时跑时，B 的会话会解析到 A 的
+    //   dataRoot/replyTarget（图存进 A 的图库、消息发到 A 的群）。
+    //   只有唯一实例才允许兜底；多实例返回 undefined，让调用方报'通道未就绪'。
+    if (channelBridges.length === 1) {
+        diag('channelOf: 走全局桥成功(唯一实例)');
         return channelBridges[0];
     }
+    if (channelBridges.length > 1) {
+        diag('channelOf: 多实例(' + channelBridges.length + ')，拒绝猜测，返回 undefined');
+        return undefined;
+    }
+    return undefined;
+}
+/**
+ * 当前执行上下文归属的 dataRoot。
+ *
+ * ★ 2026-11-14（CodeRabbit 复审）：广播 / target_group 原来写的是
+ *   ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot —— channelOf 拒绝猜测之后，
+ *   这里又回退到第 0 个实例：任务写进 A 的目录、分组读 A 的文件，消息却由 B 的客户端发出。
+ *   现在：有归属用归属；只有唯一实例才兜底；多实例返回 undefined 让调用方拒绝。
+ */
+function dataRootOfExec(ch, exec) {
+    const own = (ch ?? channelOf(exec))?.manager?.dataRoot;
+    if (own)
+        return String(own);
+    const all = managersOf();
+    if (all.length === 1)
+        return all[0]?.dataRoot ?? all[0]?.cwd;
+    diag('dataRootOfExec: 多实例(' + all.length + ')且根上下文无通道，拒绝猜测第 0 个');
     return undefined;
 }
 /**
@@ -1776,9 +1802,9 @@ export async function apply(ctx, opts) {
             // ⚠️ 数据根 ≠ 工作目录: manager.dataRoot = dataRootOf(config)(本机=<cwd>\AI\dshqqbot),
             // 而 manager.cwd = config.cwd(本机=<cwd>\AI)。2026-09-12 主人实测发现我一开始写成了 cwd,
             // 结果广播任务落到 AI\.qqbot\(旧位置), dock 在 dshqqbot\.qqbot\ 里根本看不到。
-            const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+            const root = dataRootOfExec(ch, exec);
             if (!root)
-                return { ok: false, msg: '找不到数据根(无已注册实例)' };
+                return { ok: false, msg: '无法确定所属实例（多实例下请在本机会话里操作，或指定唯一实例）' };
             if (!ga)
                 return { ok: false, msg: '群管理未开启(设置页→QQ群管理): 群发要走官方接口, 需要机器人凭据' };
             const action = String(a.action ?? 'send');
@@ -1868,9 +1894,9 @@ export async function apply(ctx, opts) {
         async execute(args, exec) {
             const a = args;
             const ch = channelOf(exec);
-            const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+            const root = dataRootOfExec(ch, exec);
             if (!root)
-                return { ok: false, msg: '找不到数据根(无已注册实例)' };
+                return { ok: false, msg: '无法确定所属实例（多实例下请在本机会话里操作，或指定唯一实例）' };
             const file = join(root, '.qqbot', 'target-groups.json');
             const read = () => {
                 try {
@@ -2624,9 +2650,8 @@ export async function apply(ctx, opts) {
             if (secs > 0 && picked.length > 0) {
                 const senders = [...new Set(picked.filter((p) => !p.me && /^[0-9A-Za-z]{32}$/u.test(p.s)).map((p) => p.s))].slice(0, 20);
                 if (senders.length > 0) {
-                    const pad = (n) => String(n).padStart(2, '0');
-                    const ex = new Date(Date.now() + secs * 1000);
-                    const rfc = `${ex.getFullYear()}-${pad(ex.getMonth() + 1)}-${pad(ex.getDate())}T${pad(ex.getHours())}:${pad(ex.getMinutes())}:${pad(ex.getSeconds())}+08:00`;
+                    // ★ 2026-11-14 修：时间字段用 UTC+8 墙上时间，才配 +08:00（TZ=UTC 时原来差 8 小时）
+                    const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
                     let mOk = 0;
                     for (const sid of senders) {
                         const mr = await ga.client.setMemberMute(gid, sid, rfc);
@@ -2668,10 +2693,9 @@ export async function apply(ctx, opts) {
             if (!gid)
                 return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
             const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
-            const pad = (n) => String(n).padStart(2, '0');
-            const expire = args.action === 'mute' ? new Date(Date.now() + secs * 1000) : null;
-            const rfc = expire
-                ? `${expire.getFullYear()}-${pad(expire.getMonth() + 1)}-${pad(expire.getDate())}T${pad(expire.getHours())}:${pad(expire.getMinutes())}:${pad(expire.getSeconds())}+08:00`
+            // ★ 2026-11-14 修：同上，UTC+8 墙上时间 + +08:00 偏移
+            const rfc = args.action === 'mute'
+                ? new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00'
                 : null;
             const all = (Array.isArray(args.member_openids) ? args.member_openids : [])
                 .map((v) => String(v).trim()).filter(Boolean)

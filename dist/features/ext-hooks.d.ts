@@ -90,7 +90,7 @@ export declare function runStartupHooks(opts: RunStartupHooksOptions): Promise<H
  * 由 `bootstrapGateway` 的 dispose 链路调用（插件卸载 / 宿主退出 / 保存连接设置后重建网关）。
  * 纪律：逆序执行（后启动的先清理）、**单个失败只告警**、整体永不抛出、幂等。
  */
-export declare function disposeStartupHooks(logger: Logger): Promise<number>;
+export declare function disposeStartupHooks(logger: Logger, dataRoot?: string): Promise<number>;
 /** 重置模块级状态（仅供单元测试；生产不要调 —— 会把正在跑的钩子的清理登记丢掉） */
 export declare function __resetStartupHooksForTest(): void;
 /** 当前已登记清理函数的钩子数（诊断用） */

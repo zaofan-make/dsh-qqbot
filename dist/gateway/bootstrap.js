@@ -5,6 +5,7 @@ import { SessionManager } from '../session/index.js';
 import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { parseStreamFrame } from '../transport/events.js';
 import { setMaterialTargetFactory, rewriteLocalMarkdownImages, lastMediaRewrite } from '../features/md-media-rewrite.js';
+import { resolveAutoRecall } from '../features/auto-recall.js';
 import { buildUserAgent } from '../shared/index.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
@@ -297,7 +298,21 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         try {
             // ★★ 2026-11-14 修（审查发现）：真源在 groupAdmin 下面，原来读的是**顶层**
             //   ⇒ 恒为 undefined ⇒ 面板设的自动撤回永不生效，且日志里一点痕迹没有。
-            const ar = config.groupAdmin?.autoRecall;
+            // ★ 2026-11-14（CodeRabbit 复审）：**必须与 middleware 用同一份解析**。
+            //   否则面板刚把 dryRun 改成 true（落盘）、闭包 config 还是 false 时：
+            //   中间件按磁盘放行 → 消息流到这里 → 这里按闭包判定 ⇒ **照样真撤回 + 禁言**，
+            //   演练模式等于失效。现在两处都走 resolveAutoRecall（磁盘优先 + 1s TTL 缓存）。
+            // ★ 2026-11-14（CodeRabbit）：**优先复用中间件解析过的那一份**。
+            //   bot.use 的 ctx 与这里的 mCtx 是同一个对象，所以同一条消息只解析一次 ——
+            //   避免'中间件按磁盘放行、这里按闭包判定'的两份答案打架。
+            // ★ 2026-11-14（CodeRabbit）：**不能用 ??** —— resolveAutoRecall 合法地可能返回 undefined
+            //   （= 没配自动撤回）。用 ?? 会把'已解析为 undefined'当成'还没解析'，又去重读一次盘；
+            //   若这期间面板新增了规则，就会对一条**已放行**的消息执行撤回/丢弃。
+            //   正确判据是'这个属性存不存在'。
+            const _st = mCtx.state;
+            const ar = (_st && '__autoRecall' in _st)
+                ? _st.__autoRecall
+                : resolveAutoRecall(config);
             const msgId = String(msg.messageId ?? '');
             if (ar?.enabled === true && String(msg.groupOpenid ?? '') !== '' && msgId !== '') {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);
@@ -315,13 +330,16 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                         const secs = Math.max(0, Math.round(Number(ar.muteSeconds) || 0));
                         const sid = String(msg.senderId ?? '');
                         if (secs > 0 && /^[0-9A-Za-z]{32}$/u.test(sid)) {
-                            const pad = (n) => String(n).padStart(2, '0');
-                            const ex = new Date(Date.now() + secs * 1000);
-                            const rfc = `${ex.getFullYear()}-${pad(ex.getMonth() + 1)}-${pad(ex.getDate())}T${pad(ex.getHours())}:${pad(ex.getMinutes())}:${pad(ex.getSeconds())}+08:00`;
+                            // ★★ 2026-11-14 修（审查发现）：**时间字段必须和时区偏移一致**。
+                            //   原来用本机时区 getHours() 拼墙上时间、却硬写 +08:00 ——
+                            //   服务器 TZ=UTC 时，10 分钟禁言会被解释成"8 小时前"，可能立刻失效。
+                            const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
                             void ga.setMemberMute(gid, sid, rfc).catch(() => undefined);
                         }
                     }
-                    if ((ar.mode ?? 'keep') === 'drop')
+                    // ★ 2026-11-14 修（CodeRabbit）：**演练模式不该丢消息** —— dryRun 的语义只是记日志，
+                    //   原来 mode='drop' + dryRun 时照样 autoDropped，把消息吞了。
+                    if ((ar.mode ?? 'keep') === 'drop' && ar.dryRun !== true)
                         autoDropped = true;
                 }
             }
@@ -1157,7 +1175,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         // 任务量小 store 内存读, 5s 开销可忽略) → 延迟压到 ≤5s。
         scheduleTicker = setInterval(tickSchedule, 5_000);
         scheduleTicker.unref?.();
-        logger.info(`[schedule] ticker 启动 (30s, dataDir=${scheduleDataDir})`);
+        logger.info(`[schedule] ticker 启动 (5s, dataDir=${scheduleDataDir})`);
         // botplay 过期卡定期清理(Phase2): 60s 扫一次, 防内存积压(卡默认最长 600s 存活)
         const botplaySweeper = setInterval(() => {
             try {
@@ -1198,7 +1216,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             //    引擎内部逐个 try/catch + 逆序执行，单个清理失败只告警，绝不阻断其余拆卸步骤。
             try {
                 const hooks = await import('../features/ext-hooks.js');
-                await hooks.disposeStartupHooks(logger);
+                await hooks.disposeStartupHooks(logger, dataRootOf(config));
             }
             catch (err) {
                 logger.warn?.(`[ext-hook] 清理启动钩子异常(已忽略): ${err instanceof Error ? err.message : String(err)}`);
@@ -1209,7 +1227,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             //    引擎内部逆序 + 逐个 try/catch，单个失败只告警，绝不阻断其余拆卸步骤。
             try {
                 const inbound = await import('../features/ext-inbound.js');
-                await inbound.disposeInboundExtensions(logger);
+                await inbound.disposeInboundExtensions(logger, dataRootOf(config));
             }
             catch (err) {
                 logger.warn?.(`[ext-inbound] 清理入站扩展异常(已忽略): ${err instanceof Error ? err.message : String(err)}`);

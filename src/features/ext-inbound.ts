@@ -586,11 +586,11 @@ export function attachExtContext(ctx: MiddlewareContext, logger: Logger, opts?: 
  * 返回本次真正调用成功的 dispose 数量（没有导出的 dispose 就不算）。
  * 同时把 ext-reload 里的热重载入口摘掉 —— 否则它会一直指向这个已经死掉的实例。
  */
-export async function disposeInboundExtensions(logger: Logger): Promise<number> {
+export async function disposeInboundExtensions(logger: Logger, dataRoot?: string): Promise<number> {
   const list = [...known.values()].reverse();
   known.clear();
   loaded = [];
-  registerExtInboundReloader(undefined);
+  registerExtInboundReloader(dataRoot, undefined);   // ★ 必须带自己的 key，否则会把别人的入口一起摘掉
   let n = 0;
   for (const ext of list) {
     if (typeof ext.dispose !== 'function') continue;
