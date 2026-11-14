@@ -201,7 +201,7 @@ pluginCtx) {
     };
     await reloadInboundExtensions();
     // 注册给热重载入口：工具热刷（/tools-reload、tools_reload）时顺带重扫入站扩展 → **不重启也生效**
-    registerExtInboundReloader(async () => {
+    registerExtInboundReloader(dataRootOf(config), async () => {
         const r = await reloadInboundExtensions();
         return { count: r.total, names: r.extensions.map((e) => e.name) };
     });

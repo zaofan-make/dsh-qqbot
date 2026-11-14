@@ -305,8 +305,14 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             // ★ 2026-11-14（CodeRabbit）：**优先复用中间件解析过的那一份**。
             //   bot.use 的 ctx 与这里的 mCtx 是同一个对象，所以同一条消息只解析一次 ——
             //   避免'中间件按磁盘放行、这里按闭包判定'的两份答案打架。
-            const ar = mCtx.state?.__autoRecall
-                ?? resolveAutoRecall(config);
+            // ★ 2026-11-14（CodeRabbit）：**不能用 ??** —— resolveAutoRecall 合法地可能返回 undefined
+            //   （= 没配自动撤回）。用 ?? 会把'已解析为 undefined'当成'还没解析'，又去重读一次盘；
+            //   若这期间面板新增了规则，就会对一条**已放行**的消息执行撤回/丢弃。
+            //   正确判据是'这个属性存不存在'。
+            const _st = mCtx.state;
+            const ar = (_st && '__autoRecall' in _st)
+                ? _st.__autoRecall
+                : resolveAutoRecall(config);
             const msgId = String(msg.messageId ?? '');
             if (ar?.enabled === true && String(msg.groupOpenid ?? '') !== '' && msgId !== '') {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);

@@ -496,6 +496,24 @@ function channelOf(exec) {
     return undefined;
 }
 /**
+ * 当前执行上下文归属的 dataRoot。
+ *
+ * ★ 2026-11-14（CodeRabbit 复审）：广播 / target_group 原来写的是
+ *   ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot —— channelOf 拒绝猜测之后，
+ *   这里又回退到第 0 个实例：任务写进 A 的目录、分组读 A 的文件，消息却由 B 的客户端发出。
+ *   现在：有归属用归属；只有唯一实例才兜底；多实例返回 undefined 让调用方拒绝。
+ */
+function dataRootOfExec(ch, exec) {
+    const own = (ch ?? channelOf(exec))?.manager?.dataRoot;
+    if (own)
+        return String(own);
+    const all = managersOf();
+    if (all.length === 1)
+        return all[0]?.dataRoot ?? all[0]?.cwd;
+    diag('dataRootOfExec: 多实例(' + all.length + ')且根上下文无通道，拒绝猜测第 0 个');
+    return undefined;
+}
+/**
  * 解析"当前执行 agent → 会话 + 通道"(多账号/热更新后 agent 引用可能跨实例或换新对象):
  * ① ctx 通道的 manager 按引用/id 找(findByAgent 已含 id 兜底); ② 找不到→遍历所有实例桥再找。
  */
@@ -1784,9 +1802,9 @@ export async function apply(ctx, opts) {
             // ⚠️ 数据根 ≠ 工作目录: manager.dataRoot = dataRootOf(config)(本机=<cwd>\AI\dshqqbot),
             // 而 manager.cwd = config.cwd(本机=<cwd>\AI)。2026-09-12 主人实测发现我一开始写成了 cwd,
             // 结果广播任务落到 AI\.qqbot\(旧位置), dock 在 dshqqbot\.qqbot\ 里根本看不到。
-            const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+            const root = dataRootOfExec(ch, exec);
             if (!root)
-                return { ok: false, msg: '找不到数据根(无已注册实例)' };
+                return { ok: false, msg: '无法确定所属实例（多实例下请在本机会话里操作，或指定唯一实例）' };
             if (!ga)
                 return { ok: false, msg: '群管理未开启(设置页→QQ群管理): 群发要走官方接口, 需要机器人凭据' };
             const action = String(a.action ?? 'send');
@@ -1876,9 +1894,9 @@ export async function apply(ctx, opts) {
         async execute(args, exec) {
             const a = args;
             const ch = channelOf(exec);
-            const root = ch?.manager?.dataRoot ?? managersOf()[0]?.dataRoot ?? managersOf()[0]?.cwd;
+            const root = dataRootOfExec(ch, exec);
             if (!root)
-                return { ok: false, msg: '找不到数据根(无已注册实例)' };
+                return { ok: false, msg: '无法确定所属实例（多实例下请在本机会话里操作，或指定唯一实例）' };
             const file = join(root, '.qqbot', 'target-groups.json');
             const read = () => {
                 try {

@@ -107,7 +107,7 @@ export declare function attachExtContext(ctx: MiddlewareContext, logger: Logger,
  * 返回本次真正调用成功的 dispose 数量（没有导出的 dispose 就不算）。
  * 同时把 ext-reload 里的热重载入口摘掉 —— 否则它会一直指向这个已经死掉的实例。
  */
-export declare function disposeInboundExtensions(logger: Logger): Promise<number>;
+export declare function disposeInboundExtensions(logger: Logger, dataRoot?: string): Promise<number>;
 /** 重置模块级状态（仅供单元测试；生产不要调 —— 会把正在生效的扩展登记丢掉） */
 export declare function __resetInboundExtensionsForTest(): void;
 /** 当前登记在册的扩展数（诊断用） */

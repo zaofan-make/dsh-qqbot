@@ -62,7 +62,9 @@ export function configureOutboundExtensions(opts) {
     cfg = { dataRoot: String(opts.dataRoot ?? ''), logger: opts.logger };
 }
 /** 重新装载（供热刷用）：没配置过则安静返回空结果 */
-export async function reloadOutboundExtensions() {
+export async function reloadOutboundExtensions(dataRoot) {
+    // ★ 2026-11-14：留着 dataRoot 形参，P1 分桶时按它取桶；现在先忽略（单桶行为不变）
+    void dataRoot;
     if (!cfg)
         return emptyResult();
     return loadOutboundExtensions(cfg);

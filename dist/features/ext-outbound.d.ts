@@ -168,7 +168,7 @@ export declare function configureOutboundExtensions(opts: {
     logger: Logger;
 }): void;
 /** 重新装载（供热刷用）：没配置过则安静返回空结果 */
-export declare function reloadOutboundExtensions(): Promise<OutboundLoadResult>;
+export declare function reloadOutboundExtensions(dataRoot?: string): Promise<OutboundLoadResult>;
 /**
  * 扫描 `{dataRoot}/.qqbot-extensions/outbound/*.mjs` 并装载。
  *

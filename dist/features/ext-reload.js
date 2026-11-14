@@ -50,20 +50,36 @@ export function describeExtCommandReload(r) {
     return `扩展命令: ${r.names.length} 个已重载 → ${r.names.map((n) => '/' + n).join(', ')}`;
 }
 /** 由 middleware-setup 注册：重扫入站扩展目录并原地换掉生效列表 */
-let inboundReloader;
-/** 注册/注销入站扩展重载器（注销传 undefined；插件重建时调用方会覆盖为新的） */
-export function registerExtInboundReloader(fn) {
-    inboundReloader = fn;
+/**
+ * ★★ 2026-11-14 修（审查发现）：**照抄上面命令表那条的形状，按 dataRoot 分桶**。
+ *   原来是 `let inboundReloader` 单槽 —— 两个机器人同时跑时，后注册的覆盖前一个：
+ *   A 敲 /tools-reload 实际重扫的是 B 的目录、换的是 B 的数组；
+ *   更糟的是 A 卸载时 `registerExtInboundReloader(undefined)` 会把 **B 的入口一起摘掉**
+ *   （B 之后再热刷就报"入站扩展表尚未注册"）。
+ */
+const inboundReloaders = new Map();
+/** 注册/注销入站扩展重载器（注销必须带**自己的** dataRoot） */
+export function registerExtInboundReloader(dataRoot, fn) {
+    const k = rlKey(dataRoot);
+    if (!k)
+        return; // 缺 key 直接拒绝：宁可不注册，也不许猜
+    if (fn)
+        inboundReloaders.set(k, fn);
+    else
+        inboundReloaders.delete(k);
 }
 /**
  * 热重载入站扩展。
  * 返回 `{ error }` 表示"没装成"（比如插件还没启动完）—— 不抛错，理由同 {@link reloadExtCommands}。
  */
-export async function reloadExtInbound() {
-    if (!inboundReloader)
-        return { error: '入站扩展表尚未注册(插件还没完成启动?)' };
+export async function reloadExtInbound(dataRoot) {
+    const k = rlKey(dataRoot);
+    // 不传 dataRoot 时只有"唯一一个"才退回（单实例兼容）；多实例必须显式传
+    const fn = k ? inboundReloaders.get(k) : (inboundReloaders.size === 1 ? Array.from(inboundReloaders.values())[0] : undefined);
+    if (!fn)
+        return { error: `入站扩展表尚未注册(插件还没完成启动? dataRoot=${k || '(未传)'}, 已注册 ${inboundReloaders.size} 个)` };
     try {
-        return await inboundReloader();
+        return await fn();
     }
     catch (err) {
         return { error: `入站扩展重载失败: ${err instanceof Error ? err.message : String(err)}` };
@@ -79,30 +95,18 @@ export function describeExtInboundReload(r) {
 }
 /** 当前是否已注册入站扩展重载器（诊断用） */
 export function hasExtInboundReloader() {
-    return typeof inboundReloader === 'function';
+    return inboundReloaders.size > 0;
 }
-/** 由 middleware-setup 注册：重扫出站扩展目录并原地换掉生效列表 */
-let outboundReloader;
-/** 注册/注销出站扩展重载器（注销传 undefined；插件重建时调用方会覆盖为新的） */
-export function registerExtOutboundReloader(fn) {
-    outboundReloader = fn;
-}
-/** 热重载出站扩展；返回 `{ error }` 表示"没装成"，理由同 {@link reloadExtCommands} —— 不抛错 */
-export async function reloadExtOutbound() {
-    if (outboundReloader) {
-        try {
-            return await outboundReloader();
-        }
-        catch (err) {
-            return { error: `出站扩展重载失败: ${err instanceof Error ? err.message : String(err)}` };
-        }
-    }
-    // ★ 2026-10-16：没注册也能用 —— ext-outbound 自己 `configureOutboundExtensions()` 过就直接装载。
-    //   这样不必再往 `gateway/middleware-setup.ts`（一个很大的启动函数）里塞注册回调，
-    //   出站扩展的装载点收敛在它自己模块内；注册表仍保留（谁想接管就注册）。
+/**
+ * ★ 2026-11-14：**删掉死单例** `outboundReloader` / `registerExtOutboundReloader` ——
+ *   全仓无任何调用者（审查确认），出站热刷一直走下面的动态 import。
+ *   但 `reloadExtOutbound()` 本身有活调用者（session-manager.reloadAllChannelTools），
+ *   而且**它不传 dataRoot** ⇒ 在 A 上敲 /tools-reload 会刷到 B 的目录。现在补参数。
+ */
+export async function reloadExtOutbound(dataRoot) {
     try {
         const { reloadOutboundExtensions } = await import('./ext-outbound.js');
-        const r = await reloadOutboundExtensions();
+        const r = await reloadOutboundExtensions(dataRoot);
         return { count: r.total, names: r.extensions.map((e) => e.name) };
     }
     catch (err) {
@@ -119,6 +123,6 @@ export function describeExtOutboundReload(r) {
 }
 /** 当前是否已注册出站扩展重载器（诊断用） */
 export function hasExtOutboundReloader() {
-    return typeof outboundReloader === 'function';
+    return true; // 出站走动态 import，永远可用（保留函数只为兼容诊断调用）
 }
 //# sourceMappingURL=ext-reload.js.map
