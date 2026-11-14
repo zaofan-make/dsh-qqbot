@@ -214,30 +214,78 @@ export function outboundExtensionsDir(dataRoot: string): string {
  * `features/ext-reload.ts` 的 `reloadExtOutbound()` 就能**直接调装载器**，
  * 不必像 inbound 那样再往 `gateway/middleware-setup.ts` 里塞一个注册表回调（少改一个大文件）。
  */
-let cfg: { dataRoot: string; logger: Logger } | null = null;
+/**
+ * ★★ 2026-11-14（P1）：`cfg` / `loaded` / `breaker` 从**模块级单例**改成**按实例分桶**。
+ *
+ *   原来：每个实例启动都调一次 configureOutboundExtensions()，整体覆盖同一个 `cfg`/`loaded`
+ *   ⇒ 同进程两个机器人时，后启动那台把前者整个顶掉：A 发消息时跑的是 B 装载的扩展列表，
+ *    扩展拿到的 ctx.dataRoot 也是 B 的（状态/台账/表情包库全落错目录），A 的语音直接静默失效。
+ *
+ *   现在：key = 归一化 dataRoot；`owner`（每实例唯一的 QQBotSender/bot 对象）登记进 WeakMap，
+ *   runOutboundChain 用 `opts.sender` 反查该实例的桶。**查不到且多桶 ⇒ 直通（fail-closed，不猜）**。
+ */
+interface ObBucket {
+  cfg: { dataRoot: string; logger: Logger };
+  loaded: OutboundExtension[];
+  breaker: Map<string, number>;
+}
+const buckets = new Map<string, ObBucket>();
+const ownerKey = new WeakMap<object, string>();
+let fallbackKey = '';
+
+/** 归一化 key：反斜杠/大小写只在 Windows 折叠（POSIX 上它们是合法文件名字符） */
+function obKey(dataRoot: string | undefined): string {
+  const raw = String(dataRoot || '');
+  if (process.platform !== 'win32') return raw.replace(/\/+$/, '');
+  return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function ensureBucket(dataRoot: string, logger: Logger): ObBucket {
+  const k = obKey(dataRoot);
+  let b = buckets.get(k);
+  if (!b) {
+    b = { cfg: { dataRoot: String(dataRoot ?? ''), logger }, loaded: [], breaker: new Map<string, number>() };
+    buckets.set(k, b);
+  } else {
+    b.cfg = { dataRoot: String(dataRoot ?? ''), logger };
+  }
+  fallbackKey = k;
+  return b;
+}
+
+/** 按发送方（bot 对象）反查它所属实例的桶；单实例时兜底唯一桶；多实例且无身份 → undefined */
+function bucketOf(sender?: unknown): ObBucket | undefined {
+  if (sender && typeof sender === 'object') {
+    const k = ownerKey.get(sender as object);
+    if (k) return buckets.get(k);
+  }
+  if (buckets.size === 1) return Array.from(buckets.values())[0];
+  return undefined;
+}
 
 /** 配置出站扩展的数据根与日志器（插件启动时调一次；热刷时复用） */
-export function configureOutboundExtensions(opts: { dataRoot: string; logger: Logger }): void {
-  cfg = { dataRoot: String(opts.dataRoot ?? ''), logger: opts.logger };
+export function configureOutboundExtensions(opts: { dataRoot: string; logger: Logger; owner?: object }): void {
+  ensureBucket(opts.dataRoot, opts.logger);
+  // owner = 该实例的 QQBotSender（bot）对象：runOutboundChain 从 opts.sender 反查它
+  if (opts.owner) ownerKey.set(opts.owner, obKey(opts.dataRoot));
 }
 
 /** 当前已配置的出站扩展数据根（空串=没配）—— 供热刷判断"刷的是不是你要的那个实例" */
 export function currentOutboundDataRoot(): string {
-  return String(cfg?.dataRoot ?? '');
+  return String(buckets.get(fallbackKey)?.cfg.dataRoot ?? '');
 }
 
 /** 重新装载（供热刷用）：没配置过则安静返回空结果 */
-export async function reloadOutboundExtensions(): Promise<OutboundLoadResult> {
-  // ⚠️ 2026-11-14：**出站扩展还没按实例分桶**（P1 待做）。
-  //   所以这里刻意不收 dataRoot —— 收下却不按它取桶，等于对外撒谎'指定实例已经重载'。
-  //   P1 会把 cfg/loaded 改成 Map<rlKey(dataRoot), …> 并让 runOutboundChain 按 opts.sender 查桶。
-  if (!cfg) return emptyResult();
-  return loadOutboundExtensions(cfg);
+export async function reloadOutboundExtensions(dataRoot?: string): Promise<OutboundLoadResult> {
+  // ★ P1：按 dataRoot 取桶（不传就用当前 fallback 桶，兼容旧的单实例调用）
+  const b = buckets.get(dataRoot ? obKey(dataRoot) : fallbackKey);
+  if (!b) return emptyResult();
+  return loadOutboundExtensions(b.cfg);
 }
 
 // ─────────────────────────── 装载 ───────────────────────────
 
-let loaded: OutboundExtension[] = [];
+// （P1：全局 loaded 已并入 buckets，各实例一份）
 
 function emptyResult(files: string[] = []): OutboundLoadResult {
   return { total: 0, skipped: 0, middleware: [], extensions: [], files };
@@ -285,8 +333,9 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
   const { dataRoot, logger } = opts;
   // ★ 2026-10-24：内置目录 + 所有扩展包（只取直接子文件）
   const hits = scanExtFiles(dataRoot, 'outbound', ALLOWED_EXT);
+  const bucket = buckets.get(obKey(dataRoot));
   if (hits.length === 0) {
-    loaded = [];
+    if (bucket) bucket.loaded = [];
     return emptyResult();
   }
   const files = hits.map((h) => h.name);
@@ -311,7 +360,7 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
       logger.warn(`[ext-outbound] ✗ ${f} 装载失败(已跳过, 不影响其它出站扩展): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  loaded = result.extensions;
+  if (bucket) bucket.loaded = result.extensions;
   if (result.total > 0) {
     logger.info(
       `[ext-outbound] 已装载 ${result.total} 个出站扩展: ${result.extensions.map((e) => e.name).join(', ')}` +
@@ -328,9 +377,10 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
  * 调用方是 `transport/outbound-buffer.ts`：**消息真的发完之后**才调。
  * 每个扩展独立 try/catch + 单次超时保护，**绝不因为扩展报错影响发送结果**。
  */
-export async function notifyOutboundSent(result: OutboundSentResult): Promise<void> {
-  if (loaded.length === 0) return;
-  for (const ext of loaded) {
+export async function notifyOutboundSent(result: OutboundSentResult, owner?: unknown): Promise<void> {
+  const exts = bucketOf(owner)?.loaded ?? [];
+  if (exts.length === 0) return;
+  for (const ext of exts) {
     if (typeof ext.onSent !== 'function') continue;
     try {
       await Promise.resolve(ext.onSent(result));
@@ -339,7 +389,9 @@ export async function notifyOutboundSent(result: OutboundSentResult): Promise<vo
 }
 
 export function listOutboundExtensions(): OutboundExtension[] {
-  return loaded.slice();
+  const out: OutboundExtension[] = [];
+  for (const b of buckets.values()) out.push(...b.loaded);
+  return out;
 }
 
 // ─────────────────────────── 执行 ───────────────────────────
@@ -477,13 +529,15 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
   // ★ 配置兜底：挂载点（transport 层）只关心正文，拿不到 dataRoot/logger 是常态
   //   ⇒ 这里用启动时 `configureOutboundExtensions()` 记住的那份补上，
   //     扩展的 `ctx.dataRoot` / `ctx.logger` 才不会空（示范"读表情包库"就靠它）。
+  const bucket = bucketOf((opts as { sender?: unknown }).sender);
   const merged: RunOutboundOptions = {
-    ...(cfg?.dataRoot ? { dataRoot: cfg.dataRoot } : {}),
-    ...(cfg?.logger ? { logger: cfg.logger } : {}),
+    ...(bucket?.cfg.dataRoot ? { dataRoot: bucket.cfg.dataRoot } : {}),
+    ...(bucket?.cfg.logger ? { logger: bucket.cfg.logger } : {}),
     ...opts,
   };
   const logger = merged.logger ?? ({ info() {}, warn() {}, debug() {}, error() {} } as unknown as Logger);
-  const exts = loaded;
+  // ★ P1：多实例且查不到归属 ⇒ exts 为空 = **直通**（fail-closed，绝不拿别人的扩展规则处理这条消息）
+  const exts = bucket?.loaded ?? [];
   if (exts.length === 0) return { text, killed: false, reason: '', ran: 0 };
 
   const state = { text: String(text ?? ''), killed: false, reason: '' };
@@ -652,7 +706,7 @@ async function embedScores(query: string, passages: string[]): Promise<number[] 
   if (!query || !Array.isArray(passages) || passages.length === 0) return null;
   try {
     const { createLocalEmbedder } = await import('./local-embed.js');
-    const e = createLocalEmbedder({ ...(cfg?.logger ? { logger: cfg.logger } : {}) });
+    const e = createLocalEmbedder({ ...(buckets.get(fallbackKey)?.cfg.logger ? { logger: buckets.get(fallbackKey)!.cfg.logger } : {}) });
     if (!e.available()) return null;
 
     const keys = passages.map((s) => String(s ?? ''));
