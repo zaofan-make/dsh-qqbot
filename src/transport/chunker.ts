@@ -22,6 +22,9 @@ function hardSplit(s: string, limit: number): string[] {
     if (end < s.length) {
       const code = s.charCodeAt(end - 1);
       if (code >= 0xd800 && code <= 0xdbff) end -= 1;   // 别切在高代理和低代理之间
+      // ★★ 2026-11-14（CodeRabbit 抓到死循环）：回退后 end 可能 <= i（limit=1 时必然发生），
+      //   那样 i 不推进 ⇒ hardSplit('\u{1F600}', 1) 会无限循环把进程卡死。保底前进一格。
+      if (end <= i) end = i + step;
     }
     out.push(s.slice(i, end));
     i = end;
@@ -51,8 +54,10 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
     const block = tableBuffer.join('\n');
     tableBuffer = [];
 
-    // ★ 表格整块比 limit 还长时，先按行排放、必要时硬切（否则一样会被 QQ 拒）
-    if (!current && block.length > limit) {
+    // ★ 表格整块比 limit 还长 ⇒ 先把当前块冲掉，再硬切（不管 current 是否为空，
+    //   否则 current 非空时表格仍会以超限长度塞进去、最后被 QQ 拒）
+    if (block.length > limit) {
+      if (current) { chunks.push(current); current = ''; }
       for (const piece of hardSplit(block, limit)) chunks.push(piece);
       return;
     }
