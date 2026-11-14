@@ -302,7 +302,11 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             //   否则面板刚把 dryRun 改成 true（落盘）、闭包 config 还是 false 时：
             //   中间件按磁盘放行 → 消息流到这里 → 这里按闭包判定 ⇒ **照样真撤回 + 禁言**，
             //   演练模式等于失效。现在两处都走 resolveAutoRecall（磁盘优先 + 1s TTL 缓存）。
-            const ar = resolveAutoRecall(config);
+            // ★ 2026-11-14（CodeRabbit）：**优先复用中间件解析过的那一份**。
+            //   bot.use 的 ctx 与这里的 mCtx 是同一个对象，所以同一条消息只解析一次 ——
+            //   避免'中间件按磁盘放行、这里按闭包判定'的两份答案打架。
+            const ar = mCtx.state?.__autoRecall
+                ?? resolveAutoRecall(config);
             const msgId = String(msg.messageId ?? '');
             if (ar?.enabled === true && String(msg.groupOpenid ?? '') !== '' && msgId !== '') {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);
@@ -1164,7 +1168,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         // 任务量小 store 内存读, 5s 开销可忽略) → 延迟压到 ≤5s。
         scheduleTicker = setInterval(tickSchedule, 5_000);
         scheduleTicker.unref?.();
-        logger.info(`[schedule] ticker 启动 (30s, dataDir=${scheduleDataDir})`);
+        logger.info(`[schedule] ticker 启动 (5s, dataDir=${scheduleDataDir})`);
         // botplay 过期卡定期清理(Phase2): 60s 扫一次, 防内存积压(卡默认最长 600s 存活)
         const botplaySweeper = setInterval(() => {
             try {

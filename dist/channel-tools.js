@@ -481,9 +481,17 @@ function channelOf(exec) {
             catch { /* ignore */ }
         }
     }
-    if (channelBridges.length) {
-        diag('channelOf: 走全局桥成功');
+    // ★★ 2026-11-14 修（审查发现）：**多实例时绝不猜第 0 个**。
+    //   原来直接 return channelBridges[0] —— 两个机器人同时跑时，B 的会话会解析到 A 的
+    //   dataRoot/replyTarget（图存进 A 的图库、消息发到 A 的群）。
+    //   只有唯一实例才允许兜底；多实例返回 undefined，让调用方报'通道未就绪'。
+    if (channelBridges.length === 1) {
+        diag('channelOf: 走全局桥成功(唯一实例)');
         return channelBridges[0];
+    }
+    if (channelBridges.length > 1) {
+        diag('channelOf: 多实例(' + channelBridges.length + ')，拒绝猜测，返回 undefined');
+        return undefined;
     }
     return undefined;
 }

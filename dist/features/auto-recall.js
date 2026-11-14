@@ -27,7 +27,11 @@ const TTL_MS = 1000;
 function settingsFileOf(cfg) {
     const c = cfg;
     const prof = process.env.DSH_PROFILE || 'web';
-    const ns = String(c?.settingsNs || c?.ns || 'im-qqbot-2');
+    // ★★ 2026-11-14（CodeRabbit 抓到）：默认命名空间必须与**写入方**一致。
+    //   src/index.ts:172/213 的默认是 'im-qqbot'（主账号），这里我照抄旧代码写成了
+    //   'im-qqbot-2' ⇒ 主实例（settingsNs 未设置）会去读**别人的** im-qqbot-2.json：
+    //   读不到 → 回退闭包（面板设置不生效）；读得到 → 直接用另一台机器人的撤回/禁言规则。
+    const ns = String(c?.settingsNs || c?.ns || 'im-qqbot').trim();
     return join(homedir(), '.dsh', 'qqbot-settings', prof, `${ns}.json`);
 }
 /**

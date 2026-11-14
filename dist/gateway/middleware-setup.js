@@ -312,6 +312,15 @@ pluginCtx) {
         try {
             const m = ctx.message;
             const ar = resolveAutoRecall(config);
+            // ★ 2026-11-14（CodeRabbit）：把**这一次**的解析结果挂到 ctx.state ——
+            //   bootstrap 的 bot.on('message') 收到的是同一个 MiddlewareContext（洋葱模型），
+            //   它直接复用这份结果，不再二次解析。否则两次调用间隔超过 1s 缓存过期，
+            //   一旦重读失败就回退闭包（dryRun=false）⇒ 演练模式照样撤回。
+            try {
+                ctx.state ??= {};
+                ctx.state.__autoRecall = ar;
+            }
+            catch { /* 只影响复用，不影响主链 */ }
             if (m && ar?.enabled === true && m.messageId && m.groupOpenid) {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);
                 const lower = String(m.content ?? "").toLowerCase();
