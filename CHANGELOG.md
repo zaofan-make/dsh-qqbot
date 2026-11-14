@@ -1,3 +1,37 @@
+## 1.12.36 (2026-11-15)
+
+### 修
+
+- **引用消息看不到"被引用的是谁发的"**（`transport/inbound.ts`、`features/msg-history.ts`、`middleware/attribution.ts`、`shared/quote-match.ts`）
+
+  三条来源全部失效，各自的死法都实测过：
+  1. `msg_elements[].author` —— 官方文档写着"该元素对应的消息发送者"，但 **103 引用消息实际下发里这个字段根本不存在**（元素 keys 只有 `attachments / content / message_type / msg_idx`）；
+  2. SDK 的 `quoteRef` —— 配了 `preferMsgElements: true` 时它**优先走 msg_elements 分支、从不查 store**，于是 `quote.entry` 恒为 `undefined`；
+  3. 按 `refKey` 查台账 —— **`ref_msg_idx` 和入站时的 `msg_idx` 不是同一个值**，拿索引当主键就是赌它们相等。
+
+  最终方案：**只用一个数据源 —— 消息历史台账**（不另开独立账）。
+  - `HistoryRec` 新增 `f` 字段存**图片内容 MD5**（QQ 的图片文件名就是 MD5）。原来历史里图片只有 `[image]`，连文件名都没有，这是唯一缺的那一格；有了它，引用**纯图**也能认出原主。
+  - 匹配改为**双向前缀匹配**：排序数组 + 二分负责"query 是记录前缀"，`Map` 枚举 query 的前缀负责"记录是 query 前缀"（平台会把被引原文截断）。没用 Trie —— Node 里对象式 Trie 每字符一个 Map 节点，300k 条实测 1.4 GB，而排序数组只要 0.8 MB。
+  - 图片另建 `md5 → 记录` 索引，O(1) 定位。
+  - 稳态耗时：正文匹配 **22ms → 245µs**，图片指纹 **5ms → 224µs**（当天文件有 500 行内存缓存、预归一化、写入时增量更新索引，不重扫）。
+  - **引用块格式**：发送者**内联**在内容前，`[引] [做早饭]我喜欢鲸鱼 [/引]`，不再单独占一行。
+
+- **入站链路每条消息白等约 4.4ms（毫秒级卡顿）**（新增 `shared/async-append.ts`，改 `msg-history` / `chat-ledger`）
+
+  实测（Windows 11 + 实时防护，Node 24）：`appendFileSync` **1465 µs/次**，而 `WriteStream.write` 只要 **4 µs** —— 366 倍。而一条普通群消息会经过 4 处同步追加（消息历史、会话台账 ×2、评分日志）。
+
+  改法：常开的 `WriteStream`（`appendLine`），外加 `mkdirSync` 结果按目录缓存（目录早就存在，却每次都系统调用一次）。
+
+  | 位置 | 原来 | 现在 |
+  |---|---|---|
+  | 消息历史 | 1465 µs | **87 µs** |
+  | 会话台账 | 1465 µs | **38 µs** |
+  | 群成员台账 | 1465 µs | **36 µs** |
+
+  ⚠️ **`value-score` 的评分日志保持同步写**：它会被同进程的统计和回归测试**立刻读回**，改成异步后 `classify-accuracy` 回归直接失败（实测）。只保留了它的目录缓存优化。
+
+  ⚠️ 重写/重命名某个台账文件前必须先 `closeFile()`，否则旧 fd 会继续往被替换掉的旧文件里写（`chat-ledger` 压缩、`value-score` 滚动两处已处理）。
+
 ## 1.12.35 (2026-11-14)
 
 ### 修

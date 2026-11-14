@@ -4,6 +4,7 @@ import { dataRootOf, stickerDirOf } from './data-root.js';
 import { stripLeadingMentions } from '../shared/mention-clean.js';
 import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from '../middleware/attachment.js';
+import { attributionLedger } from '../middleware/attribution.js';
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
 import { prefetchQuoteImages } from '../transport/quote-images.js';
 import { stickerCapture } from '../middleware/sticker-capture.js';
@@ -143,6 +144,17 @@ pluginCtx) {
         maxSize: 500,
         preferMsgElements: true,
     }));
+    // 3.92. 「这条消息是谁发的」归属台账（2026-11-14）
+    //   ★ 位置是全部意义所在 ★：**quoteRef 之后、@门控/评分/debounce 之前**。
+    //     原来这份信息只存在于 `msg-content.jsonl`，而那是写在 `assembleAgentBody` 里的
+    //     —— `handleInbound` 只由 debounce 在"要派发"时调用 ⇒ 群里没唤醒她的消息
+    //     **一条都没记**，于是引用别人发的图永远查不到原主（实测：2000 行里某人只有 6 条）。
+    //     放在这里，每条群消息都经过，与她醒不醒完全无关。
+    //   为什么非要这份账：QQ 的 103 引用消息**不下发 msg_elements[].author**
+    //     （官方文档有这字段，实测元素里根本没有），SDK 的 quoteRef 又因为
+    //     `preferMsgElements: true` 从不查 store（`quote.entry` 恒 undefined）。
+    //     三条路全断，只能自己记。
+    bot.use(attributionLedger(logger));
     // 3.95. 用户「入站中间件」扩展点（第五套扩展，2026-10-12）—— ★早挂点 onInbound ★
     //   `{dataRoot}/.qqbot-extensions/inbound/*.mjs` 里导出的 `onInbound` 挂**这里**：
     //   **quoteRef 之后、记群历史（下一步）之前** —— 四个动作里三个只有这个位置做得到：

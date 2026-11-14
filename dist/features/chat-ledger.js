@@ -14,7 +14,8 @@
  *
  * ⚠️ 本地手改功能（fork 新增）：维护清单见工作区根《插件改动维护注意事项.md》。
  */
-import { appendFileSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
+import { appendLine, closeFile } from '../shared/async-append.js';
 import { join } from 'node:path';
 // 台账自动去重(2026-09-07 主人定): append 照旧(简单并发安全), 文件每攒 COMPACT_EVERY 条自动压缩一次,
 // 按对象(群/人 或 群成员)只保留最新一条 → "一个人只记一条", 文件不随发言膨胀; 读端聚合语义不变。
@@ -57,6 +58,7 @@ function compactLedgerFile(file) {
         //   （读取方一律按 ts 自己排）。Map 的插入顺序天然稳定，直接用即可，
         //   省掉一次 O(n log n) —— 这条路径每 200 次追加会跑一次，人多的实例上能明显省。
         const out = [...map.values()].map((o) => JSON.stringify(o)).join(NL) + NL;
+        closeFile(file); // ★ 重写前必须关流（否则旧 fd 会写到被 rename 掉的旧文件）
         const tmp = file + '.tmp-' + Date.now();
         writeFileSync(tmp, out, 'utf8');
         renameSync(tmp, file);
@@ -80,7 +82,7 @@ export function groupMembersPath(dataDir) {
 /** 由 dsh-qqbot 侧写入(中间件); host 侧只读聚合 */
 export function appendLedger(dataDir, line) {
     try {
-        appendFileSync(ledgerPath(dataDir), JSON.stringify(line) + NL, 'utf8');
+        appendLine(ledgerPath(dataDir), JSON.stringify(line));
         noteLedgerAppend(ledgerPath(dataDir));
     }
     catch { /* 台账失败不影响主链 */ }
@@ -88,7 +90,7 @@ export function appendLedger(dataDir, line) {
 /** 由 dsh-qqbot 侧写入一条"群成员发言"(中间件); host 侧读聚合出可禁言名单 */
 export function appendGroupMember(dataDir, line) {
     try {
-        appendFileSync(groupMembersPath(dataDir), JSON.stringify(line) + NL, 'utf8');
+        appendLine(groupMembersPath(dataDir), JSON.stringify(line));
         noteLedgerAppend(groupMembersPath(dataDir));
     }
     catch { /* 台账失败不影响主链 */ }
@@ -211,6 +213,7 @@ export function removeGroupMember(dataDir, gid, mid) {
             kept.push(l);
         }
         if (removed > 0) {
+            closeFile(p);
             writeFileSync(p, kept.join('\n').replace(/\n{2,}/g, '\n').trimEnd() + (kept.length ? '\n' : ''), 'utf8');
         }
     }

@@ -8,7 +8,8 @@
  *   log   = 只记录分数(默认, 观察期: 不改变任何行为)
  *   block = 低分不唤醒 AI(消息仍 append 进上下文, 不丢)
  */
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeFile, ensureDir } from '../shared/async-append.js';
 import { dirname, join } from 'node:path';
 import type { Logger } from '../types.js';
 import { createLocalEmbedder } from './local-embed.js';
@@ -196,13 +197,16 @@ let scoreLogSinceCheck = 0;
 export function appendScoreLog(dataRoot: string, rec: Record<string, unknown>): void {
   try {
     const p = join(dataRoot, '.qqbot', 'value-scores.jsonl');
-    mkdirSync(dirname(p), { recursive: true });
-    appendFileSync(p, `${JSON.stringify({ ts: Date.now(), ...rec })}\n`, 'utf8');
+    ensureDir(dirname(p));
+    // ⚠️ 这里**必须同步写**：评分日志会被同进程的统计/回归测试**立刻读回**，
+    //    改异步后 classify-accuracy 回归直接失败（实测）。目录创建那一步仍用缓存优化。
+    appendFileSync(p, JSON.stringify({ ts: Date.now(), ...rec }) + String.fromCharCode(10), 'utf8');
     // 滚动：每 N 次才 stat 一次；超阈值就保留最新 KEEP 行（原子替换，避免半截文件）
     if (++scoreLogSinceCheck >= SCORE_LOG_CHECK_EVERY) {
       scoreLogSinceCheck = 0;
       try {
         if (statSync(p).size > SCORE_LOG_MAX_BYTES) {
+          closeFile(p); // ★ 重写前必须先关流，否则旧 fd 会写进被 rename 掉的旧文件
           const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim() !== '');
           if (lines.length > SCORE_LOG_KEEP_LINES) {
             const tmp = `${p}.tmp`;

@@ -34,7 +34,8 @@ import { pushAggImage, buildAggregateBlocks } from '../features/image-aggregate.
 import { noteSegmentScore } from '../features/segment-score.js';
 import { extractFaceImageUrls, slimQuoteText } from './quote-text.js';
 import { lookupMsgContent, rememberMsgContent } from './msg-content-cache.js';
-import { appendMsgHistory } from '../features/msg-history.js';
+import { md5OfFilename } from '../shared/quote-match.js';
+import { appendMsgHistory, findSenderByQuote } from '../features/msg-history.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
 import { computeRelevance, touchAffinity, classifyEmo, getAffinityEntry, memoryStrength } from '../features/local-signals.js';
@@ -71,6 +72,21 @@ export interface ResolvedQuote {
   refKey?: string;
   text?: string;
   entry?: { senderId?: string; content?: string };
+  /**
+   * ★ 2026-11-14：被引用消息**是谁发的**。
+   *
+   * 为什么要有：QQ 引用消息（message_type=103）的 `msg_elements` 元素里，
+   *   官方文档写了 `author`（"该元素对应的消息发送者"），但**官方事件示例里这条根本没填**
+   *   —— 两份独立证据（官方 103 示例 + 495258544 分支的实测）都指向"线上不下发"。
+   *   于是引用块只能显示"被引原文"，模型永远不知道那句话是谁说的。
+   *
+   * 来源优先级（高 → 低）：
+   *   ① `msg_elements[].author`（哪天腾讯填了就能直接用，见 inbound 里的提取）
+   *   ② **本地台账** `msg-content.jsonl` 的 `n`/`s`（入站那一刻我们自己记的，最可靠）
+   * 两者都没有时留空 —— 引用块会退化成原来的"无条件样子"，不编造名字。
+   */
+  senderName?: string;
+  senderId?: string;
   attachments?: { contentType?: string; url?: string; filename?: string; asrText?: string }[];
 }
 
@@ -213,6 +229,16 @@ export async function handleInbound(
           : _atts.some((a) => /video/i.test(_ct(a))) ? 'video'
             : 'file';
     _text = _kind === 'text' ? String(msg.content ?? '') : `[${_kind}]`;
+    // ★ 2026-11-14（主人定：不能另开独立台账）：图片指纹记进**历史台账本身**的 `f` 字段。
+    //   这样"这张图是谁发的"全从历史台账一个数据源查，attribution.jsonl 那本独立账可以撤掉。
+    //   QQ 的图片文件名就是内容 MD5，白拿，不用下载也不用识图。
+    const _imgs: string[] = [];
+    if (_kind === 'image') {
+      for (const a of _atts as Array<{ filename?: string }>) {
+        const v = md5OfFilename(typeof a?.filename === 'string' ? a.filename : undefined);
+        if (v && !_imgs.includes(v)) _imgs.push(v);
+      }
+    }
     appendMsgHistory(scope, String(peerId ?? ''), {
       id: String(msg.messageId ?? ''),
       s: String(msg.senderId ?? ''),
@@ -220,6 +246,7 @@ export async function handleInbound(
       t: Date.now(),
       k: _kind,
       x: _text,
+      ...(_imgs.length ? { f: _imgs } : {}),
     });
   } catch { /* 台账失败不影响主流程 */ }
 
@@ -1154,6 +1181,9 @@ function assembleAgentBody(
     if (refIdx) {
       const hit = lookupMsgContent(dataRoot, quotePeer, refIdx);
       if (hit) {
+        // ★ 2026-11-14：这条兜底路径（SDK 没解析出 quote）同样要标出"谁发的"
+        const _hn = String(hit.n ?? '').trim();
+        if (_hn) lines.unshift(escapeBlockMarkers(`引用 ${_hn} 的消息：`));
         if (!slim && hit.t) lines.push(escapeBlockMarkers(slimQuoteText(hit.t, 0)));
         for (const p of hit.imgs ?? []) {
           const line = describeQuoteAttachment({ contentType: 'image/*', url: p }, stickerDir);
@@ -1299,6 +1329,31 @@ function cleanTextForScore(raw: string): string {
  *     （本地路径模型能用视觉工具直接读图；QQ 链接又长又会过期），语音给 ASR 转写，文件给文件名+URL。
  */
 /**
+ * 最后一道兜底：翻**消息历史台账**（`features/msg-history`）按正文找发送者。
+ *
+ * 为什么还需要它：`attribution.jsonl` 是 2026-11-14 才开始记正文的，
+ *   之前那些消息（包括主人重启宿主前发的）里没有 `t` —— 但消息历史台账一直在记
+ *   `{s 发送者, n 昵称, x 正文摘要}`，按关键词就能把"那句话是谁说的"捞回来。
+ *   这条兜底让"历史存量"也能生效，不用等新消息慢慢攒。
+ *
+ * @param peerKey `group:<openid>` / `c2c:<openid>`
+ */
+function lookupSenderByHistoryText(
+  peerKey: string,
+  text: string,
+  imageMd5s?: string[],
+): { senderName?: string; senderId?: string } | undefined {
+  const sep = peerKey.indexOf(':');
+  if (sep <= 0) return undefined;
+  const scope = peerKey.slice(0, sep);
+  const peerId = peerKey.slice(sep + 1);
+  if (!peerId || (scope !== 'group' && scope !== 'c2c')) return undefined;
+  // 具体匹配逻辑在 features/msg-history 的 findSenderByQuote 里 ——
+  // 中间件（回填 ctx.state.quote）和这里共用同一份，避免两处行为不一致。
+  return findSenderByQuote(scope as 'group' | 'c2c', peerId, text, imageMd5s);
+}
+
+/**
  * 用本地台账补齐 QQ 没给全的被引用内容（2026-10-01 主人实测：引用**纯图片**看不到是哪张图）。
  *   QQ 引用纯图时 msg_elements 可能只给个文件名、甚至什么都不给 → 按 SDK 给的 refKey（= 被引用消息的 msg_idx）
  *   回查我们**入站时**记下的台账（见 msg-content-cache.ts），补出图片**本地路径**（AI 能直接读）。
@@ -1311,14 +1366,46 @@ function enrichQuoteFromCache(q: ResolvedQuote | undefined, dataRoot: string, pe
   const rawText = String(q.text ?? q.entry?.content ?? '').trim();
   const hasText = Boolean(rawText) && !isPlaceholderQuoteText(rawText);
   const hasAtt = Array.isArray(q.attachments) && q.attachments.length > 0;
-  if (hasText && hasAtt) return q;
+  // ★ 2026-11-14：**发送者也要查台账** —— 不能再挂在"内容不全才查"下面。
+  //   QQ 的 103 引用消息基本不给 author（官方示例里就是空的），
+  //   但正文和附件往往是**齐的**，于是原来的 `hasText && hasAtt → 直接 return`
+  //   会把"这条是谁说的"永久漏掉。发送者缺失时同样要下潜查一遍。
+  const needSender = !String(q.senderName ?? '').trim()
+    && !String(q.senderId ?? '').trim()
+    // ★ SDK 的 quoteRef 在 store 命中时会给 `entry.senderId`（= 扩展契约里 `ctx.quoted.id` 的来源），
+    //   那也算"已经有发送者"了 —— 别再白查一遍台账。
+    && !String(q.entry?.senderId ?? '').trim();
+  if (hasText && hasAtt && !needSender) return q;
   const hit = lookupMsgContent(dataRoot, peerKey, refKey);
-  if (!hit) return q;
   const out: ResolvedQuote = { ...q };
-  if (!hasText && hit.t) out.text = hit.t;
-  if (!hasAtt && hit.imgs && hit.imgs.length) {
-    // 走"本机路径"分支：describeQuoteAttachment 会原样给出路径（图库/缓存查不到也不会坏）
-    out.attachments = hit.imgs.map((p) => ({ contentType: 'image/*', url: p }));
+  if (hit) {
+    if (!hasText && hit.t) out.text = hit.t;
+    if (!hasAtt && hit.imgs && hit.imgs.length) {
+      // 走"本机路径"分支：describeQuoteAttachment 会原样给出路径（图库/缓存查不到也不会坏）
+      out.attachments = hit.imgs.map((p) => ({ contentType: 'image/*', url: p }));
+    }
+    if (needSender) {
+      const n = String(hit.n ?? '').trim();
+      const s = String(hit.s ?? '').trim();
+      if (n) out.senderName = n;
+      if (s) out.senderId = s;
+    }
+  }
+
+  // ★ 数据源只有一个：**消息历史台账**（主人 2026-11-14 定："不能独立台账"）。
+  //   之前那本 attribution.jsonl 已撤 —— 历史台账本来就记着每条消息的 s/n/x，
+  //   这次又补了 f（图片内容 MD5），正文和纯图两条路都能查。
+  if (!out.senderName && !out.senderId) {
+    const probeMd: string[] = [];
+    for (const att of Array.isArray(q.attachments) ? q.attachments : []) {
+      const v = md5OfFilename(att?.filename);
+      if (v && !probeMd.includes(v)) probeMd.push(v);
+    }
+    const h = lookupSenderByHistoryText(peerKey, out.text ?? rawText, probeMd);
+    if (h) {
+      if (h.senderName) out.senderName = h.senderName;
+      if (h.senderId) out.senderId = h.senderId;
+    }
   }
   return out;
 }
@@ -1352,6 +1439,14 @@ export function buildQuoteBlock(quote: ResolvedQuote | undefined, stickerDir: st
     if (line) lines.push(line);
   }
   if (lines.length === 0) return '';
+
+  // ★ 2026-11-14（主人定）：发送者**内联**在内容前面，不单独占一行 ——
+  //   目标形态：`[做早饭]我喜欢鲸鱼`，比"引用 X 的消息：\n 内容"省一条换行和几个字。
+  //   名字来源见 ResolvedQuote.senderName（API 不给 → 走消息历史台账）。
+  //   只有 openid 时退化成 id 前几位；两样都没有就什么都不加（保持原样，不加噪音）。
+  const qSender = String(quote?.senderName ?? '').trim()
+    || shortSenderId(String(quote?.senderId ?? quote?.entry?.senderId ?? '').trim());
+  if (qSender) lines[0] = escapeBlockMarkers(`[${qSender}]`) + lines[0];
 
   // 排版(2026-10-01 专家团共识): 引用内容整体退 2 格 —— 视觉上从属, 不再和正文同权重
   const indented = lines.map((l) => '  ' + l).join('\n');
