@@ -1,0 +1,53 @@
+# CodeRabbit 配置（dsh-qqbot）
+# 文档：https://docs.coderabbit.ai/reference/configuration
+language: zh-CN
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+
+  # ⚠️ 关键：这个仓库里 dist/ 与 client/ 是**构建产物**（600+ 文件），
+  #   不过滤的话一次审查会被产物淹掉，还会直接撞上"300 个变更文件"的上限。
+  path_filters:
+    - "!dist/**"
+    - "!client/**"
+    - "!**/*.d.ts"
+    - "!docs/images/**"
+    - "!docs/screenshots/**"
+    - "!docs/showcase-*.png"
+    - "!**/node_modules/**"
+
+  path_instructions:
+    - path: "src/channel-tools.ts"
+      instructions: |
+        这是扩展工具的注册与能力包装配中枢，审查时特别注意：
+        1. `register(def, { when })` 的 when 必须是**纯判断**，不许改注册、不许做工具活；抛错会被当成步骤准备失败。
+        2. 扩展能力包（makeExtCaps）的 env 必须和 `enabled(env)` 的 env **同源**——
+           同一份判据在"可见性"和"执行"两处拿到不同输入，是这个项目踩过的坑。
+        3. 任何"取不到就 return false"的静默分支都必须留痕（noteDeliver / diag），否则无法排查。
+        4. 对象展开（`{...x}`）只复制自有属性，遇到可能是类实例的对象要显式保全原型。
+
+    - path: "src/features/ext-capabilities.ts"
+      instructions: |
+        扩展能力包。失败路径**一律要留痕**（noteDeliver 写 ext-deliver.log），
+        因为扩展作者看不到 logger 输出，只有一个 false。静默失败是本项目最大的排查坑。
+
+    - path: "src/features/extension-*.ts"
+      instructions: |
+        扩展加载/注册。注意 ESM 缓存：模块 URL 带 `?v=<mtime>`，注册签名也必须把 mtime 算进去，
+        否则"改了实现但没改 schema"时热刷不生效。
+
+    - path: "src/session/**"
+      instructions: |
+        会话管理。多实例场景下永远不要对 `managersOf()[0]` 取下标的"第 0 个"当当前实例。
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+
+chat:
+  auto_reply: true
