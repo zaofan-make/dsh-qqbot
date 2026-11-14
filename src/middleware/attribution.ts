@@ -72,7 +72,7 @@ function classifyForHistory(msg: {
   return { k, x, f };
 }
 
-export function attributionLedger(config: ImQQBotConfig, logger: Logger) {
+export function attributionLedger(logger: Logger) {
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     try {
       const msg = ctx.message as {
@@ -141,37 +141,63 @@ export function attributionLedger(config: ImQQBotConfig, logger: Logger) {
           }
         }
 
-        // ── ② 归属查询**之后**才写历史台账 ──
-        // ★ 2026-11-15（CodeRabbit 第三轮抓到）：原来是"先写再查"，于是**当前这条消息自己**
-        //   就是全表里"时间最新的匹配"。A 说「我喜欢鲸鱼」，B 引用同文再发一遍时，
-        //   查出来的会是 B 自己，归属被错填。必须查完再写。
-        //   写入放在查询之后、外层 try 之内：查询抛错时这条历史就丢了，
-        //   所以这里单独包一层 try —— 写入失败不能反过来影响消息主链。
-        try {
-          const h = classifyForHistory(msg);
-          appendMsgHistory(kind as 'group' | 'c2c', peerId, {
-            id: String(msg.messageId ?? ''),
-            s: String(msg.senderId ?? ''),
-            // ★ 第三轮同时指出：C2C 的昵称原本是 `handleInbound` 后面才解析的
-            //   （`c2cNameOf`），搬到中间件后这里只拿得到 openid，历史里就把 openid 当昵称存了。
-            //   在这里补一次同样的解析，保持两边一致。
-            n: String(
-              (kind === 'c2c' ? c2cNameOf(dataRootOf(config), String(msg.senderId ?? '')) : '')
-              || msg.senderName
-              || msg.senderId
-              || '',
-            ),
-            t: Date.now(),
-            k: h.k,
-            x: h.x,
-            ...(h.f.length ? { f: h.f } : {}),
-            ...(msg.me ? { me: true } : {}),
-          });
-        } catch { /* 写历史失败不影响消息主链 */ }
+
       }
     } catch (err) {
       // ⚠️ 用 warn 而不是 debug：这个 catch 曾经把真问题吞掉整整一轮
       logger.warn?.(`im-qqbot: 引用归属回填异常: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await next();
+  };
+}
+/**
+ * 写消息历史台账 —— **必须挂在 early-inbound 扩展之后**（2026-11-15 CodeRabbit 第四轮）。
+ *
+ * 为什么和归属查询拆开：两者对"这条消息还在不在链路里"的要求不同 ——
+ *   · 归属查询要**早**（要在 media-history 拼历史行之前回填 state.quote），
+ *     而且被消灭的消息也该查（消灭与否不影响"被引的是谁"）；
+ *   · 写历史要**晚**：用户扩展可以通过 `annihilate` 把一条消息整条吃掉，
+ *     那种消息**一个字都不该进历史**。annihilate 的语义就是"不调 next、链停在这里"，
+ *     所以只要把本中间件挂在那之后，被消灭的消息自然走不到。
+ */
+export function historyRecorder(config: ImQQBotConfig, logger: Logger) {
+  return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
+    try {
+      const msg = ctx.message as {
+        kind?: string;
+        groupOpenid?: string;
+        senderId?: string;
+        senderName?: string;
+        messageId?: string;
+        content?: string;
+        me?: boolean;
+        attachments?: Array<{ content_type?: string; contentType?: string; filename?: string }>;
+      };
+      const kind = String(msg.kind ?? '');
+      const peerId = kind === 'group'
+        ? String(msg.groupOpenid ?? '')
+        : String(msg.senderId ?? '');
+      if (peerId && (kind === 'group' || kind === 'c2c')) {
+        const h = classifyForHistory(msg);
+        appendMsgHistory(kind as 'group' | 'c2c', peerId, {
+          id: String(msg.messageId ?? ''),
+          s: String(msg.senderId ?? ''),
+          // C2C 昵称在这里补一次解析：原本在 handleInbound 后面才做，历史会拿 openid 当昵称。
+          n: String(
+            (kind === 'c2c' ? c2cNameOf(dataRootOf(config), String(msg.senderId ?? '')) : '')
+            || msg.senderName
+            || msg.senderId
+            || '',
+          ),
+          t: Date.now(),
+          k: h.k,
+          x: h.x,
+          ...(h.f.length ? { f: h.f } : {}),
+          ...(msg.me ? { me: true } : {}),
+        });
+      }
+    } catch (err) {
+      logger.debug?.(`im-qqbot: 写消息历史失败(忽略): ${err instanceof Error ? err.message : String(err)}`);
     }
     await next();
   };
