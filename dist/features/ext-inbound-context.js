@@ -740,6 +740,10 @@ function decorate(ctx, s) {
         const mc = ctx.message;
         const isGroup = mc?.kind === 'group';
         const caps = makeExtCaps({
+            // ★★ 2026-11-14（CodeRabbit 抓到我修漏了）：makeExtCaps 内部 selfNow() 读的是 **deps.selfName**，
+            //   而我只给返回的 caps 挂了 getter —— 内部 storePath() 依然拿 'ext' ⇒ 所有入站扩展
+            //   还是写同一个 inbound/data/ext.json。这里必须把 getter 传进 deps。
+            get selfName() { return who(s); },
             dataRoot: s.env.dataRoot,
             logger: s.env.logger,
             appId: s.env.appId,

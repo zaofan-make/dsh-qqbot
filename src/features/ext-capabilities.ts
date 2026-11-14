@@ -590,7 +590,8 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
 
     // ── 持久化（落数据根，插件升级/重装不丢）─────────────────────────
     store: {
-      path: storePath(),
+      // ★ 2026-11-14（CodeRabbit）：load/save 是动态求值，path 却被构造时固化 —— 改成 getter
+      get path() { return storePath(); },
       load<T = unknown>(): T | undefined {
         if (!storePath()) return undefined;
         try {
@@ -795,9 +796,14 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         //   现在回落到扩展自己的 selfName（扩展在 run 里调用时它已经有值），
         //   并把非法字符洗成下划线（settings-host 的 SAFE_ID 只认 [A-Za-z0-9_-]）。
         const rawId = String((deps as { extId?: string }).extId || idHint || selfNow() || '').trim();
-        const extId = rawId.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+        // ★★ 2026-11-14（CodeRabbit）：必须与宿主派发端的 extCfgSafeId **逐字一致**——
+        //   那边是「只删非法字符、保留首尾下划线」，我原来「替换成 _ 且去首尾下划线」⇒
+        //   注册键与派发键对不上 ⇒ 注册返回 true、派发却查不到处理器。
+        const extId = rawId.replace(/[^A-Za-z0-9_-]/g, '');
         if (!extId) {
-          logger?.warn?.('[ext-caps] registerRoute 没有可用的扩展 id（selfName/extId/idHint 全空），路由未注册');
+          logger?.warn?.('[ext-caps] registerRoute 没有可用的扩展 id（selfName/extId/idHint 全空或被清洗成空），路由未注册');
+          // ★ 失败路径一律留痕（扩展作者看不到 logger）
+          noteDeliver('registerRoute', false, new Error('没有可用的扩展 id，路由未注册：' + JSON.stringify(rawId)));
           return false;
         }
         const m = String(method || 'GET').toUpperCase();
