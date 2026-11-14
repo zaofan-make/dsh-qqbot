@@ -132,9 +132,12 @@ export function makeExtCaps(deps) {
         catch { /* 观测失败绝不影响发送 */ }
     };
     const send = async (what, fn) => {
+        // ★ 2026-11-14 修（审查发现）：成功路径**不要**落盘。
+        //   noteDeliver 每次成功都 mkdirSync+statSync+appendFileSync，而发送是热路径 ——
+        //   一个扩展连发 10 张图就是 10 次同步写盘，全在 await 之前串行。
+        //   留痕的意义只在失败：成功时静默即可。
         try {
             await fn();
-            noteDeliver(what, true);
             return true;
         }
         catch (err) {

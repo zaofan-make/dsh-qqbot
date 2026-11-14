@@ -119,7 +119,12 @@ export function rememberMsgContent(dataRoot: string, peerKey: string, msgIdx: st
   const file = fileOf(dataRoot);
   try {
     mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, JSON.stringify({ p: peerKey, i: idx, ...rec, at: Date.now() } as Row) + '\n');
+    const row = { p: peerKey, i: idx, ...rec, at: Date.now() } as Row;
+    appendFileSync(file, JSON.stringify(row) + '\n');
+    // ★★ 2026-11-14 修（审查发现）：新行原来只进 index、**不进 list**。
+    //   list 既是 scanMsgContent 的唯一数据源，又是超上限重写的保留集 ——
+    //   于是：①进程启动后写入的消息扫不到；②台账满时最新那条被 slice 掉、**物理删除**。
+    list.push(row);
     const nextLines = lines + 1;
     if (nextLines > MAX_LINES) {
       // 超上限 → 重写成尾部 MAX_LINES 条（内存里已有的直接重建）
