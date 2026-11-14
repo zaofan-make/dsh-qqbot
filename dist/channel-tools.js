@@ -2412,21 +2412,30 @@ export async function apply(ctx, opts) {
                     if (!mgr) {
                         const sid = String(exec?.agent?.session?.id ?? '');
                         if (sid) {
-                            const sidShort = sid.slice(0, 8);
-                            for (const m of managersOf()) {
-                                const ss = m.sessions;
-                                if (!ss || typeof ss.values !== 'function')
-                                    continue;
-                                for (const r of ss.values()) {
-                                    const rid = String(r?.sessionId ?? '');
-                                    if (rid && (rid === sid || rid.slice(0, 8) === sidShort)) {
-                                        mgr = m;
-                                        break;
+                            // ★★ 2026-11-14（CodeRabbit）：**先按完整 id 跨全部 manager 找，再退回前缀**。
+                            //   原来在同一个循环里同时接受前 8 位：只要较早的 manager 里有同前缀的别的会话，
+                            //   就会先命中它，然后把 settingsNs 写到**那个实例**的配置文件
+                            //   （文件里有 appId/appSecret）；action=list 也一样写。
+                            const idOf = (r) => String(r?.sessionId ?? '');
+                            const scan = (exact, needle) => {
+                                for (const m of managersOf()) {
+                                    const ss = m.sessions;
+                                    if (!ss || typeof ss.values !== 'function')
+                                        continue;
+                                    for (const r of ss.values()) {
+                                        const rid = idOf(r);
+                                        if (!rid)
+                                            continue;
+                                        if (exact ? rid === needle : rid.slice(0, 8) === needle) {
+                                            mgr = m;
+                                            return;
+                                        }
                                     }
                                 }
-                                if (mgr)
-                                    break;
-                            }
+                            };
+                            scan(true, sid); // ① 完整 id（唯一可靠）
+                            if (!mgr)
+                                scan(false, sid.slice(0, 8)); // ② 才退到前 8 位短码
                         }
                     }
                     const own = String(mgr?.settingsNs ?? '').trim();
