@@ -1,3 +1,65 @@
+## 1.12.35 (2026-11-14)
+
+### 修
+
+- **引用图预取目录只写不删**（`transport/quote-images.ts`）
+  `.qqbot/referenced/<sha1>.<ext>` 每次被引用就写一次、从不回收，长跑后无限涨。
+  改为内容寻址（同内容不重写）+ 超 7 天回收（24 小时最多扫一次）：
+  **先清理再检查/写入**（否则会出现"判已存在 → 跳过写 → 立刻被删 → 仍记住已删路径"）。
+  `lookupImagePath` 命中后也补 `existsSync` 校验，避免把已删除的路径返回给上层。
+
+- **面板 5 个字段保存后不生效**（`index.ts`）
+  与 `EditableConfigSchema` 逐项比对，`sync()` 漏了 `imageOffload` / `imageAggregate` /
+  `messageReference` / `extMetaTool` / `webTurnSilent`；且 `entry`（初始快照）也没带，
+  首次同步会用 schema 默认值把用户配置掀掉。
+
+- **出站扩展被熔断后只能重启**（`ext-outbound.ts`）
+  `resetOutboundBreaker()` 全仓无调用点 ⇒ 熔断后 `/tools-reload` 也没用。改为装载完成时复位。
+
+- **`onSent` 没有超时且串行**（`ext-outbound.ts`）
+  注释一直写着"单次超时保护"，实现只有 `try/catch` 且串行 `await`——一个扩展卡住会拖住后面所有
+  扩展与调用方。改为 `allSettled` 并行 + 单个 3s 超时。
+
+- **超长消息引用块必然切错位**（`transport/markers.ts`）
+  `clampForMarkerScan` 会挖掉中间再找标记，返回的 idx 是**截断后**字符串的下标，
+  而调用方拿它 slice **原始内容** ⇒ 超过 20000 字的消息引用块切出乱码。改为超长返回 undefined。
+
+- **入站扩展 `known` / `loaded` 仍是模块级全局**（`features/ext-inbound.ts`）
+  同进程两个机器人时，dispose 实例 A 会把 B 的扩展一起 dispose。改为按 dataRoot 分桶。
+
+- **卡片表原子写用固定 `.tmp` 名**（`features/ext-tool-cards.ts`）
+  并发发卡时 A 的 tmp 被 B 覆盖 ⇒ `rename` 拿到半个文件或 ENOENT（表现：卡片点了没反应）。
+  改为带 pid + 随机后缀的唯一名，写与 rename 同一清理保护。
+
+- **`until` 非法值会静默升级成永久禁言**（`features/ext-inbound-state.ts`）
+  `Number(null)/''/false` 都是 0，而 0 的语义是永久。改为校验原始类型，只认 number 且有限非负。
+
+- **入站扩展熔断 key 用文件名**（`features/ext-inbound*.ts`）
+  两个目录下的同名扩展共享一份熔断计数 ⇒ A 被熔断连带停掉 B。改为绝对路径；
+  `next()` 嵌套后恢复上游归属、破坏性动作计数按路径分开记。
+
+- **派发诊断日志只 append 不轮转**（`features/ext-tool-interaction.ts`）
+  默认常开的诊断会无限涨。改为超 512KB 轮转成 `.1`，大小检查每 50 次写做一次。
+
+### 回滚（重要）
+
+- **`channel-tools.ts` / `session-manager.ts` 整体退回 1.12.32**
+  今天的改动打坏了扩展工具注册：`roll_dice` / `resource_sites` / `dskit_*` / `nai_image` /
+  `deepseek_balance` / `mc_wiki` 全部 `unknown tool`，而诊断日志显示"注册成功"。
+  实机验证：整文件回滚后全部恢复；单独回滚 `channelOf` 或 `lastSetupCtx` 均无效（多处叠加）。
+  被退回的修复：`channelOf` 多实例拒绝、`dataRootOfExec`、`recall_keywords` 实例判定、
+  禁言时区、`sessionId` 轮换赋值 —— 全部留在台账，后续按「加一项 → 用 roll_dice 当金丝雀验一次」逐个恢复。
+
+### 文档
+
+- 维护手册新增 **§26.0 铁律：模块级可变状态一律按实例分桶**（含这一天踩的六次、检查命令、分桶模板、不该分桶的例外）
+
+### 验证
+
+- `npm run build`（tsc）通过
+- `ext-inbound` 81 + `ext-hooks` 16 + `outbound-buffer` 4 = **101 passed**
+- 实机：`roll_dice` / `resource_sites` / `arknights_wiki` 恢复正常
+
 ## 1.12.34 (2026-11-14)
 
 ### 全仓库审查 + 多实例隔离（#49–#56，九个 PR 合并）
