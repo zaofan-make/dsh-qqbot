@@ -14,6 +14,7 @@ import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { parseStreamFrame } from '../transport/events.js';
 import { setMaterialTargetFactory, rewriteLocalMarkdownImages, lastMediaRewrite } from '../features/md-media-rewrite.js';
 import { resolveAutoRecall } from '../features/auto-recall.js';
+import { registerOutboundOwner } from '../features/ext-outbound.js';
 import type { ToolsRegistryLike } from '../transport/tool-presenter.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import { buildUserAgent } from '../shared/index.js';
@@ -1064,6 +1065,10 @@ export async function bootstrapGateway(
     logger.info('[im-qqbot] interaction(按钮回调)分发就绪');
   }
 
+  // ★★ 2026-11-14（CodeRabbit）：登记的 owner 必须就是**真正走发送链**的那个对象。
+  //   middleware-setup 里登记的是 SDK 的 bot，但 createOutboundHandler 传的是上面这个 sender
+  //   —— 两个对象不同 ⇒ WeakMap 永远 miss ⇒ 多实例下所有出站都会跳过扩展。这里补登记 sender。
+  try { registerOutboundOwner(dataRootOf(config), sender); } catch { /* 登记失败不影响发送 */ }
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);
   (ctx as unknown as { on(event: string, handler: (...args: unknown[]) => void): void })
     .on('session/event', outboundHandler as (...args: unknown[]) => void);

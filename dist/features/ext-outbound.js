@@ -90,6 +90,18 @@ export function configureOutboundExtensions(opts) {
         ownerKey.set(opts.owner, obKey(opts.dataRoot));
 }
 /** 当前已配置的出站扩展数据根（空串=没配）—— 供热刷判断"刷的是不是你要的那个实例" */
+/**
+ * 登记真正走发送链的对象，用于 runOutboundChain / notifyOutboundSent 反查桶。
+ *
+ * ★★ 2026-11-14（CodeRabbit）：**不能用 middleware-setup 里的 SDK bot 当 owner** ——
+ *   实际走链的是 bootstrap 另建的 sender 字面量（createOutboundHandler 传的是它），
+ *   两个对象不是同一个 ⇒ WeakMap 永远 miss ⇒ 多实例下所有出站都会跳过扩展。
+ *   所以 sender 创建后要单独登记一次（SDK bot 可同时登记，无害）。
+ */
+export function registerOutboundOwner(dataRoot, owner) {
+    if (owner && typeof owner === 'object')
+        ownerKey.set(owner, obKey(dataRoot));
+}
 export function currentOutboundDataRoot() {
     return String(buckets.get(fallbackKey)?.cfg.dataRoot ?? '');
 }
