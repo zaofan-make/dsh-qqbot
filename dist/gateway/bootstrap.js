@@ -1216,7 +1216,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             //    引擎内部逐个 try/catch + 逆序执行，单个清理失败只告警，绝不阻断其余拆卸步骤。
             try {
                 const hooks = await import('../features/ext-hooks.js');
-                await hooks.disposeStartupHooks(logger);
+                await hooks.disposeStartupHooks(logger, dataRootOf(config));
             }
             catch (err) {
                 logger.warn?.(`[ext-hook] 清理启动钩子异常(已忽略): ${err instanceof Error ? err.message : String(err)}`);
@@ -1227,7 +1227,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             //    引擎内部逆序 + 逐个 try/catch，单个失败只告警，绝不阻断其余拆卸步骤。
             try {
                 const inbound = await import('../features/ext-inbound.js');
-                await inbound.disposeInboundExtensions(logger);
+                await inbound.disposeInboundExtensions(logger, dataRootOf(config));
             }
             catch (err) {
                 logger.warn?.(`[ext-inbound] 清理入站扩展异常(已忽略): ${err instanceof Error ? err.message : String(err)}`);

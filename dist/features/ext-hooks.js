@@ -261,7 +261,10 @@ export async function runStartupHooks(opts) {
  * 由 `bootstrapGateway` 的 dispose 链路调用（插件卸载 / 宿主退出 / 保存连接设置后重建网关）。
  * 纪律：逆序执行（后启动的先清理）、**单个失败只告警**、整体永不抛出、幂等。
  */
-export async function disposeStartupHooks(logger) {
+export async function disposeStartupHooks(logger, dataRoot) {
+    // ★ 2026-11-14：先接住 dataRoot（调用契约对齐），真正的按实例分桶在 P3 做 ——
+    //   目前 disposers 仍是全局列表，多实例下 A 卸载会跑掉 B 的清理项。
+    void dataRoot;
     disposed = true;
     const list = disposers;
     disposers = [];

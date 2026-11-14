@@ -1132,10 +1132,10 @@ export class SessionManager {
         const cmdLine = describeExtCommandReload(await reloadExtCommands(this.dataRoot));
         // 2026-10-12 追加：入站中间件扩展（`.qqbot-extensions/inbound/*.mjs`）同一时机一起重扫。
         //   挂载点是个"现读可变列表"的代理，重扫只是换内容 ⇒ **不重启即生效**，不用另加一条热刷入口。
-        const inboundLine = describeExtInboundReload(await reloadExtInbound());
+        const inboundLine = describeExtInboundReload(await reloadExtInbound(this.dataRoot));
         // 2026-10-16 追加：**出站**中间件扩展（`.qqbot-extensions/outbound/*.mjs`）同一时机一起重扫。
         //   链读的是模块级 `loaded` 列表 ⇒ 重扫只是换内容，**不重启即生效**，不用另加热刷入口。
-        const outboundLine = describeExtOutboundReload(await reloadExtOutbound());
+        const outboundLine = describeExtOutboundReload(await reloadExtOutbound(this.dataRoot));
         const extLines = `${cmdLine}\n${inboundLine}\n${outboundLine}`;
         if (targets.length === 0) {
             return `当前没有活动会话可热刷(先随便发条消息让会话跑起来, 再试 /tools-reload)\n${extLines}`;

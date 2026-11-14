@@ -222,9 +222,10 @@ export function configureOutboundExtensions(opts: { dataRoot: string; logger: Lo
 }
 
 /** 重新装载（供热刷用）：没配置过则安静返回空结果 */
-export async function reloadOutboundExtensions(dataRoot?: string): Promise<OutboundLoadResult> {
-  // ★ 2026-11-14：留着 dataRoot 形参，P1 分桶时按它取桶；现在先忽略（单桶行为不变）
-  void dataRoot;
+export async function reloadOutboundExtensions(): Promise<OutboundLoadResult> {
+  // ⚠️ 2026-11-14：**出站扩展还没按实例分桶**（P1 待做）。
+  //   所以这里刻意不收 dataRoot —— 收下却不按它取桶，等于对外撒谎'指定实例已经重载'。
+  //   P1 会把 cfg/loaded 改成 Map<rlKey(dataRoot), …> 并让 runOutboundChain 按 opts.sender 查桶。
   if (!cfg) return emptyResult();
   return loadOutboundExtensions(cfg);
 }
