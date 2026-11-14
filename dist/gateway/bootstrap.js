@@ -321,7 +321,9 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                             void ga.setMemberMute(gid, sid, rfc).catch(() => undefined);
                         }
                     }
-                    if ((ar.mode ?? 'keep') === 'drop')
+                    // ★ 2026-11-14 修（CodeRabbit）：**演练模式不该丢消息** —— dryRun 的语义只是记日志，
+                    //   原来 mode='drop' + dryRun 时照样 autoDropped，把消息吞了。
+                    if ((ar.mode ?? 'keep') === 'drop' && ar.dryRun !== true)
                         autoDropped = true;
                 }
             }

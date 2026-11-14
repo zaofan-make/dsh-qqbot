@@ -144,10 +144,22 @@ export class StreamingWriter {
       await this.session.update(this.fullText);
       this.sentChunkCount++;
     } catch (err) {
-      // update 失败：不标记 failed（session 已打开，finish 会 complete 关闭）
+      // ★★ 2026-11-14 修（审查发现）：**最后一次 update 失败会让句尾永久丢失** ——
+      //   update 抛错只 warn 不重试，而 shouldFallback 只看 sentChunkCount === 0，
+      //   前面成功过一次就不再降级 ⇒ 后半句谁也收不到。
+      //   这里先重试一次（网络抖动/频控大多是一次性的），仍失败则大声告警。
       this.deps.logger.warn(
-        `im-qqbot: stream update failed: ${err instanceof Error ? err.message : String(err)}`,
+        `im-qqbot: stream update failed (retrying once): ${err instanceof Error ? err.message : String(err)}`,
       );
+      try {
+        await new Promise((r) => setTimeout(r, 200));
+        await this.session.update(this.fullText);
+        this.sentChunkCount++;
+      } catch (err2) {
+        this.deps.logger.warn(
+          `im-qqbot: stream update FAILED after retry —— 本次流式末尾可能缺内容: ${err2 instanceof Error ? err2.message : String(err2)}`,
+        );
+      }
     }
   }
 }
