@@ -142,8 +142,12 @@ interface NormalizedHook {
 /** 已注册的清理函数（模块级：dispose 可能在加载还没跑完时就被调用，所以放模块级而非闭包） */
 /** 归一化 key（Windows 大小写不敏感；其它平台保持原样，避免把两个合法目录合并） */
 function hk(dataRoot: string | undefined): string {
-  const s = String(dataRoot || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
-  return process.platform === 'win32' ? s.toLowerCase() : s;
+  // ★★ 2026-11-14（CodeRabbit）：反斜杠**只在 Windows 上**是分隔符。
+  //   POSIX 上它是合法文件名字符 —— 无条件折叠会把 /tmp/bot\a 与 /tmp/bot/a
+  //   （两个不同目录）合并成同一个清理桶。大小写同理。
+  const raw = String(dataRoot || '');
+  if (process.platform !== 'win32') return raw.replace(/\/+$/, '');
+  return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
 /**
