@@ -3643,3 +3643,206 @@ Get-Content "<dataRoot>\.qqbot\web-direct.log" -Tail 5
 
 > ⚠️ **以后再改入站标签格式，`src/transport/inbound.ts` 与 `settings-host.js` 两边都得改。**
 > 只改 src ⇒ 模型侧正常、dock 侧错乱（本次就是主人先发现的），而且 dock 解析失败是**静默**的。
+
+---
+
+## §24 🔴 工具注册与可见性 · 总纲（2026-11-14）
+
+> 这一节是**唯一入口**。§4.6 / §11.36 / §17 / §18 / §19 / §20 / §21 里的结论都被本节统摄，
+> 那些小节保留作历史踩坑记录，但**下判断一律以本节为准**。
+> 凡是要动 `channel-tools.ts` 的注册相关代码，先读完本节 + §17。
+
+### 24.1 宿主侧真相：**没有 `enabled` 这种概念**
+
+宿主的 `ctx.tools.register(def)`（`packages/core/tools`）只有一层语义：
+
+> Register globally or in the calling agent scope. Scoped tools shadow globals.
+
+**注册即存在。** `ToolDefinition` 的字段里**没有** `enabled` / `visible` / `when` ——
+宿主不提供任何"按条件决定要不要有这个工具"的钩子。
+
+宿主能用的可见性手段只有两个：
+
+| 手段 | 语义 | 特点 |
+|---|---|---|
+| **注册作用域** | 注册到 `agent.ctx` = 只有那个 agent 看得见；注册到 `ctx.root` / `get('tools')` = 全局继承 | 结构性隔离、零窗口期 |
+| **`ctx.tools.restrict({allow, deny})`** | 该作用域对**继承来的**全局工具做实时过滤；不影响本作用域自己的注册 | 官方支持、**实时**（下一 step 生效），多个限制取交集 |
+
+> 记忆锚点：**可见性 ≠ 注册**。想"有条件地看见"，要么换作用域注册/不注册，要么 `restrict`。没有第三条路。
+
+### 24.2 本插件里的三条注册路径（别混）
+
+| 工具种类 | 谁负责注册 | 注册到哪 | 可见性靠什么 |
+|---|---|---|---|
+| **内置工具**（`toolDefs` 那四十来个） | `apply()` 逐条 `ctx.tools.register` | 传入 apply 的 ctx（= 某个 agent 的 ctx） | `restrict` 剪枝（§4.6.4 四件套） |
+| **普通扩展工具**（`tools/*.mjs`，不带 `expose`） | `apply()` 逐条注册，**先过 `enabled` 判定** | 同上 | `enabled` + 注册作用域 |
+| **`expose:'all'` 扩展工具** | **不进 apply 的注册循环**；先入 `extToolIndex`，再由 `applyExtToolVisibility()` 按 agent 注册 | `toolsOfScope(agentCtx).register` | 索引 + `extUserOff` + grant（§17） |
+
+三个关键事实：
+
+1. **`extToolIndex` 只收 `expose:'all'`**（`defs.filter(d => d.expose === 'all')` 之后才 `set`）。
+   普通扩展工具**永远不在索引里**，别去那里找。
+2. **普通扩展工具的可见性**完全由 `apply()` 里那段 `enabled(env)` 决定；判 false 就 `continue`，连注册都不会发生。
+3. **`expose:'all'` 那条路完全不看 `enabled`** —— `applyExtToolVisibility()` 是拿 `buildExtTool()` 直接包装注册。
+   ⇒ 给一个 `expose:'all'` 的工具写 `enabled` 是**无效代码**（极容易误以为生效）。
+
+### 24.3 `enabled(env)` 是自创的，所以天生只能做**粗粒度**判断
+
+`apply()` 给钩子的 env：
+
+```js
+{ ctx, agent, provider, manager, dataRoot, logger }
+```
+
+- `agent` ← `opts.agent`（**调用方显式传**），兜底按 `rec.agentCtx === ctx` / `rec.agent.ctx === ctx` 反查 sessions
+- `provider` ← `agent.session.requestContext()`，兜底 `manager.modelResolver.getEffectiveRoute(…)`
+
+**结构性问题**（2026-11-14 实测踩到）：
+
+> `mountChannelTools()` 在 session-manager 里有 **7 处调用点**，只有 3 处传 `agent`；
+> 其余走"按 ctx 反查 sessions"的兜底，而兜底在热刷 / 多路径注册场景会 miss。
+> ⇒ `agent` = `undefined`、`provider` = `''`
+> ⇒ 扩展侧 `providerIsDeepseek(undefined, undefined, '')` = **false**
+> ⇒ 宿主 Key 在也没用，判"未启用" ⇒ **5 个工具全被条件隐藏**
+> （日志形态：`条件隐藏(未启用): dskit_xxx`）
+
+**结论（写代码按这个来）**：
+
+| 判据类型 | 能不能放进 `enabled` |
+|---|---|
+| 面板配置（有没有填 Key、开关开没开） | ✅ 可以，且推荐 |
+| 「当前会话是不是 DeepSeek 官方」 | ❌ **不要** —— 注册时机与"当前会话"不是同一个概念 |
+| 「某个群 / 某个人能不能用」 | ❌ 不要 —— 那是会话级，属于 `restrict` 或 `run()` 里自查 |
+
+> 一句话：**`enabled` 只回答"这个能力全局上有没有被配置"，不回答"这个会话该不该有它"。**
+> 会话级的一律在 `run()` 入口自查（拿不到就返回友好提示），或在 per-agent 注册处用 `restrict`。
+
+### 24.4 第二个坑：`buildExtTool()` 塞给 `run()` 的 env **是残的**
+
+`buildExtTool()` 组装的执行 env 只有：
+
+```js
+{ cwd, exec, ctx, logger, qq, manager?, sender?, replyTarget? }
+```
+
+**没有 `dataRoot` / `provider` / `agent`** —— 而 `enabled` 的 env 里明明都有。
+⇒ 同一个扩展，`enabled` 里拿得到的信息，`run()` 里拿不到（工具运行起来再判一次 Key 就会判 false）。
+
+写扩展时**必须**按最保守口径取值：
+
+```js
+const dataRoot = env.dataRoot || env.manager?.dataRoot || env.cwd;   // 三级兜底
+```
+
+> 待改（还没做）：`buildExtTool()` 里补 `dataRoot: ent.inst.dataRoot`，
+> 并把 `agent: exec?.agent`、`provider`（从 `exec.agent.session.requestContext()` 现算）塞进 env，
+> 让 `enabled` 与 `run` 看到同一份信息。**动之前先过 §24.7 的验证矩阵。**
+
+### 24.5 排查"扩展工具没出现"的顺序（本节版，替代 §4.6.6 第 4 步之后）
+
+日志：`{dataRoot}/.qqbot-extensions/data/`、`~/.dsh/qqbot-ext-diag.log`、`qqbot-extglob.log`。
+
+1. **扫到了吗** —— `apply extRoot=… defs=N`（`N` 里应该有你的工具）
+2. **进索引了吗** —— 只有 `expose:'all'` 才有 `extToolIndex` / `清单已落盘`；普通工具看第 3 步
+3. **判隐藏了吗** —— 搜 `条件隐藏(未启用): <工具名>`。有这行 = `enabled` 返回 false，**先去看它依赖了什么**
+4. **注册成功了吗** —— `热替换: 先注销旧 X` → `注册成功: X`
+5. **注册错层了吗** —— 见 §17 一、只有 `agent.ctx` 算数
+6. **被剪枝了吗** —— `restrict` 的 deny 名单里有没有它
+7. **被签名缓存吃掉了** —— 含 `enabled` 的工具已跳过签名短路；**改 `lib/*.mjs` 必须改名**（ESM 按 URL 缓存）
+
+### 24.6 自检清单（改注册 / 可见性代码前过一遍）
+
+1. 我改的是**注册**逻辑还是**判据**逻辑？判据里有没有依赖"当前会话"的东西？
+2. `enabled` 里所有输入都做了 `?.` 兜底吗？输入为空时**默认可见还是默认隐藏**？（默认隐藏更安全，但要想清楚用户会不会以为"坏了"）
+3. 同一个能力，`enabled` 和 `run()` 的判据**是不是同一份**？不是的话必然有一边撒谎。
+4. 我改的是 `expose:'all'` 还是普通工具？路径搞错 = 白改。
+5. 改完**既看 src 又看 dist**（Windows 中文路径下 python 写盘可能"报成功但没写"）。
+6. 临时探针文件 / 诊断日志清掉了吗？（§22）
+
+### 24.7 验证矩阵（每次动这块都跑）
+
+| 场景 | 期望 |
+|---|---|
+| 面板填了 Key | 工具**任何会话**都可见（own key 优先，不看 provider） |
+| 面板没填 + 官方 provider 会话 | 可见（复用宿主 Key） |
+| 面板没填 + 非官方 provider 会话 | **不可见**，日志有 `条件隐藏` |
+| 非 QQ 会话（web / 终端） | 不该看到 QQ 专属扩展工具 |
+| 关掉单个开关（如 `enableOcr=false`） | 该工具消失，其余不受影响 |
+| 改配置后**不重启** | 下一 step 生效（`enabled` 已跳过签名短路） |
+
+### 24.8 🟢 官方正解：`register(def, { when })` —— 步骤级条件（宿主 0.2.2+）
+
+> 2026-11-14 补。这条推翻 24.3 里"`enabled` 只能做粗粒度"的无奈结论：
+> **宿主本来就有细粒度的条件可见性，而且判据输入的正是我们缺的那一样。**
+> 来源：`@deepseek-ai/dsh-tools` README 的 `### Conditional tools` +
+> `lib/types/contracts.d.ts` 的 `ToolRegistrationOptions` / `ToolActivationContext`。
+
+宿主真实 API（0.2.2-rc.3 实测存在）：
+
+```ts
+register(definition: ToolDefinition, options?: ToolRegistrationOptions): () => void
+
+interface ToolRegistrationOptions {
+  /** 省缺=启用；false=同时从「描述」与「派发」里排除；抛错=步骤准备失败(ToolActivationError) */
+  readonly when?: (ctx: ToolActivationContext) => boolean | Promise<boolean>
+}
+
+interface ToolActivationContext {
+  readonly agent: Agent
+  readonly modelSelection: Readonly<ModelSelection>   // ← provider / model / effort，正是我们缺的
+  readonly signal: AbortSignal
+}
+```
+
+三条硬事实：
+
+1. **每步求值一次**（每个 model step），`modelSelection` 是"**步骤准备时为这次请求捕获的那个**"，
+   与 `AssembleContext.modelSelection` / executor 描述拿到的是同一份 ⇒ **天然对齐工具表快照**，
+   不像 `enabled` 那样在注册时刻瞎猜。
+2. **false 是真正移除**：从 executor 描述、PTC 绑定、执行集合三处一起消失。
+   ⇒ 模型看不到、调不到，不是"看得见但报错"。
+3. **必须配 `resolve()`**：带条件的工具，在**没有 resolved set 的调用**上直接 `UNKNOWN_TOOL`。
+   宿主流程是 `const set = await ctx.tools.resolve({agent, modelSelection, signal})` →
+   传给 `assemble(toolSet)` 与本步 `ctx.tools.execute(…, toolSet)` → **批次结束后 `set.dispose()`**；
+   同一步的重试**复用它**。执行器把该 set 应用到批内每一次调用（含 PTC 程序子调用）。
+   `get/definitions/schemas(name, scope, toolSet)` 查的也是这个集合。
+
+**能力探测方式**（老宿主没有，必须分支）：
+
+```js
+const supportsWhen = typeof ctx.tools?.resolve === 'function';   // 0.2.2-alpha.2 起才有
+```
+
+> 版本对照（社区实测 + 本地核对）：`0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.5` **没有**；
+> `0.2.2-alpha.2` 起有；本机宿主 `0.2.2-rc.3` 有。
+> 我们的 `peerDependencies` 下限是 `dsh-tools >= 0.1.1-rc.2` ⇒ **不能删旧路径**，只能做能力分支。
+
+#### 对我们意味着什么
+
+| 现状（自创 enabled） | 改成 when 之后 |
+|---|---|
+| 判据在 `apply()` 注册时刻求值，拿不到"当前会话 provider" | 判据在**每步**求值，`modelSelection.provider` 直接给 |
+| 要靠 `opts.agent` / 反查 sessions 猜是谁 | `ctx.agent` 直接是准备这一步的 agent，不用猜 |
+| 判 false 靠"不注册"实现 | false = 官方移除（描述 + 派发 + PTC 一致） |
+| per-agent 注册 + 索引 + `extUserOff` + grant 四套状态机 | 注册一次（根作用域）+ 条件，**大量脚手架可以删** |
+| 签名缓存必须为 `enabled` 开特例（否则改配置不生效） | `when` 每步重算，天然不需要缓存特例 |
+
+> 参考：社区插件 `dsh-cherry-bridge` 的 issue #343 就是拿这个方向做 spike ——
+> 他们原来用 `agent.ctx.tools.restrict({deny})` 管工作区隔离，被迫维护「活着的 agent 集合」
+> （3 个订阅 + 每-agent 层表 + 合并重算 + 未决 cwd 重检 + 全局 guard 兜底），2169 行里 550–600 行是脚手架；
+> 换成 `when` 后这层生命周期整块都不需要了。**同一个教训，我们别重犯。**
+
+#### 改造顺序（要做的话按这个走）
+
+1. **先只改扩展工具这一条路**（别动内置工具，它们在用 `restrict` 且没坏）
+2. `buildExtTool()` 产出 `when` 包装：内部把 `{agent, modelSelection, signal}` 规范化成扩展熟悉的
+   `{ agent, provider: modelSelection.provider, model: modelSelection.model, signal }`，
+   再调 `def.enabled(...)`（**扩展侧签名不用改**，向后兼容）
+3. 注册处：有 `resolve` 能力 → `register(tool, { when })`；没有 → 老路（注册时判一次）
+4. 同时修 §24.4 的 env 残缺（`run()` 也要能拿到 `dataRoot` / `provider`）
+5. 回归 §24.7 全矩阵，外加一条：**同一步重试**不许丢工具（验证 resolved set 复用）
+
+> ⚠️ 两个坑提前记下：
+> ① `when` 抛错 = **步骤准备失败**（`TOOL_ACTIVATION_FAILED`），不是"不可用" ——
+>   扩展的判据里所有外部读取都要 try/catch 兜底，宁可返回 true。
+> ② `when` **不许改注册、不许做工具活**，只能纯判断；异步必须 observe `signal`。

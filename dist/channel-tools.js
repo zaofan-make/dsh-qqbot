@@ -3125,7 +3125,16 @@ export async function apply(ctx, opts) {
         //   签名缓存只比 name/desc/schema —— `enabled` 是**运行时**判据（Key/provider 变了它就该变），
         //   不能参与"没变化就跳过"的短路，否则配置改了也不会重新求值。
         //   ⇒ 只要有一个工具声明了 enabled，就每次注册都重新走一遍（判定很轻，纯内存）。
-        const hasConditional = defs.some((d) => typeof d.enabled === 'function');
+        // ★★ 2026-11-14（宿主 0.2.2+ 的 `register(def, { when })` —— 官方条件可见性）：
+        //   以前只能"注册/不注册"二选一，而且判据在**注册时刻**求值，拿不到"这一步用哪个模型服务商"；
+        //   现在宿主给了步骤级条件：每步算一次，入参 `{ agent, modelSelection, signal }`，
+        //   `modelSelection.provider/model` 就是这一步真实要用的路由（与工具表快照同一份），
+        //   返回 false 会**同时**从「描述」「PTC 绑定」「执行集合」里移除（比"压根没注册"更准）。
+        //   能力探测：`ctx.tools.resolve` 是 when 的配套标记（0.2.2-alpha.2 起才有，之前没有）。
+        //   ⚠️ 不能硬要求新宿主：peer 下限仍是 dsh-tools >= 0.1.1-rc.2，旧宿主继续走"注册时判一次"的老路。
+        const whenSupported = typeof ctx.tools.resolve === 'function';
+        // 有 when 时条件每步重算 ⇒ 不必为 enabled 放弃签名缓存（省掉每回合的"先拆后建"）
+        const hasConditional = !whenSupported && defs.some((d) => typeof d.enabled === 'function');
         if (!hasConditional && curSig && prevSig === curSig && myDisposers.size > 0) {
             // 完全没变化 ⇒ 直接返回，避免"先拆后建"带来的永久丢失风险
             extDiag(`扩展工具未变化(${defs.length} 个)，跳过重复注册`);
@@ -3139,7 +3148,12 @@ export async function apply(ctx, opts) {
             //   def.enabled(env) 返回 false ⇒ **不注册**（AI 完全看不见，不是"看得见但报错"）。
             //   注册是按会话走的，新会话 / `/tools-reload` 都会重新求值 ⇒ 改配置后下一轮就生效。
             //   同时回收它上次注册的那份（配置从"有"变"没有"时，旧工具必须消失）。
-            if (typeof def.enabled === 'function') {
+            // ★ 2026-11-14（主人要求「没配 API 就不让 AI 看见这些工具」）：**条件可见**
+            //   两条路，按宿主能力分支：
+            //   · 新宿主（有 `ctx.tools.resolve`）→ **交给 `{ when }`**（见下面注册处），
+            //     这里**不求值、不跳过** —— 否则工具永远注册不上，when 也就没机会跑。
+            //   · 老宿主 → 老办法：判 false 就不注册（配置从"有"变"没有"时把旧的那份也回收）。
+            if (typeof def.enabled === 'function' && !whenSupported) {
                 let vis = true;
                 // ★ 2026-11-14（主人："可以给钩子传 agent 啊"）：把 **agent 对象**一并交给钩子 ——
                 //   `agent.session.requestContext()` 能拿到本会话真实的 {provider, model}，
@@ -3271,8 +3285,17 @@ export async function apply(ctx, opts) {
                     },
                     async execute(args, exec) {
                         const sess = findSessionRec(channelOf(exec), exec);
+                        // ★ 2026-11-14：`enabled` 与 `run` 必须看到同一份信息。
+                        //   以前执行 env 只有 {cwd, manager, sender, replyTarget, exec, ctx, logger} ——
+                        //   没有 dataRoot / provider / agent ⇒ 扩展在"可见性判定"里能认出 deepseek、
+                        //   跑起来又不认，同一个判据两处给出相反答案（dskit 就栽在这）。
+                        const sessAgent = sess?.rec?.agent
+                            ?? exec?.agent;
                         const env = {
                             cwd: workCwd, // 注入给扩展工具的工作目录保持 agent cwd(扫描根已用数据根)
+                            dataRoot: extRoot,
+                            agent: sessAgent,
+                            provider: providerFromAgent(sessAgent),
                             manager: sess?.ch.manager,
                             sender: sess?.ch.sender,
                             replyTarget: sess?.rec.replyTarget,
@@ -3379,7 +3402,37 @@ export async function apply(ctx, opts) {
                         }
                     },
                 });
-                const dispose = ctx.tools.register(tool);
+                // ★★ 2026-11-14：把扩展的 `enabled` 包成宿主的步骤级条件 `register(def, { when })`。
+                //   入参是宿主给的 `{ agent, modelSelection, signal }`，这里**归一**成扩展熟悉的老形状
+                //   （`{ ctx, agent, provider, manager, dataRoot, logger }`）⇒ **扩展侧签名一个字都不用改**，
+                //   老扩展在新宿主上自动获得"每步重算 + 拿得到真实 provider"的能力。
+                const whenFn = (typeof def.enabled === 'function' && whenSupported)
+                    ? async (act) => {
+                        try {
+                            return (await def.enabled({
+                                ctx,
+                                agent: act?.agent,
+                                provider: act?.modelSelection?.provider ? String(act.modelSelection.provider) : '',
+                                model: act?.modelSelection?.model ? String(act.modelSelection.model) : '',
+                                manager: qqCh?.manager ?? bridgeCh?.manager,
+                                dataRoot: extRoot,
+                                logger: ctx.logger,
+                                signal: act?.signal,
+                            })) !== false;
+                        }
+                        catch (err) {
+                            // ⚠️ when 抛错 = 步骤准备失败（TOOL_ACTIVATION_FAILED），整步都会被判死。
+                            //   判据出错绝不能拖垮回合 ⇒ 一律放行（宁可见、不可炸）。
+                            extDiag('when 判据抛错 ⇒ 按可见处理: ' + def.name + ' :: '
+                                + (err instanceof Error ? err.message : String(err)));
+                            return true;
+                        }
+                    }
+                    : undefined;
+                const dispose = (whenFn
+                    ? ctx.tools
+                        .register(tool, { when: whenFn })
+                    : ctx.tools.register(tool));
                 // 收下 disposer —— 下次(热刷/重装配)靠它做同名替换，不然只能重启宿主
                 if (typeof dispose === 'function')
                     myDisposers.set(scopedName, dispose);
@@ -4695,6 +4748,34 @@ function liftRestriction(disposable) {
         }
         catch { /* ignore */ }
     }
+}
+/**
+ * 从 agent 现算「当前模型服务商」—— 给扩展工具的 `env.provider` 用。
+ *
+ * 2026-11-14 加：`enabled(env)` 的 env 里本来就有 provider，但 `run(args, env)` 的 env
+ *   一直缺（只有 cwd/manager/sender/...）⇒ 同一个扩展在"可见性判定"和"执行"两处
+ *   拿到相反答案（有 Key 却判没 Key）。现在两处同源同口径。
+ *
+ * 顺序：`agent.session.requestContext()`（运行时真实路由）→ `agent.model.current()` → `''`。
+ * 拿不到就返回空串，由扩展自己决定要不要保守处理。
+ */
+function providerFromAgent(agent) {
+    if (!agent || typeof agent !== 'object')
+        return '';
+    try {
+        const rc = agent
+            .session?.requestContext?.();
+        if (rc?.provider)
+            return String(rc.provider);
+    }
+    catch { /* ignore */ }
+    try {
+        const sel = agent.model?.current?.();
+        if (sel?.provider)
+            return String(sel.provider);
+    }
+    catch { /* ignore */ }
+    return '';
 }
 /** 取某作用域的 tools 服务：`ctx.tools` 在未声明 inject 时会抛，退化到 cordis 运行时 `ctx.get('tools')`。 */
 function toolsOfScope(agentCtx) {
