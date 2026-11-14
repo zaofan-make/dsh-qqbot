@@ -35,7 +35,7 @@ import { noteSegmentScore } from '../features/segment-score.js';
 import { extractFaceImageUrls, slimQuoteText } from './quote-text.js';
 import { lookupMsgContent, rememberMsgContent } from './msg-content-cache.js';
 import { md5OfFilename } from '../shared/quote-match.js';
-import { appendMsgHistory, findSenderByQuote } from '../features/msg-history.js';
+import { findSenderByQuote } from '../features/msg-history.js';
 import { recordImageUrl, lookupStickerIdByUrl } from '../features/image-url-ledger.js';
 import { pushQuote } from '../features/quote-cache.js';
 import { computeRelevance, touchAffinity, classifyEmo, getAffinityEntry, memoryStrength } from '../features/local-signals.js';
@@ -213,48 +213,10 @@ export async function handleInbound(
     msgId: msg.messageId,
   };
 
-  // 2026-10-20 判消息类型 + 写消息历史台账（主人定：按会话分目录 + 一天一个文件 + 保留 7 天）
-  // ★ 为什么放这里：群消息先经 debounce 中间件攒窗口，它会 **consume**（不 next）后再调 handleInbound，
-  //   所以写在 bot.on('message') 里根本不会执行（实测：台账里只有机器人自己的消息、自动撤回不动）。
-  //   handleInbound 才是"消息确实进来了"的唯一必经点。
-  let _kind: 'text' | 'image' | 'voice' | 'video' | 'file' = 'text';
-  let _text = '';
-  try {
-    const _atts = Array.isArray(msg.attachments) ? (msg.attachments as unknown[]) : [];
-    const _ct = (a: unknown): string => String((a as { content_type?: string })?.content_type ?? '');
-    _kind = _atts.length === 0
-      ? 'text'
-      : _atts.some((a) => /image/i.test(_ct(a))) ? 'image'
-        : _atts.some((a) => /audio|voice|silk/i.test(_ct(a))) ? 'voice'
-          : _atts.some((a) => /video/i.test(_ct(a))) ? 'video'
-            : 'file';
-    _text = _kind === 'text' ? String(msg.content ?? '') : `[${_kind}]`;
-    // ★ 2026-11-14（主人定：不能另开独立台账）：图片指纹记进**历史台账本身**的 `f` 字段。
-    //   这样"这张图是谁发的"全从历史台账一个数据源查。
-    //   QQ 的图片文件名就是内容 MD5，白拿，不用下载也不用识图。
-    // ★ 2026-11-15（CodeRabbit 抓到）：**不能只按消息级 `_kind === 'image'` 判断** ——
-    //   QQ 有时把图报成 `content_type: 'file'`（比如超过尺寸阈值、或从某些端发），
-    //   那样这条整体被归成 `file`，图指纹就漏采集了，之后引用这张图依然认不出人。
-    //   改成逐附件按**扩展名**判断：文件名是 32 位 hex + 图片后缀就采。
-    const _imgs: string[] = [];
-    for (const a of _atts as Array<{ filename?: string; contentType?: string }>) {
-      const fn = typeof a?.filename === 'string' ? a.filename : undefined;
-      const v = md5OfFilename(fn);
-      if (!v) continue;
-      const isImg = /\.(jpe?g|png|gif|webp|bmp)$/i.test(String(fn ?? ''))
-        || /^image\//i.test(String(a?.contentType ?? ''));
-      if (isImg && !_imgs.includes(v)) _imgs.push(v);
-    }
-    appendMsgHistory(scope, String(peerId ?? ''), {
-      id: String(msg.messageId ?? ''),
-      s: String(msg.senderId ?? ''),
-      n: String((msg as { senderName?: string }).senderName ?? msg.senderId ?? ''),
-      t: Date.now(),
-      k: _kind,
-      x: _text,
-      ...(_imgs.length ? { f: _imgs } : {}),
-    });
-  } catch { /* 台账失败不影响主流程 */ }
+  // 2026-11-15：消息历史台账已搬到 middleware/attribution.ts（debounce **之前**）——
+  //   原来写在这里，而 handleInbound 只由 debounce/scheduler/工具伪造调用，
+  //   于是 debounce 攒窗口时，除了最后一条，窗口里的消息全都没进历史（CodeRabbit 指出）。
+  //   中间件层数据完全一致，且私聊合并前记的是原始每条，更准确。
 
   // （自动撤回已由 middleware-setup.ts 里"debounce 之前"的中间件负责，这里不再重复）
 
