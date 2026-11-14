@@ -2226,7 +2226,26 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
           // ★★ 2026-11-14（CodeRabbit 复审）：用 SessionManager 的 **settingsNs getter** ——
           //   它已经把「配置里没写」映射成主账号默认 im-qqbot（见 session-manager:202）。
           //   原来自己读 config.settingsNs，空值时直接报错，连默认实例都用不了。
-          const mgr = (hit?.ch?.manager ?? ch0?.manager) as { settingsNs?: string } | undefined;
+          // ★★ 2026-11-14（CodeRabbit）：findSessionRec **只遍历 channelBridges**，
+          //   而本文件 198 行注释自己写着「channelBridges 实测是空的」——
+          //   所以这条路径常常拿不到 manager，recall_keywords 就总是中止。
+          //   补一条按 agent.session.id 在 managersOf() 里反查（sessionId 跨 agent 实例稳定）。
+          let mgr = (hit?.ch?.manager ?? ch0?.manager) as { settingsNs?: string } | undefined;
+          if (!mgr) {
+            const sid = String((exec as { agent?: { session?: { id?: unknown } } } | undefined)?.agent?.session?.id ?? '');
+            if (sid) {
+              const sidShort = sid.slice(0, 8);
+              for (const m of managersOf()) {
+                const ss = (m as unknown as { sessions?: Map<string, { sessionId?: string }> }).sessions;
+                if (!ss || typeof ss.values !== 'function') continue;
+                for (const r of ss.values()) {
+                  const rid = String(r?.sessionId ?? '');
+                  if (rid && (rid === sid || rid.slice(0, 8) === sidShort)) { mgr = m as unknown as { settingsNs?: string }; break; }
+                }
+                if (mgr) break;
+              }
+            }
+          }
           const own = String(mgr?.settingsNs ?? '').trim();
           if (own) ns = own;
         } catch { /* 下面统一判空 */ }
