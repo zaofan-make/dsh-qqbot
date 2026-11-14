@@ -10,11 +10,12 @@
 const reloaders = new Map();
 /** 归一化 dataRoot 作 key（Windows 大小写/斜杠不敏感） */
 function rlKey(dataRoot) {
-    // ★ 2026-11-14（CodeRabbit）：只在**大小写不敏感**的文件系统上折叠大小写。
-    //   Windows 上 /Bot 与 /bot 是同一目录；但 Linux/macOS 区分大小写时它们是两个目录，
-    //   无条件 toLowerCase 会把两个合法实例合并成一个 key（后注册者覆盖前者、注销一个会删掉另一个）。
-    const s = String(dataRoot || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
-    return process.platform === 'win32' ? s.toLowerCase() : s;
+    // ★★ 2026-11-14（CodeRabbit）：反斜杠**只在 Windows 上**是分隔符；POSIX 上它是合法文件名字符。
+    //   无条件折叠会让 /srv/bot\one 与 /srv/bot/one 比较成同一个，本该拒绝不同实例的分支就失效。
+    const raw = String(dataRoot || '');
+    if (process.platform !== 'win32')
+        return raw.replace(/\/+$/, '');
+    return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 /** 注册/注销重建器（注销传 undefined；插件重载时调用方会覆盖为新的） */
 export function registerExtCommandReloader(dataRoot, fn) {
@@ -109,8 +110,14 @@ export function hasExtInboundReloader() {
  */
 export async function reloadExtOutbound(dataRoot) {
     try {
-        const { reloadOutboundExtensions } = await import('./ext-outbound.js');
-        void dataRoot; // ⚠️ P1 待做：出站还没按实例分桶，这里不向下传（不假装已按实例重载）
+        const { reloadOutboundExtensions, currentOutboundDataRoot } = await import('./ext-outbound.js');
+        // ★ 2026-11-14（CodeRabbit）：出站还没按实例分桶（P1 待做），所以**不能假装成功**。
+        //   请求的 dataRoot 与当前已配置的不一致时，直接返回错误 —— 否则 A 会装 B 的目录、
+        //   还回一句'已重载 3 个'，调用方完全无从察觉。
+        const cur = currentOutboundDataRoot();
+        if (dataRoot && cur && rlKey(cur) !== rlKey(dataRoot)) {
+            return { error: '出站扩展尚未按实例分桶（P1 待做）：当前配置的是 ' + cur + '，你请求的是 ' + dataRoot + '；为避免装错目录已中止' };
+        }
         const r = await reloadOutboundExtensions();
         return { count: r.total, names: r.extensions.map((e) => e.name) };
     }
