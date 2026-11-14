@@ -27,7 +27,10 @@ const TIMEOUT_MS = 8000;
  */
 const KEEP_DAYS = 7;
 const PRUNE_INTERVAL_MS = 24 * 3600 * 1000;
-let lastPruneAt = 0;
+// ★★ 2026-11-14（CodeRabbit）：**按目录分别记**清理时间 ——
+//   原来是模块级单值，同进程两个实例共用：A 清理后 24h 内 B 直接 return，
+//   B 的过期图片会长期留在盘上（今天一整天的老毛病：模块级状态没按实例分桶）。
+const lastPruneAtByDir = new Map();
 function isImageAtt(a) {
     const ct = String(a?.contentType ?? '').toLowerCase();
     const url = String(a?.url ?? '');
@@ -109,9 +112,10 @@ export async function prefetchQuoteImages(quote, dataRoot, logger) {
 /** 回收预取目录里的旧图片（超过 {@link KEEP_DAYS} 天；24 小时内最多扫一次） */
 function pruneOldReferenced(dir) {
     const now = Date.now();
-    if (now - lastPruneAt < PRUNE_INTERVAL_MS)
+    const last = lastPruneAtByDir.get(dir) ?? 0;
+    if (now - last < PRUNE_INTERVAL_MS)
         return;
-    lastPruneAt = now;
+    lastPruneAtByDir.set(dir, now);
     const cutoff = now - KEEP_DAYS * 24 * 3600 * 1000;
     try {
         for (const name of readdirSync(dir)) {
