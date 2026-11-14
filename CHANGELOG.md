@@ -1,3 +1,46 @@
+## 1.12.31 (2026-11-14)
+
+### 扩展市场：DeepSeek 全家桶已上架 ✅
+
+`deepseek-kit` 正式上架插件市场（`zaofan-make/dsh-qqbot-plugins`，PR #18），
+五个工具全部实测通过：搜索带引用、读链接、PDF 三页 OCR 全中、TTS 合成 288KB wav、
+ASR 把它转回文字（6.0s）。同时把 `volcengintts`（火山方舟 TTS）同步到最新版。
+
+### 修复：条件可见性改用宿主的 `register(def, { when })`
+
+上一版（1.12.30）自创的 `enabled` 钩子在**注册时刻**求值，需要猜"当前会话是谁"，实测
+`agent` 与 `provider` 经常是空 ⇒ 判定恒 false ⇒ 工具全被隐藏。
+
+宿主 0.2.2+ 本来就有对应能力：
+
+- `register(definition, { when })` 是**步骤级**条件，每步算一次，入参
+  `{ agent, modelSelection, signal }` —— `modelSelection.provider/model` 就是这一步真实用的路由
+- 返回 false 会**同时**从「描述」「PTC 绑定」「执行集合」三处移除；抛错 = 步骤准备失败
+- 配套 `resolve()` 产出 `ResolvedToolSet`，宿主把它传给本次组装与执行批次
+
+实现：能力探测 `typeof ctx.tools.resolve === 'function'` — 有就把扩展的 `enabled`
+**归一**成 `when`（`provider` 直接取 `modelSelection.provider`），**扩展侧签名不变**；
+没有则保留旧的"注册时判一次"路径（peer 下限仍是 `dsh-tools >= 0.1.1-rc.2`）。
+判据抛错一律放行 —— 宁可多看见一个工具，也不能让一个判据把整步弄炸。
+
+### 修复：`run(args, env)` 的 env 是残的
+
+`enabled` 的 env 有 `dataRoot` / `provider`，`run` 的 env 只有
+`{cwd, manager, sender, replyTarget, exec, ctx, logger}` ⇒ 同一个扩展在"判可见性"和
+"真执行"两处拿到相反答案（有 Key 却判没 Key）。现在补齐 `dataRoot` / `agent` / `provider`。
+
+### 修复：签名缓存不认「改实现」
+
+签名只比 `name/description/schema/expose` —— 改了 `tools/*.mjs` 的实现而 schema 没动时
+签名一模一样 ⇒ 走「未变化，跳过重复注册」⇒ **`tools_reload` 之后跑的还是旧模块**，
+热刷形同虚设。现在 `extension-store` 加载时带出 `def.mtime`，签名把它算进去。
+
+### 其他
+
+- `dsh.engines.dsh` 声明提到 `>=0.2.0-rc.2`（市场卡片展示用；加载拦截看 peerDependencies，
+  那边全是不设上界的 `>=`，新旧宿主都能装）
+- 有 `when` 时不再为 `enabled` 放弃签名缓存，省掉每回合"先拆后建"，工具表零抖动
+
 ## 1.12.30 (2026-11-14)
 
 ### 新：扩展工具支持「条件可见」（`enabled` 钩子）
