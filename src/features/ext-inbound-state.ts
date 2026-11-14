@@ -100,7 +100,12 @@ function normalizeMute(raw: unknown): ExtMute | null {
     const id = String(o?.id ?? '').trim();
     if (!id) return null;
     const until = Number(o?.until);
-    const out: ExtMute = { id, until: Number.isFinite(until) && until > 0 ? until : 0 };
+    // ★★ 2026-11-14 修（审查发现）：原来非法/缺失的 until 被归一成 0，
+    //   而 0 的语义是「**永久**禁言」（见本文件 :17/:60/:93，minutes <= 0 时写 0）。
+    //   于是手改记录、旧版本写入、或文件被截断时，一条本该无效的记录会**静默升级成永久禁言**。
+    //   ⚠️ 注意：0 本身是合法的永久，**不能**当成非法值丢掉；只丢 NaN / 负数。
+    if (!Number.isFinite(until) || until < 0) return null;
+    const out: ExtMute = { id, until };
     if (typeof o?.reason === 'string' && o.reason) out.reason = o.reason;
     if (typeof o?.by === 'string' && o.by) out.by = o.by;
     const at = Number(o?.at);
