@@ -726,6 +726,7 @@ export class SessionManager {
                     await mountChannelTools(existing.agentCtx, {
                         dataRoot: this.resolveDataRootSmart(),
                         cwd: String(this.config.cwd ?? ''),
+                        agent: existing.agent,
                     });
                 }
             }
@@ -891,6 +892,7 @@ export class SessionManager {
                 await mountChannelTools(record.agentCtx, {
                     dataRoot: this.resolveDataRootSmart(),
                     cwd: String(this.config.cwd ?? ''),
+                    agent: record.agent,
                 });
             }
         }

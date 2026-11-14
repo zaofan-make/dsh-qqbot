@@ -802,6 +802,7 @@ export class SessionManager {
           await mountChannelTools(existing.agentCtx as never, {
             dataRoot: this.resolveDataRootSmart(),
             cwd: String(this.config.cwd ?? ''),
+            agent: existing.agent,
           });
         }
       } catch { /* 加载失败不影响复用会话 */ }
@@ -948,6 +949,7 @@ export class SessionManager {
         await mountChannelTools(record.agentCtx as never, {
           dataRoot: this.resolveDataRootSmart(),
           cwd: String(this.config.cwd ?? ''),
+          agent: record.agent,
         });
       }
     } catch { /* 注册失败不影响建会话 */ }

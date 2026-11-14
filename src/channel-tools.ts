@@ -2919,15 +2919,19 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
         // ★ 2026-11-14（主人："可以给钩子传 agent 啊"）：把 **agent 对象**一并交给钩子 ——
         //   `agent.session.requestContext()` 能拿到本会话真实的 {provider, model}，
         //   扩展据此判断"当前模型是不是 DeepSeek 官方"，比读插件配置精确。
-        //   agent 与 ctx 是两个对象（ctx 上没有反向引用），所以按 agentCtx 反查会话记录。
+        //   agent 优先取**调用方显式传的**（session-manager 的 rec.agent 最准）；
+        //   没有再按 agentCtx 反查（热刷时 ctx 可能是新对象，只比 agentCtx 会 miss）。
+        const agentFromOpts = (opts as { agent?: unknown } | undefined)?.agent;
         const agentOf = ((): unknown => {
+          if (agentFromOpts) return agentFromOpts;
           try {
             const mgr = (qqCh?.manager ?? bridgeCh?.manager) as unknown as
-              { sessions?: Map<string, { agentCtx?: unknown; agent?: unknown }> } | undefined;
+              { sessions?: Map<string, { agentCtx?: unknown; agent?: { ctx?: unknown } }> } | undefined;
             const sessions = mgr?.sessions;
             if (sessions) {
               for (const rec of sessions.values()) {
                 if (rec?.agentCtx === ctx) return rec.agent;
+                if (rec?.agent && rec.agent.ctx === ctx) return rec.agent;
               }
             }
           } catch { /* ignore */ }
