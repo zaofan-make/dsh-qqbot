@@ -58,7 +58,16 @@ export function outModeCommand({ manager, config }) {
                 }
                 return lines.join('\n');
             }
-            const want = normalizeOutboundMode(args.toLowerCase());
+            // ★★ 2026-11-14 修（审查发现）：**非法参数原来会被静默归一成 adaptive**。
+            //   打 /outmode pasive（拼错）或 /outmode 静默 → 静默切到 adaptive（原设置被改掉），
+            //   回执还写着'已切换: adaptive' —— 主人以为在被动模式，实际开始主动连发。
+            //   现在：不认识就直接拒绝，**不改配置**。
+            const rawMode = String(args).toLowerCase().trim();
+            const VALID_MODES = ['adaptive', 'detail', 'passive', 'silent', 'nothink'];
+            if (!VALID_MODES.includes(rawMode)) {
+                return '未知的出站模式: **' + args + '**（未做任何修改）\n可用: ' + VALID_MODES.join(' / ');
+            }
+            const want = normalizeOutboundMode(rawMode);
             // 多实例修复(2026-09-11): 带当前实例 ns —— 原全局单例 writer 会被多实例互相覆盖,
             // /outmode 在本实例会话执行却切到别的实例的 config(dock 显示与实际不符, nothink 不生效)。
             const ns = (String(config.settingsNs ?? '').trim() || 'im-qqbot');
