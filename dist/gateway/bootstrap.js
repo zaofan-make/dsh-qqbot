@@ -295,7 +295,9 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         //   "这条消息要不要进 agent"，不改变扩展收到的 ctx、也不改扩展执行顺序 —— 不破坏扩展契约。
         let autoDropped = false;
         try {
-            const ar = config.autoRecall;
+            // ★★ 2026-11-14 修（审查发现）：真源在 groupAdmin 下面，原来读的是**顶层**
+            //   ⇒ 恒为 undefined ⇒ 面板设的自动撤回永不生效，且日志里一点痕迹没有。
+            const ar = config.groupAdmin?.autoRecall;
             const msgId = String(msg.messageId ?? '');
             if (ar?.enabled === true && String(msg.groupOpenid ?? '') !== '' && msgId !== '') {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);

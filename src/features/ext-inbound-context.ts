@@ -189,12 +189,18 @@ export interface ExtCtxSession {
 const SESSIONS = new WeakMap<object, ExtCtxSession>();
 
 /** 取（必要时建）某个 ctx 的扩展会话，并把动作 API 挂上去（幂等） */
-export function ensureExtSession(ctx: MiddlewareContext, env: ExtRunEnv): ExtCtxSession {
+export function ensureExtSession(
+  ctx: MiddlewareContext,
+  env: ExtRunEnv,
+  current?: { file: string; name: string },
+): ExtCtxSession {
   const key = ctx as unknown as object;
   let s = SESSIONS.get(key);
   if (!s) {
     s = {
       env,
+      // ★ 2026-11-14：创建时就带归属，别等 enterExtension（decorate 期间 store 路径要用）
+      current,
       phase: 'inbound',
       rewriteCount: 0,
       destructiveCount: 0,
@@ -228,8 +234,9 @@ export function enterExtension(
   ext: { file: string; name: string },
   phase: 'inbound' | 'decide',
 ): ExtCtxSession {
-  const s = ensureExtSession(ctx, env);
-  s.current = { file: ext.file, name: ext.name };
+  const cur = { file: ext.file, name: ext.name };
+  const s = ensureExtSession(ctx, env, cur);
+  s.current = cur;
   s.phase = phase;
   return s;
 }
@@ -918,6 +925,10 @@ function decorate(ctx: MiddlewareContext, s: ExtCtxSession): void {
     const mc = ctx.message as { kind?: string; groupOpenid?: string; senderId?: string; senderName?: string };
     const isGroup = mc?.kind === 'group';
     const caps = makeExtCaps({
+      // ★★ 2026-11-14（CodeRabbit 抓到我修漏了）：makeExtCaps 内部 selfNow() 读的是 **deps.selfName**，
+      //   而我只给返回的 caps 挂了 getter —— 内部 storePath() 依然拿 'ext' ⇒ 所有入站扩展
+      //   还是写同一个 inbound/data/ext.json。这里必须把 getter 传进 deps。
+      get selfName(): string { return who(s); },
       dataRoot: s.env.dataRoot,
       logger: s.env.logger,
       appId: s.env.appId,
@@ -931,7 +942,10 @@ function decorate(ctx: MiddlewareContext, s: ExtCtxSession): void {
       actorOpenid: senderOf(ctx),
       actorName: String(mc?.senderName ?? ''),
       apiCall: s.env.apiCall as never,
-      selfName: who(s),
+      // ★★ 2026-11-14 修（审查发现）：selfName **不能在这里固化**。
+      //   decorate() 在 ensureExtSession 里执行，而归属(s.current)要到 enterExtension
+      //   (第 232 行) 才设置 —— 固化的话每条消息都是 (匿名扩展)，所有入站扩展
+      //   的 ctx.store 会落到同一个文件互相覆盖。改成下面循环之后用 getter 挂。
       kind: 'inbound',
       kernel: s.env.kernel,
       inbound: inboundCapsOf(ctx, s),   // ★ 入站操控这一组也进包
@@ -941,6 +955,12 @@ function decorate(ctx: MiddlewareContext, s: ExtCtxSession): void {
       if (v === undefined) continue;
       if (!(k in c) || c[k] === undefined) def(c, k, { value: v });
     }
+    // ★★ 2026-11-14：selfName 单独挂成 getter（每次读按当前扩展求值，不能被 value 固化）
+    try {
+      const selfGet = (): string => who(s);
+      Object.defineProperty(caps, 'selfName', { get: selfGet, enumerable: true, configurable: true });
+      Object.defineProperty(c, 'selfName', { get: selfGet, enumerable: true, configurable: true });
+    } catch { /* 挂不上就退回 undefined，不致命 */ }
   } catch (err) {
     warnOnce(s, 'caps', '统一能力包未接上（入站专属动作不受影响）：' + (err instanceof Error ? err.message : String(err)));
   }
