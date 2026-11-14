@@ -3953,6 +3953,71 @@ const supportsWhen = typeof ctx.tools?.resolve === 'function';   // 0.2.2-alpha.
 > 这一节是今天一整天（1.12.33 → 连续 8 个 PR）的沉淀。
 > 前半是**结论**（哪些做了、哪些没做、为什么），后半是**可复用的审查方法**。
 
+### 26.0 铁律：模块级可变状态一律按实例分桶
+
+> 2026-11-14 主人明确要求：**这条必须写进手册**。因为这一天之内，同一个错误犯了六次。
+
+**规则**：只要在模块顶层（函数之外）新增 `let` / `const Map` / `const Set` / 单值计时器，
+第一个要问的问题不是"它存在哪"，而是——
+
+> **同进程跑两个机器人的时候，这里会互相踩吗？**
+
+答"会"或者"说不好"，就必须分桶。**default 是分桶，不是全局。**
+
+#### 这一天踩过的六次（全是同一个错）
+
+| 状态 | 症状 |
+|---|---|
+| 命令重载器 `reloaders` | 当年就做对了（可参照的样板） |
+| 入站重载器 `inboundReloader` | A 敲 `/tools-reload` 实际重扫的是 B 的目录 |
+| 启动钩子 `disposers` / `disposed` | A 卸载跑掉 B 的清理项；`disposed=true` 后 B 注册即退订 |
+| 出站链 `cfg` / `loaded` | 后启动的把前者整个顶掉 ⇒ A 的语音静默失效 |
+| 入站 `known` / `loaded` | dispose A 把 B 的扩展一起 dispose（B 还在跑） |
+| 引用图清理 `lastPruneAt` | A 清理后 24 小时内 B 直接 return，B 的旧图长期留盘 |
+
+#### 检查动作（改代码前跑一遍）
+
+```bash
+# 1) 列出所有模块级可变声明（函数之外的 let / const Map / const Set）
+rg -n "^(let|const)\s+\w+\s*(=\s*(new Map|new Set|\[|\{|0|null|undefined|false|true|\x27\x27))" src --glob "*.ts"
+
+# 2) 对每一个问：它属于「进程 / 实例 / 会话 / 单次调用」哪一级？
+# 3) 属于实例级 ⇒ 分桶；会话级 ⇒ WeakMap；单次调用 ⇒ 局部变量
+```
+
+#### 分桶的三件套（照抄）
+
+```ts
+// key：反斜杠/大小写**只在 Windows 折叠**（POSIX 上它们是合法文件名字符）
+function bk(dataRoot: string | undefined): string {
+  const raw = String(dataRoot || '');
+  if (process.platform !== 'win32') return raw.replace(/\/+$/, '');
+  return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+const bucketOfKey = new Map<string, X>();          // 可枚举（dispose 要用）
+const ownerToKey = new WeakMap<object, string>();  // 按对象查（bot / ctx）
+
+// 写：bucketOfKey.set(bk(dataRoot), value)
+// 读：查不到且多桶 ⇒ **fail-closed**（直通 / 不生效 / 报错），绝不回退"第 0 个/最后一个/唯一那个"
+```
+
+#### 不该分桶的例外（写下来，免得以后又被"统一"掉）
+
+- **内容寻址缓存**（如 `passageVecCache`）：key 是内容本身，多实例共享**反而省内存**
+- **纯常量**（正则、表、文案）：没有可变状态
+- **单次调用内的局部变量**：天然隔离，不用管
+
+#### 相关的第二个坑：身份对齐
+
+如果 key 是**对象引用**（WeakMap），必须确认「登记时传的对象」和「查询时传的对象」是同一个引用
+—— 不是同一个类型、不是同一个名字，是**同一个变量**。
+踩过：出站链登记的是 SDK 的 `bot`，而真正走链的是 `bootstrap` 另建的 `sender` 字面量，
+`WeakMap.get()` 永远 miss ⇒ 多实例下所有出站都跳过扩展，而"单桶兜底"恰好把 bug 盖住了。
+
+**多桶场景必须真跑一次**：单实例会把身份没对齐完全掩盖掉。
+
+---
 ### 26.1 先分清两个概念（最容易搞混）
 
 | 概念 | 是什么 | 是否共享进程状态 |
