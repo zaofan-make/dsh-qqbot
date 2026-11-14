@@ -3979,7 +3979,7 @@ const supportsWhen = typeof ctx.tools?.resolve === 'function';   // 0.2.2-alpha.
 
 ```bash
 # 1) 列出所有模块级可变声明（函数之外的 let / const Map / const Set）
-rg -n "^(let|const)\s+\w+\s*(=\s*(new Map|new Set|\[|\{|0|null|undefined|false|true|\x27\x27))" src --glob "*.ts"
+rg -n "^(export\s+)?(let|const)\s+\w+\s*(:\s*[^=]+)?=\s*(new\s+(Map|Set|WeakMap|WeakSet)|\[|\{|0|null|undefined|false|true|['\"]\s*['\"])" src --glob "*.ts"
 
 # 2) 对每一个问：它属于「进程 / 实例 / 会话 / 单次调用」哪一级？
 # 3) 属于实例级 ⇒ 分桶；会话级 ⇒ WeakMap；单次调用 ⇒ 局部变量
@@ -3987,16 +3987,32 @@ rg -n "^(let|const)\s+\w+\s*(=\s*(new Map|new Set|\[|\{|0|null|undefined|false|t
 
 #### 分桶的三件套（照抄）
 
+> ⚠️ **别把 `dataRoot` 当桶键照抄** —— 见 §26.3：`dataRootOf()` 在未配置时会退化成 `{cwd}/dshqqbot`，
+> 同一 profile 下两个号共用 cwd 时 **dataRoot 完全相同**，照抄会落进同一个桶。
+> **主键优先用实例级标识**（`appId`，或按对象查的 `WeakMap<bot, key>`），
+> `dataRoot` 只作二级校验 / 无 appId 时的兜底。
+
 ```ts
-// key：反斜杠/大小写**只在 Windows 折叠**（POSIX 上它们是合法文件名字符）
+// ① 主键：对象身份（每实例唯一的 bot / QQBotSender）
+const ownerToKey = new WeakMap<object, string>();   // 查（不可枚举）
+const buckets = new Map<string, X>();               // 枚举（dispose 要用）
+
+// ② 字符串键：优先 appId，退而求其次才用 dataRoot
+function instKey(appId: string | undefined, dataRoot: string | undefined): string {
+  const id = String(appId || '').trim();
+  if (id) return 'id:' + id;
+  // 兜底：dataRoot（注意同 cwd 多号会撞，所以只在拿不到 appId 时用）
+  return 'root:' + bk(dataRoot);
+}
+
+// ③ 归一化：反斜杠/大小写**只在 Windows 折叠**（POSIX 上它们是合法文件名字符）
 function bk(dataRoot: string | undefined): string {
   const raw = String(dataRoot || '');
   if (process.platform !== 'win32') return raw.replace(/\/+$/, '');
   return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
-const bucketOfKey = new Map<string, X>();          // 可枚举（dispose 要用）
-const ownerToKey = new WeakMap<object, string>();  // 按对象查（bot / ctx）
+// （对象查 + 字符串枚举 的组合见上面 ①②）
 
 // 写：bucketOfKey.set(bk(dataRoot), value)
 // 读：查不到且多桶 ⇒ **fail-closed**（直通 / 不生效 / 报错），绝不回退"第 0 个/最后一个/唯一那个"
