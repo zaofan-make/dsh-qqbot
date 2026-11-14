@@ -223,7 +223,7 @@ export async function dispose(env) {
     await runStartupHooks({ dataRoot, logger });
 
     expect(startupHooksDisposeCount()).toBe(1);
-    const n = await disposeStartupHooks(logger);
+    const n = await disposeStartupHooks(logger, dataRoot);
     expect(n).toBe(1);
     // 同一钩子内：registerDispose 逆序（后注册先跑）→ 再跑导出的 dispose()
     expect((globalThis as Record<string, unknown>).__extHookOrder).toEqual([
@@ -244,7 +244,7 @@ export function run(env) { env.registerDispose(() => { globalThis.__extHookTrace
     const r = await runStartupHooks({ dataRoot, logger });
     expect(r.ok).toBe(2);
 
-    await disposeStartupHooks(logger);
+    await disposeStartupHooks(logger, dataRoot);
     // b 先跑（逆序）；a 的清理抛错被吞掉，但 a 的 dispose() 仍执行
     expect((globalThis as Record<string, unknown>).__extHookTrace).toEqual(['b', 'a']);
     expect(lines.some((l) => l.startsWith('warn') && l.includes('cleanup-boom'))).toBe(true);
@@ -261,7 +261,7 @@ export function run(env) {
     const { logger } = makeLogger();
     const r = await runStartupHooks({ dataRoot, logger });
     expect(r.failed).toBe(1);
-    await disposeStartupHooks(logger);
+    await disposeStartupHooks(logger, dataRoot);
     expect((globalThis as Record<string, unknown>).__extHookCleanupRan).toEqual(['ran']);
     delete (globalThis as Record<string, unknown>).__extHookCleanupRan;
   });
@@ -269,7 +269,7 @@ export function run(env) {
   it('没有登记任何钩子时 dispose 是空操作（不炸、不误报）', async () => {
     const { logger, lines } = makeLogger();
     __resetStartupHooksForTest();
-    const n = await disposeStartupHooks(logger);
+    const n = await disposeStartupHooks(logger, dataRoot);
     expect(n).toBe(0);
     expect(lines).toEqual([]);
   });
@@ -301,7 +301,7 @@ describe('启动钩子 · 网关重建后的第二轮（回归）', () => {
     expect(g.__rebuildRan).toBe(1);
 
     // 网关重建：先 dispose（这一步会把 disposed 置 true）
-    await disposeStartupHooks(makeLogger().logger);
+    await disposeStartupHooks(makeLogger().logger, dataRoot);
     expect(g.__rebuildCleaned).toBe(1);        // 第一轮的清理确实跑了
 
     // 第二轮：重新启动

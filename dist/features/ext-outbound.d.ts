@@ -167,6 +167,8 @@ export declare function configureOutboundExtensions(opts: {
     dataRoot: string;
     logger: Logger;
 }): void;
+/** 当前已配置的出站扩展数据根（空串=没配）—— 供热刷判断"刷的是不是你要的那个实例" */
+export declare function currentOutboundDataRoot(): string;
 /** 重新装载（供热刷用）：没配置过则安静返回空结果 */
 export declare function reloadOutboundExtensions(): Promise<OutboundLoadResult>;
 /**

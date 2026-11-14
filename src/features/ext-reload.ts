@@ -170,8 +170,14 @@ export interface ExtOutboundReloadResult {
  */
 export async function reloadExtOutbound(dataRoot?: string): Promise<ExtOutboundReloadResult | { error: string }> {
   try {
-    const { reloadOutboundExtensions } = await import('./ext-outbound.js');
-    void dataRoot;   // ⚠️ P1 待做：出站还没按实例分桶，这里不向下传（不假装已按实例重载）
+    const { reloadOutboundExtensions, currentOutboundDataRoot } = await import('./ext-outbound.js');
+    // ★ 2026-11-14（CodeRabbit）：出站还没按实例分桶（P1 待做），所以**不能假装成功**。
+    //   请求的 dataRoot 与当前已配置的不一致时，直接返回错误 —— 否则 A 会装 B 的目录、
+    //   还回一句'已重载 3 个'，调用方完全无从察觉。
+    const cur = currentOutboundDataRoot();
+    if (dataRoot && cur && rlKey(cur) !== rlKey(dataRoot)) {
+      return { error: '出站扩展尚未按实例分桶（P1 待做）：当前配置的是 ' + cur + '，你请求的是 ' + dataRoot + '；为避免装错目录已中止' };
+    }
     const r = await reloadOutboundExtensions();
     return { count: r.total, names: r.extensions.map((e) => e.name) };
   } catch (err) {

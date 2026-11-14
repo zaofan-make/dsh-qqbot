@@ -52,9 +52,19 @@ export const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
 /** 扩展文件允许的扩展名（与 extension-store 的 ALLOWED_EXT 同款；这里按需再声明一次避免反向导出） */
 const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
 /** 已注册的清理函数（模块级：dispose 可能在加载还没跑完时就被调用，所以放模块级而非闭包） */
-let disposers = [];
-/** 卸载是否已经发生过：发生过之后新注册的清理函数**立即执行**（防"启动竞态漏清理"） */
-let disposed = false;
+/** 归一化 key（Windows 大小写不敏感；其它平台保持原样，避免把两个合法目录合并） */
+function hk(dataRoot) {
+    const s = String(dataRoot || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+    return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+/**
+ * ★★ 2026-11-14 修（CodeRabbit 指出我只接了参数没真分桶）：
+ *   原来 `disposers` / `disposed` 都是**全局单例** ⇒ 实例 A 卸载会跑掉实例 B 登记的清理项，
+ *   而且 `disposed=true` 之后 B 新注册的清理会被**立刻执行**（订阅刚建就被退订）。
+ *   现在按 dataRoot 分桶：每个实例只排空、只复位自己那一桶。
+ */
+const disposersByKey = new Map();
+const disposedByKey = new Map();
 /** 扩展钩子目录（相对数据根） */
 export function extHooksDir(dataRoot) {
     return join(dataRoot, EXT_HOOKS_SUBDIR);
@@ -64,9 +74,12 @@ export function extHooksDir(dataRoot) {
  * ⚠️ 卸载**已经发生过**之后再注册的，说明它是在"启动钩子还没 await 完、插件就被卸载"这条竞态路上
  * 登记的 —— 那种情况下没人会再来跑清理，所以这里**立即执行**，杜绝"注册了却永远不清理"。
  */
-function pushDisposer(file, fn, logger) {
-    if (!disposed) {
-        disposers.push({ file, fn });
+function pushDisposer(file, fn, logger, dataRoot) {
+    const k = hk(dataRoot);
+    if (disposedByKey.get(k) !== true) {
+        const arr = disposersByKey.get(k) ?? [];
+        arr.push({ file, fn });
+        disposersByKey.set(k, arr);
         return;
     }
     void (async () => {
@@ -150,7 +163,7 @@ export async function runStartupHooks(opts) {
     //     → 再次 runStartupHooks，钩子调 registerDispose() 时看到 disposed===true
     //     ⇒ pushDisposer 走"卸载后登记 ⇒ 立即执行"分支 ⇒ 注册即被清理（刚订阅就退订）。
     //   `disposeStartupHooks` 已经把 disposers 清空，所以这里只补复位标志即可。
-    disposed = false;
+    disposedByKey.set(hk(dataRoot), false); // 只复位本实例：别的实例可能正在卸载，不能替它复位
     const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
         ? Number(opts.timeoutMs)
         : DEFAULT_HOOK_TIMEOUT_MS;
@@ -228,7 +241,7 @@ export async function runStartupHooks(opts) {
                         logger.warn?.(`[ext-hook] ${f} dispose() 失败(已忽略): ${err instanceof Error ? err.message : String(err)}`);
                     }
                 }
-            }, logger);
+            }, logger, dataRoot);
             const raced = await withTimeout(Promise.resolve(hook.run(env)), timeoutMs);
             const ms = Date.now() - started;
             if (!raced.ok) {
@@ -262,12 +275,12 @@ export async function runStartupHooks(opts) {
  * 纪律：逆序执行（后启动的先清理）、**单个失败只告警**、整体永不抛出、幂等。
  */
 export async function disposeStartupHooks(logger, dataRoot) {
-    // ★ 2026-11-14：先接住 dataRoot（调用契约对齐），真正的按实例分桶在 P3 做 ——
-    //   目前 disposers 仍是全局列表，多实例下 A 卸载会跑掉 B 的清理项。
-    void dataRoot;
-    disposed = true;
-    const list = disposers;
-    disposers = [];
+    // ★★ 2026-11-14：只排空**本实例**那一桶。
+    //   原来取全局 disposers 并置全局 disposed=true ⇒ A 卸载会跑掉 B 的清理项。
+    const k = hk(dataRoot);
+    disposedByKey.set(k, true);
+    const list = disposersByKey.get(k) ?? [];
+    disposersByKey.delete(k);
     let n = 0;
     for (const item of [...list].reverse()) {
         n += 1;
@@ -284,12 +297,15 @@ export async function disposeStartupHooks(logger, dataRoot) {
 }
 /** 重置模块级状态（仅供单元测试；生产不要调 —— 会把正在跑的钩子的清理登记丢掉） */
 export function __resetStartupHooksForTest() {
-    disposers = [];
-    disposed = false;
+    disposersByKey.clear();
+    disposedByKey.clear();
 }
 /** 当前已登记清理函数的钩子数（诊断用） */
 export function startupHooksDisposeCount() {
-    return disposers.length;
+    let total = 0;
+    for (const arr of disposersByKey.values())
+        total += arr.length;
+    return total;
 }
 /** 文件版本号（mtime，秒级取整）—— 与 extension-store.fileVersion 同款纪律，别改回时间戳 */
 function fileVersion(p) {
