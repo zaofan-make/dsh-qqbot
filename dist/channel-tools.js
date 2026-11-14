@@ -3136,9 +3136,28 @@ export async function apply(ctx, opts) {
             //   同时回收它上次注册的那份（配置从"有"变"没有"时，旧工具必须消失）。
             if (typeof def.enabled === 'function') {
                 let vis = true;
+                // ★ 2026-11-14（主人："可以给钩子传 agent 啊"）：把 **agent 对象**一并交给钩子 ——
+                //   `agent.session.requestContext()` 能拿到本会话真实的 {provider, model}，
+                //   扩展据此判断"当前模型是不是 DeepSeek 官方"，比读插件配置精确。
+                //   agent 与 ctx 是两个对象（ctx 上没有反向引用），所以按 agentCtx 反查会话记录。
+                const agentOf = (() => {
+                    try {
+                        const mgr = (qqCh?.manager ?? bridgeCh?.manager);
+                        const sessions = mgr?.sessions;
+                        if (sessions) {
+                            for (const rec of sessions.values()) {
+                                if (rec?.agentCtx === ctx)
+                                    return rec.agent;
+                            }
+                        }
+                    }
+                    catch { /* ignore */ }
+                    return undefined;
+                })();
                 try {
                     vis = (await def.enabled({
                         ctx,
+                        agent: agentOf,
                         manager: qqCh?.manager ?? bridgeCh?.manager,
                         dataRoot: extRoot,
                         logger: ctx.logger,
