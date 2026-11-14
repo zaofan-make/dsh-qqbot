@@ -175,8 +175,14 @@ export async function loadExtensionTools(cwd, logger) {
             const mod = await import(url);
             const def = normalizeToolModule(mod, f, logger);
             if (def) {
+                // ★ 2026-11-14：把**源文件 mtime** 一起带出去。
+                //   起因（主人实测）：改了 `tools/xxx.mjs` 的实现（schema/描述都没变），
+                //   `tools_reload` 之后照旧报旧代码的错 —— 因为 channel-tools 的签名缓存只比
+                //   name/description/schema，这四样没变 ⇒ "未变化，跳过重复注册" ⇒ 新模块永远进不来。
+                //   带出 mtime 后，签名能感知"实现变了"，热刷才真的热。
+                def.mtime = Math.floor(statSync(abs).mtimeMs);
                 out.push(def);
-                logger.info(`[ext-tool] 已加载扩展工具: ${f} → ${def.name}`);
+                logger.info(`[ext-tool] 已加载扩展工具: ${f} → ${def.name} (m=${def.mtime})`);
             }
         }
         catch (err) {

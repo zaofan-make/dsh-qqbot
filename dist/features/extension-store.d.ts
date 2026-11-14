@@ -33,6 +33,11 @@ export interface ExtensionToolDef {
     file: string;
     name: string;
     description: string;
+    /**
+     * 源文件 mtime（2026-11-14 加）。**给注册处的签名缓存用** ——
+     * 只比 name/description/schema 的话，"改了实现没改 schema"热刷不生效。
+     */
+    mtime?: number;
     inputSchema: Record<string, unknown>;
     /** 执行体: 参数 schema 由调用方校验, run 直接收已校验 args + env */
     run: (args: Record<string, unknown>, env: Record<string, unknown>) => Promise<unknown> | unknown;

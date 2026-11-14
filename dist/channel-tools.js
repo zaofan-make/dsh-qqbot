@@ -3110,9 +3110,13 @@ export async function apply(ctx, opts) {
         })();
         const extSigOf = (list) => {
             try {
-                // 只取"会影响注册"的字段：名字 + 描述 + schema 形态 + expose 标记
+                // ★★ 2026-11-14（主人实测：修了扩展的 ReferenceError，tools_reload 之后照旧报旧错）：
+                //   签名以前只比 name/description/schema/expose —— **改实现不改 schema 时签名一模一样**，
+                //   于是走"未变化，跳过重复注册" ⇒ 新模块永远进不来，热刷形同虚设。
+                //   现在把每个工具的源文件 mtime 一起算进来（extension-store 加载时已带上 `def.mtime`）。
                 return list
-                    .map((d) => `${d.name}|${String(d.expose ?? '')}|${String(d.description ?? '').slice(0, 40)}|${JSON.stringify(d.inputSchema ?? {})}`)
+                    .map((d) => `${d.name}|${String(d.expose ?? '')}|${String(d.mtime ?? '')}`
+                    + `|${String(d.description ?? '').slice(0, 40)}|${JSON.stringify(d.inputSchema ?? {})}`)
                     .join('\n');
             }
             catch {
