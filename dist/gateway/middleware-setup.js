@@ -154,7 +154,7 @@ pluginCtx) {
     //     （官方文档有这字段，实测元素里根本没有），SDK 的 quoteRef 又因为
     //     `preferMsgElements: true` 从不查 store（`quote.entry` 恒 undefined）。
     //     三条路全断，只能自己记。
-    bot.use(attributionLedger(logger));
+    bot.use(attributionLedger(config, logger));
     // 3.95. 用户「入站中间件」扩展点（第五套扩展，2026-10-12）—— ★早挂点 onInbound ★
     //   `{dataRoot}/.qqbot-extensions/inbound/*.mjs` 里导出的 `onInbound` 挂**这里**：
     //   **quoteRef 之后、记群历史（下一步）之前** —— 四个动作里三个只有这个位置做得到：

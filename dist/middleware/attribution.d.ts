@@ -27,6 +27,7 @@
  * ⚠️ 只读 + 只回填，不写任何存储、不阻断消息，出错一律吞掉。
  */
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
+import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
-export declare function attributionLedger(logger: Logger): (ctx: MiddlewareContext, next: () => Promise<void>) => Promise<void>;
+export declare function attributionLedger(config: ImQQBotConfig, logger: Logger): (ctx: MiddlewareContext, next: () => Promise<void>) => Promise<void>;
 //# sourceMappingURL=attribution.d.ts.map

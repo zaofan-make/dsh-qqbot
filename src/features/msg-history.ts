@@ -229,12 +229,7 @@ export function pruneOld(): void {
       if (!st.isDirectory()) continue;
       // ★ 2026-11-15（CodeRabbit 第二轮）：**不能靠 mtime 判断目录是否活跃** ——
       //   追加写是 `open(file,'a')`，只更新**文件**的 mtime，目录 mtime 一直是旧的。
-      //   所以闲置 8 天的目录即使刚刚写过，也会被判成"过期"，照样误删。
-      //   可靠判据只有两个：① 这个目录下还有挂着写入流的文件；
-      //                     ② 这个目录的文件还在内存缓存里（说明刚被读过/写过）。
       files = readdirSync(dir);
-      if (files.some((f) => hasActiveStream(join(dir, f)))) continue;
-      if ([...dayCache.keys()].some((k) => k.startsWith(dir))) continue;
     } catch {
       continue;
     }
@@ -242,9 +237,18 @@ export function pruneOld(): void {
     for (const f of files) {
       if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/u.test(f)) continue;
       if (f.slice(0, 10) < cutoffDay) {
+        // ★ 2026-11-15（CodeRabbit 第三轮）：**逐文件**判断是否活跃，而不是整目录跳过。
+        //   整目录跳过的话，一个一直在聊的群，它 8 天前的旧文件永远清不掉，
+        //   KEEP_DAYS=7 对活跃群直接失效、文件无限累积。
+        //   活跃判据：该文件还挂着写入流，或还在内存缓存里。
+        const fp = join(dir, f);
+        if (hasActiveStream(fp) || dayCache.has(fp)) {
+          alive += 1;
+          continue;
+        }
         try {
-          try { closeFile(join(dir, f)); } catch { /* ignore */ }
-      rmSync(join(dir, f), { force: true });
+          closeFile(fp);
+          rmSync(fp, { force: true });
         } catch { /* ignore */ }
       } else {
         alive++;

@@ -27,8 +27,11 @@
  * ⚠️ 只读 + 只回填，不写任何存储、不阻断消息，出错一律吞掉。
  */
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
+import type { ImQQBotConfig } from '../config.js';
+import { dataRootOf } from '../gateway/data-root.js';
 import type { Logger } from '../types.js';
 import { appendMsgHistory, findSenderByQuote } from '../features/msg-history.js';
+import { c2cNameOf } from '../features/c2c-name.js';
 import { md5OfFilename } from '../shared/quote-match.js';
 
 /**
@@ -69,7 +72,7 @@ function classifyForHistory(msg: {
   return { k, x, f };
 }
 
-export function attributionLedger(logger: Logger) {
+export function attributionLedger(config: ImQQBotConfig, logger: Logger) {
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     try {
       const msg = ctx.message as {
@@ -91,20 +94,6 @@ export function attributionLedger(logger: Logger) {
         : String(msg.senderId ?? '');
 
       if (peerId && (kind === 'group' || kind === 'c2c')) {
-        // ── ① 先写历史台账（每条消息必记，与她醒不醒无关）──
-        //   这条在 debounce 之前，所以窗口里每一条都会进来，不会只剩最后一条。
-        const h = classifyForHistory(msg);
-        appendMsgHistory(kind as 'group' | 'c2c', peerId, {
-          id: String(msg.messageId ?? ''),
-          s: String(msg.senderId ?? ''),
-          n: String(msg.senderName ?? msg.senderId ?? ''),
-          t: Date.now(),
-          k: h.k,
-          x: h.x,
-          ...(h.f.length ? { f: h.f } : {}),
-          ...(msg.me ? { me: true } : {}),
-        });
-
         const q = (ctx.state as {
           quote?: {
             refKey?: string;
@@ -151,6 +140,34 @@ export function attributionLedger(logger: Logger) {
             logger.debug?.(`im-qqbot: 引用归属未命中 refKey=${String(q.refKey ?? '').slice(0, 20)}…`);
           }
         }
+
+        // ── ② 归属查询**之后**才写历史台账 ──
+        // ★ 2026-11-15（CodeRabbit 第三轮抓到）：原来是"先写再查"，于是**当前这条消息自己**
+        //   就是全表里"时间最新的匹配"。A 说「我喜欢鲸鱼」，B 引用同文再发一遍时，
+        //   查出来的会是 B 自己，归属被错填。必须查完再写。
+        //   写入放在查询之后、外层 try 之内：查询抛错时这条历史就丢了，
+        //   所以这里单独包一层 try —— 写入失败不能反过来影响消息主链。
+        try {
+          const h = classifyForHistory(msg);
+          appendMsgHistory(kind as 'group' | 'c2c', peerId, {
+            id: String(msg.messageId ?? ''),
+            s: String(msg.senderId ?? ''),
+            // ★ 第三轮同时指出：C2C 的昵称原本是 `handleInbound` 后面才解析的
+            //   （`c2cNameOf`），搬到中间件后这里只拿得到 openid，历史里就把 openid 当昵称存了。
+            //   在这里补一次同样的解析，保持两边一致。
+            n: String(
+              (kind === 'c2c' ? c2cNameOf(dataRootOf(config), String(msg.senderId ?? '')) : '')
+              || msg.senderName
+              || msg.senderId
+              || '',
+            ),
+            t: Date.now(),
+            k: h.k,
+            x: h.x,
+            ...(h.f.length ? { f: h.f } : {}),
+            ...(msg.me ? { me: true } : {}),
+          });
+        } catch { /* 写历史失败不影响消息主链 */ }
       }
     } catch (err) {
       // ⚠️ 用 warn 而不是 debug：这个 catch 曾经把真问题吞掉整整一轮
