@@ -1,29 +1,37 @@
 ## 1.12.32 (2026-11-14)
 
-### 🔴 修复：扩展能力包里 `sender` 被展开，原型方法全丢
+### 🔴 修复：能力包「没有发送通道」时静默失败，且不留任何记录
 
-组装扩展工具的能力包时写的是：
+**先纠正一条我自己写错的结论**（CodeRabbit 审查时提出，已核对源码）：
+上一版 CHANGELOG/代码注释里我把根因写成"`{...sender}` 展开丢了原型方法"—— **这个说法是错的**。
+`sender` 在 `gateway/bootstrap.ts` 里是**对象字面量**（`const sender: QQBotSender = { sendMarkdown: async … }`），
+方法都是自有属性，对象展开**不会**丢方法。
 
-```js
-sender: { ...sess.ch.sender, openid }     // ← 错
+真正的现象（有日志为证）：
+
+```
+[04:46:16] dskit_tts voice ok=true      ← 成功那次有记录
+（04:39 报"发送失败"的那次：ext-deliver.log 里一条都没有）
 ```
 
-`sess.ch.sender` 是 `QQBotSender` 的**实例**，`sendMedia / sendMarkdown / sendTuwenCard /
-recallLast` 这些方法都在**原型**上。对象展开只复制**自有属性** ⇒ 方法一个都带不过去
-⇒ 能力包里 `deps.sender?.sendMedia` 是 `undefined` ⇒ 所有扩展的
-`env.voice / env.image / env.media / env.markdown` **静默返回 false**。
-
-**实测症状**（主人报的）：`dskit_tts` 合成成功，却提示"发送失败（文件还在）"。
-同一个文件用内置 `send_media` 工具能正常发 —— 因为那条路用的是 `ch.sender.sendMedia(...)`（原对象，没展开）。
-`bili_share` 的 `env.card` 其实也一直是坏的，它能发出卡片全靠后面 `env.api` 直连 HTTP 兜回来。
-
-修法：**同原型的新对象 + 自有属性 + openid**
+能力包的 `send()` 失败**一定**会写 `ext-deliver.log`。什么都没留下，说明根本没走到 `send()`，
+而是走了这行**提前 return**：
 
 ```js
-Object.assign(Object.create(Object.getPrototypeOf(raw)), raw, { openid })
+if (!deps.sender?.sendMedia) return Promise.resolve(false);   // ← 直接 false，无记录
 ```
 
-方法在、`env.sender.openid` 也在，所有走能力包发消息的扩展一起修好。
+即那个时刻 `deps.sender` 是只有 `openid` 的空壳 —— `findSessionRec()` 没命中会话记录（**间歇性**，所以有的群成功有的失败）。
+
+**修法**：
+
+1. 这条静默路径**必须留痕**：5 个媒体方法（media/image/voice/video/file）在没通道时都写
+   `noteDeliver('<kind>', false, Error('没有发送通道：deps.sender.sendMedia 不可用（会话记录没找到？）'))`
+   —— 以后再出这种事，`ext-deliver.log` 能直接告诉你"是没通道，不是发失败"。
+2. `sender` 改成**保留原型**的构造（`Object.assign(Object.create(getPrototypeOf(raw)), raw, { openid })`）：
+   对当前的字面量实现是等价无害的，但将来 `sender` 换成 class 实现时不会突然全盘失效 —— **防御性**，不是本次的根因。
+3. `deepseek-kit` 侧加多通道兜底（`env.voice` → `env.media` → `env.caps.voice` → 直连 `env.sender.sendMedia`），
+   谁先成功用谁；全失败则把每一步的结果回显给调用方。
 
 ### 修复：扩展工具的签名缓存不认「改实现」
 
