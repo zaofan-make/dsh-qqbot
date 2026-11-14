@@ -293,7 +293,10 @@ export class GroupAdminClient {
      *   纯文本 msg_type:0 会原样显示标签); 否则纯文本(msg_type:0)。
      */
     async sendGroupText(gid, content) {
-        const msgSeq = Math.floor(Date.now() / 1000) % 1000000; // 官方要求递增 msg_seq, 秒级够用(防同秒重复可加余数)
+        // ★★ 2026-11-14 修（审查发现）：原来只取'秒数 % 1e6' —— **同一秒内两次发送会拿到同一个 msg_seq**，
+        //   官方按重复消息拒收/去重 ⇒ 丢消息（注释里自己写了'防同秒重复可加余数'却没实现）。
+        //   现在用进程内单调递增计数器：同秒内 +1，跨秒以时间戳为基数，保证严格递增且不重复。
+        const msgSeq = nextMsgSeq();
         const hasTag = /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<qqbot-cmd-|<emoji:|<#/.test(content);
         const body = hasTag
             ? { markdown: { content }, msg_type: 2, msg_seq: msgSeq }
@@ -355,5 +358,12 @@ export function createGroupAdmin(opts) {
 /** 取本 bot 的群注册表路径(事件累积+绑群, UI 选群用) */
 export function groupRegistryPath(cwd) {
     return join(cwd || process.cwd(), '.qqbot', 'groups.json');
+}
+/** msg_seq 生成器：进程内单调递增，避免同秒撞车 */
+let __msgSeq = 0;
+function nextMsgSeq() {
+    const base = Date.now() % 1_000_000;
+    __msgSeq = base > __msgSeq ? base : __msgSeq + 1;
+    return __msgSeq % 1_000_000;
 }
 //# sourceMappingURL=group-admin.js.map
