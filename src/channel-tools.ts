@@ -2223,8 +2223,11 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
         try {
           const ch0 = channelOf(exec as never);
           const hit = findSessionRec(ch0, exec as { agent?: unknown });
-          const mgr = (hit?.ch?.manager ?? ch0?.manager) as { config?: { settingsNs?: string } } | undefined;
-          const own = String(mgr?.config?.settingsNs ?? '').trim();
+          // ★★ 2026-11-14（CodeRabbit 复审）：用 SessionManager 的 **settingsNs getter** ——
+          //   它已经把「配置里没写」映射成主账号默认 im-qqbot（见 session-manager:202）。
+          //   原来自己读 config.settingsNs，空值时直接报错，连默认实例都用不了。
+          const mgr = (hit?.ch?.manager ?? ch0?.manager) as { settingsNs?: string } | undefined;
+          const own = String(mgr?.settingsNs ?? '').trim();
           if (own) ns = own;
         } catch { /* 下面统一判空 */ }
         if (!ns) {
