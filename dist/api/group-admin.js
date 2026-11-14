@@ -311,7 +311,7 @@ export class GroupAdminClient {
      * @returns 消息 id
      */
     async sendGroupCard(gid, markdown, keyboard) {
-        const msgSeq = Math.floor(Date.now() / 1000) % 1000000;
+        const msgSeq = nextMsgSeq(); // ★ 与 sendGroupText 共用同一个生成器，避免两条路径撞号
         const body = { msg_type: 2, markdown: { content: markdown }, msg_seq: msgSeq };
         if (keyboard && keyboard.content)
             body.keyboard = keyboard;
@@ -319,7 +319,7 @@ export class GroupAdminClient {
     }
     /** 以机器人身份向用户发私聊文本(c2c 主动消息; 同 sendGroupText 的通道选择逻辑) */
     async sendC2cText(userOpenid, content) {
-        const msgSeq = Math.floor(Date.now() / 1000) % 1000000;
+        const msgSeq = nextMsgSeq(); // ★ 与 sendGroupText 共用同一个生成器，避免两条路径撞号
         const hasTag = /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<qqbot-cmd-|<emoji:|<#/.test(content);
         const body = hasTag
             ? { markdown: { content }, msg_type: 2, msg_seq: msgSeq }
@@ -331,7 +331,7 @@ export class GroupAdminClient {
      * 官方 c2c 与群共用同一套 markdown/keyboard 结构, 仅 base path 不同。
      */
     async sendC2cCard(userOpenid, markdown, keyboard) {
-        const msgSeq = Math.floor(Date.now() / 1000) % 1000000;
+        const msgSeq = nextMsgSeq(); // ★ 与 sendGroupText 共用同一个生成器，避免两条路径撞号
         const body = { msg_type: 2, markdown: { content: markdown }, msg_seq: msgSeq };
         if (keyboard && keyboard.content)
             body.keyboard = keyboard;
@@ -359,11 +359,18 @@ export function createGroupAdmin(opts) {
 export function groupRegistryPath(cwd) {
     return join(cwd || process.cwd(), '.qqbot', 'groups.json');
 }
-/** msg_seq 生成器：进程内单调递增，避免同秒撞车 */
+/**
+ * msg_seq 生成器：进程内单调递增，避免同秒撞车。
+ *
+ * ★★ 2026-11-14（CodeRabbit 复审）：**不要取模** ——
+ *   取模会让序号在 999999 之后回落，既可能被时间基超越、也可能和后续值重复，
+ *   而"严格递增"正是官方对同一 msg_id 被动回复的要求。
+ *   这里用 9 位时间基（约 11.5 天回绕一次），回绕瞬间靠 `+1` 追平后继续递增。
+ */
 let __msgSeq = 0;
 function nextMsgSeq() {
-    const base = Date.now() % 1_000_000;
+    const base = Date.now() % 1_000_000_000;
     __msgSeq = base > __msgSeq ? base : __msgSeq + 1;
-    return __msgSeq % 1_000_000;
+    return __msgSeq;
 }
 //# sourceMappingURL=group-admin.js.map
