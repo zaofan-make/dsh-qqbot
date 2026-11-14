@@ -84,7 +84,6 @@ export class SessionManager {
     /** QQ 通道发送能力(由 bootstrap 注入)；仅作为 qqChannel service 暴露给通道工具，不在此注册工具 */
     channelSender;
     /** 最近一次 setup 收到的 agent ctx(工具自愈用；getOrCreate 完成后读走并清空) */
-    lastSetupCtx;
     /** 群守则热更新: 每次 system prompt 渲染现读 settings.yaml(SettingsReader fresh 模式) */
     liveSettingsReader;
     /** 注入 QQ 通道发送能力(供通道工具)；bootstrap 调用 */
@@ -604,7 +603,14 @@ export class SessionManager {
     currentSessionId(sessionKey) {
         return this.modelResolver.getSessionId(sessionKey) ?? this.deriveSessionId(sessionKey);
     }
-    async composePreset(presetId) {
+    /**
+     * ★ 2026-11-14 修（审查确认：并发建会话会串号）：原来把 setup 拿到的 agentCtx 存进
+     *   **实例字段** this.lastSetupCtx，而 agents.create({setup}) 是 await 的 ——
+     *   群1 的 setup 写 ctxA、群2 的 setup 覆盖成 ctxB，群1 的续体读到 ctxB
+     *   ⇒ 群1 的 record.agentCtx 指向群2 的作用域，工具全注册到别人的 ctx。
+     *   改成**调用方传进来的 holder**（每次调用一个局部对象），天然隔离。
+     */
+    async composePreset(presetId, ctxHolder) {
         let presets;
         try {
             presets = this.ctx.get('agentPresets');
@@ -621,7 +627,8 @@ export class SessionManager {
         const provideChannel = this.channelSender === undefined
             ? undefined
             : (agentCtx) => {
-                this.lastSetupCtx = agentCtx;
+                if (ctxHolder)
+                    ctxHolder.ctx = agentCtx;
                 try {
                     agentCtx.provide?.('qqChannel', {
                         manager: this,
@@ -759,6 +766,8 @@ export class SessionManager {
         let agent;
         let handle;
         let agentPreset;
+        // ★ 2026-11-14：本次调用的 setup 归属容器（局部，天然隔离并发）
+        const ctxHolder = {};
         const live = this.agents.get(sessionId);
         if (live) {
             agent = live;
@@ -773,7 +782,7 @@ export class SessionManager {
         }
         else {
             // preset 只解析一次：resume/create 共用同一组合(会话覆盖 > config), 避免重复 resolve/mount 目录
-            const composed = await this.composePreset(this.effectivePreset(key));
+            const composed = await this.composePreset(this.effectivePreset(key), ctxHolder);
             agentPreset = composed.agentPreset;
             try {
                 const resumeRoute = this.modelResolver.getResumeRoute(key, sessionId);
@@ -866,10 +875,9 @@ export class SessionManager {
             lastActivity: Date.now(),
             agentPreset,
             // 自愈用：setup 若正常跑到 channelSetup，此处拿到 agent ctx 且标记已装载
-            agentCtx: this.lastSetupCtx,
-            channelToolsReady: this.lastSetupCtx?.[CTX_TOOLS_READY] === true,
+            agentCtx: ctxHolder?.ctx,
+            channelToolsReady: ctxHolder?.ctx?.[CTX_TOOLS_READY] === true,
         };
-        this.lastSetupCtx = undefined;
         this.sessions.set(key, record);
         // 修复侧边栏归属(上游 PR #21 移植): 创建/恢复会话后挂到 cwd 对应工作区分组,
         // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。

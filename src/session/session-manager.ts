@@ -112,7 +112,6 @@ export class SessionManager {
   /** QQ 通道发送能力(由 bootstrap 注入)；仅作为 qqChannel service 暴露给通道工具，不在此注册工具 */
   private channelSender: QQBotSender | undefined;
   /** 最近一次 setup 收到的 agent ctx(工具自愈用；getOrCreate 完成后读走并清空) */
-  private lastSetupCtx: Context | undefined;
   /** 群守则热更新: 每次 system prompt 渲染现读 settings.yaml(SettingsReader fresh 模式) */
   private liveSettingsReader: SettingsReader | undefined;
 
@@ -673,7 +672,14 @@ export class SessionManager {
     return this.modelResolver.getSessionId(sessionKey) ?? this.deriveSessionId(sessionKey);
   }
 
-  private async composePreset(presetId?: string): Promise<PresetComposition> {
+  /**
+   * ★ 2026-11-14 修（审查确认：并发建会话会串号）：原来把 setup 拿到的 agentCtx 存进
+   *   **实例字段** this.lastSetupCtx，而 agents.create({setup}) 是 await 的 ——
+   *   群1 的 setup 写 ctxA、群2 的 setup 覆盖成 ctxB，群1 的续体读到 ctxB
+   *   ⇒ 群1 的 record.agentCtx 指向群2 的作用域，工具全注册到别人的 ctx。
+   *   改成**调用方传进来的 holder**（每次调用一个局部对象），天然隔离。
+   */
+  private async composePreset(presetId?: string, ctxHolder?: { ctx?: Context }): Promise<PresetComposition> {
     let presets: AgentPresetsLike | undefined;
     try {
       presets = this.ctx.get('agentPresets') as AgentPresetsLike | undefined;
@@ -691,7 +697,7 @@ export class SessionManager {
       this.channelSender === undefined
         ? undefined
         : (agentCtx: Context) => {
-            this.lastSetupCtx = agentCtx;
+            if (ctxHolder) ctxHolder.ctx = agentCtx;
             try {
               (agentCtx as { provide?: (n: string, v: unknown) => unknown }).provide?.('qqChannel', {
                 manager: this,
@@ -831,6 +837,8 @@ export class SessionManager {
     let agent: DshAgent;
     let handle: DshAgentHandle | undefined;
     let agentPreset: string | undefined;
+    // ★ 2026-11-14：本次调用的 setup 归属容器（局部，天然隔离并发）
+    const ctxHolder: { ctx?: Context } = {};
 
     const live = this.agents.get(sessionId);
     if (live) {
@@ -845,7 +853,7 @@ export class SessionManager {
       }
     } else {
       // preset 只解析一次：resume/create 共用同一组合(会话覆盖 > config), 避免重复 resolve/mount 目录
-      const composed = await this.composePreset(this.effectivePreset(key));
+      const composed = await this.composePreset(this.effectivePreset(key), ctxHolder);
       agentPreset = composed.agentPreset;
       try {
         const resumeRoute = this.modelResolver.getResumeRoute(key, sessionId);
@@ -921,10 +929,9 @@ export class SessionManager {
       lastActivity: Date.now(),
       agentPreset,
       // 自愈用：setup 若正常跑到 channelSetup，此处拿到 agent ctx 且标记已装载
-      agentCtx: this.lastSetupCtx,
-      channelToolsReady: (this.lastSetupCtx as unknown as { [k: symbol]: unknown } | undefined)?.[CTX_TOOLS_READY] === true,
+      agentCtx: ctxHolder?.ctx,
+      channelToolsReady: (ctxHolder?.ctx as unknown as { [k: symbol]: unknown } | undefined)?.[CTX_TOOLS_READY] === true,
     };
-    this.lastSetupCtx = undefined;
 
     this.sessions.set(key, record);
 
