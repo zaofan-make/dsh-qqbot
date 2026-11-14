@@ -2214,12 +2214,22 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
         //   **挑 mtime 最新的** —— 那可能是**别的实例**的配置，而下面会整份写回去（含 appId/appSecret）。
         //   现在：优先用本实例的 settingsNs；拿不到就退回主账号默认 'im-qqbot'（与 index.ts 一致）；
         //   绝不猜别的实例的文件。
-        let ns = 'im-qqbot';
+        // ★★ 2026-11-14（CodeRabbit 复审）：判定不出实例就必须停手，不许回退默认实例。
+        //   宿主的 web/桌面回合里 agent 对象可能换新（同一 sessionId 不同 agent），
+        //   channelOf 会返回 undefined；此时若退回 im-qqbot，就会把默认实例的配置写回去
+        //   （action=list 也一样写），当前实例的关键词根本不更新、却误改了别人。
+        //   用 findSessionRec 补一条按 session.id 反查；仍判定不出就报错中止。
+        let ns = '';
         try {
-          const mgr = channelOf(exec as never)?.manager as { config?: { settingsNs?: string } } | undefined;
+          const ch0 = channelOf(exec as never);
+          const hit = findSessionRec(ch0, exec as { agent?: unknown });
+          const mgr = (hit?.ch?.manager ?? ch0?.manager) as { config?: { settingsNs?: string } } | undefined;
           const own = String(mgr?.config?.settingsNs ?? '').trim();
           if (own) ns = own;
-        } catch { /* 拿不到就用默认 */ }
+        } catch { /* 下面统一判空 */ }
+        if (!ns) {
+          return { ok: false, msg: '无法确定所属实例（多实例下请在 QQ 会话里操作）—— 为避免改到别的实例的配置，已中止', keywords: [] };
+        }
         const file = join(base, ns + '.json');
         if (!existsSync(file)) {
           return { ok: false, msg: '找不到本实例的设置文件: ' + file + '（不会去动别的实例的配置）', keywords: [] };
@@ -3905,8 +3915,18 @@ const extGranted = new WeakMap<object, Map<string, () => void>>();
  */
 const extGrantSet = new WeakMap<object, Set<string>>();
 const extRestrictState2 = new WeakMap<object, { sig: string; dispose?: () => void }>();
-/** 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引**重放一次**剪枝） */
-const extSeenCtx = new Map<object, string>();
+/**
+ * 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引重放一次剪枝）。
+ *
+ * ★★ 2026-11-14 修（长跑内存单调上涨）：原来是 Map<object,string> —— 强引用每个 agent
+ *   作用域且从不 delete，而 ctx 挂着整棵 agent/session/事件图，等于整棵图都无法 GC；
+ *   触发点是每次会话重建。改 WeakMap 后引用不再阻止回收。
+ *
+ * ⚠️ 重放剪枝的遍历**不能**从这张表枚举（WeakMap 不可枚举），改成遍历活跃会话表；
+ *   而且必须同时看 rec.agentCtx 与 rec.agent?.ctx —— claimed / pre-step 钩子用的是
+ *   agent.ctx，只查 agentCtx 会漏（上一版就漏了，表现为 disable 后工具仍可调用）。
+ */
+const extSeenCtx = new WeakMap<object, string>();
 /**
  * 「用户主动关掉」的工具（per agent）：`gain_qq_tools.disable` 加进来，`enable` 移出去。
  * applyExtToolVisibility 计算该注册哪些时**排除**它们 —— 否则"自己实例那份"每轮都会被
@@ -4389,7 +4409,22 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
       //   ★ 2026-10-28（主人抓到抖动："新增 7 个 → 下个 step 又移除 7 个"）：
       //   以前是「循环里边扫描边注册」⇒ 注册发生时 deny 名单还不完整 ⇒ 模型先看到一步、下一步才被剪掉。
       //   现在顺序固定为 **扫描 → 剪枝 → 注册**：注册落地时 deny 已经就位，模型永远看不到那一步。
-      for (const [c, tg] of extSeenCtx) applyExtToolVisibility(c, tg);
+      // ★★ 2026-11-14：遍历来源从 extSeenCtx（已是 WeakMap，不可枚举）改成活跃会话表；
+      //   **两个字段都要看**：claimed / pre-step 用 agent.ctx 登记，ensureExtToolsGlobal 用
+      //   rec.agentCtx —— 只查后者会漏掉整整一类作用域（表现为 disable 后工具仍可调用）。
+      //   同一作用域重复调用是安全的：applyExtToolVisibility 会比较签名并跳过未变化的。
+      for (const mgr of managersOf()) {
+        const sessions = (mgr as unknown as { sessions?: Map<string, { agentCtx?: object; agent?: { ctx?: object } }> }).sessions;
+        if (!sessions || typeof sessions.values !== 'function') continue;
+        for (const rec of sessions.values()) {
+          const cands = [rec?.agentCtx, rec?.agent?.ctx];
+          for (const c of cands) {
+            if (!c) continue;
+            const tg = extSeenCtx.get(c);
+            if (tg) applyExtToolVisibility(c, tg);
+          }
+        }
+      }
       // ── 阶段 3：**不再全局注册**（2026-10-31 实测定论）──────────────
       //   实测对照：注册到 apply(ctx) 后 QQ 会话调不到（unknown tool），
       //   而 gain_qq_tools.enable 用 agent.ctx 注册**立刻可用**。
