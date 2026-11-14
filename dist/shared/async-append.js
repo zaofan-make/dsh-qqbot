@@ -67,12 +67,41 @@ export function forgetDirTree(dir) {
             closeFile(key);
     }
 }
+/**
+ * 空闲多久后自动关闭文件流（毫秒）。
+ *
+ * ★ 2026-11-15（主人实测反馈）：常开 WriteStream 会把文件**占住**，VS Code 打不开
+ *   `.qqbot/msg-history/*.jsonl` —— 而历史台账本来就是给人翻的，这样等于把它锁死了。
+ *   所以改成「写完等一会儿就关」：群消息密集时整段时间内只开一次流（还是微秒级），
+ *   停下来 2 秒后自动 fsync + end，文件立刻可被其它程序打开。
+ */
+const IDLE_CLOSE_MS = 2000;
+/** 文件路径 → 空闲关闭定时器 */
+const idleTimers = new Map();
+/** 重置某个文件的"空闲关闭"计时器 */
+function touchIdle(file) {
+    const old = idleTimers.get(file);
+    if (old)
+        clearTimeout(old);
+    const t = setTimeout(() => {
+        idleTimers.delete(file);
+        closeFile(file);
+    }, IDLE_CLOSE_MS);
+    // 不要因为这个定时器把进程吊住
+    t.unref?.();
+    idleTimers.set(file, t);
+}
 /** 这个路径当前是否挂着写入流（= 有写入正在进行/已排队，目录不能删） */
 export function hasActiveStream(file) {
     return streams.has(file);
 }
 /** 关掉某个文件的流；**关之前先把内核缓冲刷到盘**（见函数内注释） */
 export function closeFile(file) {
+    const it = idleTimers.get(file);
+    if (it) {
+        clearTimeout(it);
+        idleTimers.delete(file);
+    }
     const s = streams.get(file);
     if (!s)
         return;
@@ -120,6 +149,7 @@ export function appendLine(file, line) {
     }
     try {
         s.write(text.endsWith(NL) ? text : text + NL);
+        touchIdle(file);
     }
     catch {
         streams.delete(file);
