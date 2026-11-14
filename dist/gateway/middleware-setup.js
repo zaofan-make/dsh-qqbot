@@ -346,7 +346,9 @@ pluginCtx) {
                         }
                     }
                     logger.info("auto-recall(mw) hit: " + String(m.content ?? "").slice(0, 20) + " drop=" + String(ar.mode === "drop"));
-                    if (ar.mode === "drop")
+                    // ★ 2026-11-14（CodeRabbit）：bootstrap 那条我修了 dryRun，这条**漏了** —— 同一个语义必须两处一致：
+                    //   演练模式只记日志，不许把消息挡在 agent 外。
+                    if (ar.mode === "drop" && ar.dryRun !== true)
                         return;
                 }
             }

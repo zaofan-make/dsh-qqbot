@@ -153,6 +153,9 @@ export class StreamingWriter {
       );
       try {
         await new Promise((r) => setTimeout(r, 200));
+        // ★ 2026-11-14（CodeRabbit）：等待期间可能已被 abort —— 不重查就会在
+        //   abort 之后把全文再 update 一次，把 abort 排队的 complete() 覆盖掉。
+        if (this.aborted) return;
         await this.session.update(this.fullText);
         this.sentChunkCount++;
       } catch (err2) {
