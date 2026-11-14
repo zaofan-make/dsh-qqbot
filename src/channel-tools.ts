@@ -3905,16 +3905,8 @@ const extGranted = new WeakMap<object, Map<string, () => void>>();
  */
 const extGrantSet = new WeakMap<object, Set<string>>();
 const extRestrictState2 = new WeakMap<object, { sig: string; dispose?: () => void }>();
-/**
- * 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引**重放一次**剪枝）。
- *
- * ★★ 2026-11-14 修（审查发现：长跑内存单调上涨）：原来是 `new Map<object, string>()` ——
- *   强引用每个 agent 作用域且**从不 delete**，而 ctx 挂着整棵 agent/session/事件图，
- *   等于整棵图都无法 GC。触发点是**每次会话重建**（fork / 切模型 / 重启后恢复）。
- *   改成 WeakMap 之后引用不再阻止回收；重放剪枝的遍历来源改成「活跃会话表」（见 4392 附近），
- *   而不是从这张表枚举（WeakMap 不可枚举）。
- */
-const extSeenCtx = new WeakMap<object, string>();
+/** 见过的会话作用域 → 它的 selfTag（扫描完成后要按新索引**重放一次**剪枝） */
+const extSeenCtx = new Map<object, string>();
 /**
  * 「用户主动关掉」的工具（per agent）：`gain_qq_tools.disable` 加进来，`enable` 移出去。
  * applyExtToolVisibility 计算该注册哪些时**排除**它们 —— 否则"自己实例那份"每轮都会被
@@ -4397,19 +4389,7 @@ export function ensureExtToolsGlobal(globalCtx: unknown): void {
       //   ★ 2026-10-28（主人抓到抖动："新增 7 个 → 下个 step 又移除 7 个"）：
       //   以前是「循环里边扫描边注册」⇒ 注册发生时 deny 名单还不完整 ⇒ 模型先看到一步、下一步才被剪掉。
       //   现在顺序固定为 **扫描 → 剪枝 → 注册**：注册落地时 deny 已经就位，模型永远看不到那一步。
-      // ★★ 2026-11-14：遍历来源从「extSeenCtx 这张表」改成「活跃会话表」——
-      //   extSeenCtx 已是 WeakMap（不可枚举）；而且从会话表枚举本来就更准：
-      //   已销毁的会话不必再剪枝，新会话也不会漏。
-      for (const mgr of managersOf()) {
-        const sessions = (mgr as unknown as { sessions?: Map<string, { agentCtx?: object }> }).sessions;
-        if (!sessions || typeof sessions.values !== "function") continue;
-        for (const rec of sessions.values()) {
-          const c = rec?.agentCtx;
-          if (!c) continue;
-          const tg = extSeenCtx.get(c);
-          if (tg) applyExtToolVisibility(c, tg);
-        }
-      }
+      for (const [c, tg] of extSeenCtx) applyExtToolVisibility(c, tg);
       // ── 阶段 3：**不再全局注册**（2026-10-31 实测定论）──────────────
       //   实测对照：注册到 apply(ctx) 后 QQ 会话调不到（unknown tool），
       //   而 gain_qq_tools.enable 用 agent.ctx 注册**立刻可用**。
