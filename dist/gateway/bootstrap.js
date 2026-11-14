@@ -5,6 +5,7 @@ import { SessionManager } from '../session/index.js';
 import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { parseStreamFrame } from '../transport/events.js';
 import { setMaterialTargetFactory, rewriteLocalMarkdownImages, lastMediaRewrite } from '../features/md-media-rewrite.js';
+import { resolveAutoRecall } from '../features/auto-recall.js';
 import { buildUserAgent } from '../shared/index.js';
 import { setupMiddlewares } from './middleware-setup.js';
 import { configureDiag, diagWrite } from '../shared/diag.js';
@@ -297,7 +298,11 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         try {
             // ★★ 2026-11-14 修（审查发现）：真源在 groupAdmin 下面，原来读的是**顶层**
             //   ⇒ 恒为 undefined ⇒ 面板设的自动撤回永不生效，且日志里一点痕迹没有。
-            const ar = config.groupAdmin?.autoRecall;
+            // ★ 2026-11-14（CodeRabbit 复审）：**必须与 middleware 用同一份解析**。
+            //   否则面板刚把 dryRun 改成 true（落盘）、闭包 config 还是 false 时：
+            //   中间件按磁盘放行 → 消息流到这里 → 这里按闭包判定 ⇒ **照样真撤回 + 禁言**，
+            //   演练模式等于失效。现在两处都走 resolveAutoRecall（磁盘优先 + 1s TTL 缓存）。
+            const ar = resolveAutoRecall(config);
             const msgId = String(msg.messageId ?? '');
             if (ar?.enabled === true && String(msg.groupOpenid ?? '') !== '' && msgId !== '') {
                 const kws = (ar.keywords ?? []).map((k) => String(k).trim()).filter(Boolean);
