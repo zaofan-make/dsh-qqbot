@@ -65,9 +65,17 @@ function matchRule(rule: InjectRuleConfig, text: string, msg: RuleMsg, logger?: 
       logger?.warn?.(`[inject-rules] 正则编译失败 rule=${rule.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  if (c.contentKeywords.length > 0) {
+  // ★★ 2026-11-14 修（审查发现）：c.contentKeywords 是**未校验的嵌套配置读取**，
+  //   而这个函数在 pplyInjectRules 里**不在 try 保护内** —— 手改/旧版配置少写一个字段，
+  //   每条入站都会抛 TypeError 冒出去 ⇒ 该条消息既不进上下文也不唤醒，静默丢失。
+  if (Array.isArray(c.contentKeywords) && c.contentKeywords.length > 0) {
     const tl = text.toLowerCase();
-    parts.push(c.contentKeywords.some(k => k && tl.includes(k.toLowerCase())));
+    // ★ 2026-11-14（CodeRabbit）：元素也可能**无法转成字符串**（如 { toString: null }），
+    //   那样 String(k) 会抛 TypeError，而从 applyInjectRules 冒出去会把整条入站弄丢。
+    parts.push(c.contentKeywords.some((k) => {
+      if (!k) return false;
+      try { return tl.includes(String(k).toLowerCase()); } catch { return false; }
+    }));
   }
   if (parts.length === 0) return false; // 无条件=永不触发
   return c.matchScope === 'all' ? parts.every(Boolean) : parts.some(Boolean);
