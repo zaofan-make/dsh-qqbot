@@ -59,8 +59,21 @@ function normalizeMute(raw) {
         const id = String(o?.id ?? '').trim();
         if (!id)
             return null;
-        const until = Number(o?.until);
-        const out = { id, until: Number.isFinite(until) && until > 0 ? until : 0 };
+        // ★★ 2026-11-14（CodeRabbit）：**必须在校验前看原始类型** ——
+        //   Number(null) / Number("") / Number(false) 全都是 0，而 0 = 永久禁言，
+        //   于是手改或损坏的记录会静默变成永久。程序自己写的是数字（见本文件 :188），
+        //   所以这里只认 number 类型；数字字符串("123") 会被拒（行为变化，但更安全）。
+        const rawUntil = o?.until;
+        if (typeof rawUntil !== "number" || !Number.isFinite(rawUntil) || rawUntil < 0)
+            return null;
+        const until = rawUntil;
+        // ★★ 2026-11-14 修（审查发现）：原来非法/缺失的 until 被归一成 0，
+        //   而 0 的语义是「**永久**禁言」（见本文件 :17/:60/:93，minutes <= 0 时写 0）。
+        //   于是手改记录、旧版本写入、或文件被截断时，一条本该无效的记录会**静默升级成永久禁言**。
+        //   ⚠️ 注意：0 本身是合法的永久，**不能**当成非法值丢掉；只丢 NaN / 负数。
+        if (!Number.isFinite(until) || until < 0)
+            return null;
+        const out = { id, until };
         if (typeof o?.reason === 'string' && o.reason)
             out.reason = o.reason;
         if (typeof o?.by === 'string' && o.by)
@@ -301,7 +314,18 @@ export function breakerTrippedReason(file) {
 }
 /** 熔断：幂等（已熔断时保留最早那次的原因与时刻） */
 export function tripBreaker(file, reason) {
-    const s = breakerOf(file);
+    // ★ 2026-11-14：key 已改成绝对路径，但诊断/测试常传短名（breaker.mjs）。
+    //   精确查不到时按「路径后缀」兜底匹配一次，避免为改 key 而改一堆调用点。
+    let s = breakerOf(file);
+    if (!s.tripped && s.ring.length === 0) {
+        const short = String(file || "");
+        for (const [k, v] of breakers) {
+            if (k === short || k.endsWith("/" + short) || k.endsWith("\\" + short)) {
+                s = v;
+                break;
+            }
+        }
+    }
     if (!s.tripped)
         s.tripped = { at: Date.now(), reason };
     return s.tripped.reason;
@@ -384,7 +408,26 @@ export function upgradeLastParticipation(file) {
 }
 /** 诊断：某扩展的熔断状态快照 */
 export function breakerStatus(file) {
-    const s = breakerOf(file);
+    // ★★ 2026-11-14（CodeRabbit）：查询**不能创建状态** ——
+    //   原来走 breakerOf(file)，键不存在时会插入一条空记录；
+    //   于是「先查 x.mjs、之后熔断 /pack/x.mjs」时，再查 x.mjs 会命中那条更早插入的空记录，
+    //   错误地报告"未熔断"。现在：先只读精确查，再找唯一的路径后缀匹配，都不建记录。
+    const short = String(file || "");
+    let s = breakers.get(short);
+    if (!s || (!s.tripped && s.ring.length === 0)) {
+        let suf;
+        for (const [k, v] of breakers) {
+            if (k !== short && (k.endsWith("/" + short) || k.endsWith("\\" + short))) {
+                suf = v;
+                break;
+            }
+        }
+        if (suf && (!s || (!s.tripped && s.ring.length === 0)))
+            s = suf;
+    }
+    if (!s) {
+        return { participated: 0, destructive: 0 };
+    }
     const out = {
         participated: s.ring.length,
         destructive: s.ring.filter(Boolean).length,

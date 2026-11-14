@@ -23,7 +23,7 @@
  *   · 原子替换（tmp → rename）：避免半截 JSON 被另一个实例读到；
  *   · 本层只做"登记 / 查询"，**不做权限判断**（谁能点、点了算不算，是模块自己的事）。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 /** 按钮 data 前缀（与 `bp:` / `bpk:` / `bpc:` 并列，互不冲突） */
 export const EXT_TOOL_CARD_PREFIX = 'ext:';
@@ -49,9 +49,24 @@ function writeTable(dataRoot, cards) {
     try {
         const file = cardFilePath(dataRoot);
         mkdirSync(dirname(file), { recursive: true });
-        const tmp = `${file}.tmp`;
-        writeFileSync(tmp, JSON.stringify({ version: 1, cards }, null, 2), 'utf8');
-        renameSync(tmp, file);
+        // ★★ 2026-11-14 修（审查发现）：固定 .tmp 名 —— 两次发卡/按钮回调并发写时，
+        //   A 的 tmp 会被 B 覆盖，A 的 rename 可能拿到半个文件或 ENOENT（被 catch 吞成 false，
+        //   表现是「这张卡点了没反应」）。改成带 pid + 随机后缀的唯一 tmp 名。
+        const tmp = file + '.tmp.' + process.pid + '.' + Math.random().toString(36).slice(2, 10);
+        // ★★ 2026-11-14（CodeRabbit）：**write 和 rename 要在同一个清理保护内** ——
+        //   writeFileSync 因磁盘满/配额失败时可能留下空文件或半截内容，而它原来在 try 之外，
+        //   异常直接进外层 catch，rmSync 不会执行；加上每次都是新文件名，重复失败会累积残留。
+        try {
+            writeFileSync(tmp, JSON.stringify({ version: 1, cards }, null, 2), 'utf8');
+            renameSync(tmp, file);
+        }
+        catch (e) {
+            try {
+                rmSync(tmp, { force: true });
+            }
+            catch { /* ignore */ }
+            throw e;
+        }
         return true;
     }
     catch {

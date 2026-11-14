@@ -95,7 +95,20 @@ function pickRoots(opts: SeedOpts): string[] {
   const push = (r: string | undefined) => {
     const s = String(r ?? '').trim();
     if (!s) return;
-    const key = s.replace(/[\/]+/g, "/").toLowerCase();
+    // ★★ 2026-11-14 修（审查发现）：去重键原来只折 `/`、且**无条件 toLowerCase**。
+    //   Windows 上 D:\a\b 与 D:/a/b 是同一个目录，但 key 不同 ⇒ 同一份数据根被扫两遍；
+    //   POSIX 上大小写是区分的，无条件小写又会把两个真实目录合并。
+    //   统一成：反斜杠/大小写只在 Windows 折叠。
+    const key = process.platform === "win32"
+      ? (() => {
+          // Windows：折叠分隔符（但**保留 UNC 的 \\server\share 双斜杠前缀**）、去尾斜杠（盘根除外）、折大小写。
+          const unc = s.startsWith("\\\\");
+          let body = s.replace(/[\\/]+/g, "/");
+          if (unc) body = "/" + body;                 // 还原成 //server/share
+          if (!/^\/\/$/.test(body) && !/^[a-zA-Z]:\/$/.test(body)) body = body.replace(/\/+$/, "");
+          return body.toLowerCase();
+        })()
+      : s.replace(/\/+$/, "");
     if (seen.has(key)) return;
     seen.add(key);
     out.push(s);
