@@ -3344,10 +3344,25 @@ export async function apply(ctx, opts) {
                                 openid: recAny?.senderId,
                                 // sender 合并而非覆盖：保留原字段（别的扩展可能读 name/card 等）
                                 // 额外带上 openid —— 部分扩展按 `ctx.sender.openid` 找发送者
-                                sender: ({
-                                    ...((sess?.ch.sender && typeof sess.ch.sender === 'object') ? sess.ch.sender : {}),
-                                    openid: recAny?.senderId,
-                                }),
+                                // ⚠️ 2026-11-14 更正：**曾经以为**这里的 `{...sess.ch.sender}` 会丢原型方法（因为
+                                //   QQBotSender 在类型上是个 interface），据此误判过一次故障根因。核对 `gateway/bootstrap.ts`
+                                //   后确认：`sender` 是**对象字面量**，方法都是自有属性，展开不会丢。
+                                //   现在改成「同原型的新对象」纯属**防御**：将来 sender 若换成 class 实例，这里不会突然全废。
+                                //   （那次真实故障是 `findSessionRec()` 间歇性拿不到会话 ⇒ sender 是空壳，
+                                //     而能力包对"没有通道"是静默 false、不写日志 —— 已单独修掉留痕。）
+                                sender: (() => {
+                                    const raw = sess?.ch.sender;
+                                    if (!raw)
+                                        return { openid: recAny?.senderId };
+                                    let proto = null;
+                                    try {
+                                        proto = Object.getPrototypeOf(raw);
+                                    }
+                                    catch {
+                                        proto = null;
+                                    }
+                                    return Object.assign(Object.create(proto), raw, { openid: recAny?.senderId });
+                                })(),
                                 // ★ 2026-10-25：补齐 docs/extension-contract.md §2 承诺的命名空间
                                 //   文档写的是 `env.user.openid/name/isOwner` 与 `env.peer.scope/peerId`，
                                 //   但实现一直没给 —— 文档声明「本文写的就是当前真实实现」，

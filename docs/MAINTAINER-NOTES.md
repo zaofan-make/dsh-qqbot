@@ -3846,3 +3846,102 @@ const supportsWhen = typeof ctx.tools?.resolve === 'function';   // 0.2.2-alpha.
 > ① `when` 抛错 = **步骤准备失败**（`TOOL_ACTIVATION_FAILED`），不是"不可用" ——
 >   扩展的判据里所有外部读取都要 try/catch 兜底，宁可返回 true。
 > ② `when` **不许改注册、不许做工具活**，只能纯判断；异步必须 observe `signal`。
+
+---
+
+## §25 🔴 踩坑实录（2026-11-14，deepseek-kit 上架过程中连踩 7 个）
+
+> 只记**已经踩过、代价明确**的坑。每条：现象 → 误判过什么 → 真因 → 证据 → 教训。
+> 方法论那条线在全局 skill `self-review-method` 里；这里只留**这个项目特有的**。
+
+### 25.1 条件可见性：判据的输入是空的（见 §24.3）
+
+**现象**：`dskit_*` 五个工具一个都不出现，日志只有 `条件隐藏(未启用): dskit_xxx`。
+
+**误判过**：以为是 `enabled` 钩子写错了。
+
+**真因**：`enabled(env)` 在 `apply()` **注册时刻**求值，那时拿不到"当前会话是哪个服务商" ——
+`provider` 是空串、`agent` 是 undefined ⇒ 扩展保守判 false。改用宿主的
+`register(def, { when })`（步骤级，`modelSelection.provider` 直接给）后立刻正常。
+
+**教训**：`enabled` 只回答"这个能力**全局**上有没有被配置"；会话级判断交给 `when`。
+
+### 25.2 同一个配置，两套文件名（下划线 / 连字符）
+
+**现象**：主人在面板填了 Key，opencode provider 的会话里五个工具还是全隐藏。
+
+**真因**：面板按**出站扩展的文件基名**生成配置 id ⇒ `ext-config/dskit-tts.json`（连字符）；
+工具侧 `CONFIG_FILES` 只列 `dskit_tts.json`（下划线）⇒ `ownApiKey` 读成空
+⇒ 非 DeepSeek 官方会话判 false。
+
+**证据**：`loadConfig()` 打印 `ownApiKey: (空)`；补上文件名后 `sk-1af...`，`toolVisible(opencode)` false → true。
+
+**教训**：面板 id 与代码读的 id 必须同一套命名；配置读取"两种都认"，别赌一种。
+
+### 25.3 🔴 我判错的根因：以为对象展开丢了原型方法
+
+**现象**：`dskit_tts` 合成成功，却返回「发送失败（文件还在）」；同一个 wav 用内置 `send_media` 能发。
+
+**我当时的结论（错的）**：`sess.ch.sender` 是 `QQBotSender` 的**类实例**，`sendMedia` 在原型上，
+`{...sess.ch.sender}` 展开会丢方法 ⇒ `deps.sender?.sendMedia` 是 undefined。
+
+**被 CodeRabbit 纠正**：`gateway/bootstrap.ts:469` 里它是**对象字面量**
+（`const sender: QQBotSender = { sendMarkdown: async (…) => {…} }`），方法都是自有属性，展开不丢。
+
+**真因（靠日志定的）**：`{dataRoot}/.qqbot/ext-deliver.log` 里，成功那次有 `voice ok=true`，
+而报 false 的那次**一条记录都没有**。能力包的 `send()` 失败必写日志 ⇒ 没走到 `send()`，
+走的是 `if (!deps.sender?.sendMedia) return false` 这条**提前返回、不留痕**的分支
+⇒ 那个时刻 `findSessionRec()` 没命中会话，`sender` 只有 `openid` 的空壳。
+
+**但那条"提前 return"是间歇性的** —— 所以有的群成功有的失败，更难抓。
+
+**教训**：
+- **类型 ≠ 实现**。`interface` 只描述形状，不描述来源
+- **有日志就必须去开**。注释里明写着"失败会写 ext-deliver.log"，我读完注释却没打开文件
+- 静默 `return false` 是排障的敌人：已给 5 个媒体方法补上 `noteDeliver` 留痕（1.12.32）
+
+### 25.4 签名缓存不认「改实现」，热刷形同虚设
+
+**现象**：修了扩展的 `ReferenceError`，`tools_reload` 之后**照样报旧错**。
+
+**真因**：签名只比 `name / description / schema / expose`。改的是实现，这四样没变
+⇒ 走「未变化，跳过重复注册」⇒ 模块根本没重新 import。
+
+**修法**：`extension-store` 加载时带出 `def.mtime`，签名算进去。
+
+**教训**：缓存 key 必须覆盖**所有会改变行为的输入**，只覆盖元信息的缓存会骗自己。
+
+### 25.5 扩展工具 `run()` 的 env 是残的
+
+`buildExtTool` 组装的执行 env 只有 `{cwd, manager, sender, replyTarget, exec, ctx, logger}`，
+比 `enabled` 的 env 少了 `dataRoot / provider / agent` ⇒ **同一判据两处相反答案**。1.12.31 补齐。
+
+### 25.6 🔴 修 A 砸 B：加严鉴权校验，把老用户全打死
+
+**（review 阶段拦下，没上线）** 给火山 TTS 的 `buildHeaders` 加了"显式选 apiKey 却没填 Key 就报错"。
+
+**问题**：`DEFAULTS.authMode` 本来就是 `'apiKey'`，而 `loadSettings` 是「空串不覆盖默认值」
+⇒ **只填过 AppId/AccessToken、从没选过鉴权方式的老用户**读出来就是 `'apiKey'`
+⇒ 判"你选了 API Key 却没填" ⇒ **升级即全废**。
+
+**修法**：`DEFAULTS.authMode` 改空串（空 = 没选过，按凭据推断）；只有显式保存过的才严格校验。
+
+**教训**：加严校验前，先枚举「字段不存在 / 从没保存过」的状态。
+
+### 25.7 用 `anyOk` 概括多段结果，失败的段直接消失
+
+**（review 阶段拦下）** 纯语音回复写两段标记，第 1 段成功、第 2 段失败，`anyOk` 仍为 true
+⇒ 整条 `annihilate` ⇒ 第 2 段内容用户永远收不到。
+
+**修法**：按段记账 —— 成功的发语音、失败的用 `ctx.send()` 补发文字。
+
+**教训**：聚合判断（any/all/ok）只能决定"要不要继续"，不能决定"要不要丢数据"。
+
+### 25.8 长期有效的四条（与具体坑无关，但都在这项目上踩过）
+
+1. **改 `lib/*.mjs` 热刷不生效** —— ESM 按 URL 缓存，`?v=mtime` 只刷主文件。
+   要么改名（`dskit-config-v5.mjs`），要么重启。**至今没根治。**
+2. **产物看两处** —— Windows 中文路径下某些工具会"报成功但没写盘"，改完 `grep src` 和 `grep dist` 数一遍。
+3. **出站扩展的失败是静默的** —— 有 3 秒硬超时，异常被吞掉只剩一条 note。排查先看 note。
+4. **扩展与内置工具是两套发送路径** —— 内置直接用 `ch.sender`（原对象），扩展走能力包（`deps.sender`）。
+   一条通不代表另一条通，**要分别验**。

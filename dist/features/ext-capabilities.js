@@ -197,28 +197,53 @@ export function makeExtCaps(deps) {
             return false;
         },
         media: (k, source) => {
-            if (!deps.sender?.sendMedia)
+            if (!deps.sender?.sendMedia) {
+                // ★ 2026-11-14（CodeRabbit 指出的排查盲区）：这条**原来直接返回 false、而且不留任何记录**。
+                //   实测：扩展报"发送失败"，而 ext-deliver.log 里一条都没有 —— 根本无从下手。
+                //   现在把"没有通道"这个原因也记进去（`sender` 是空壳通常意味着 findSessionRec 没命中会话）。
+                noteDeliver('media', false, new Error('没有发送通道：deps.sender.sendMedia 不可用（会话记录没找到？）'));
                 return Promise.resolve(false);
+            }
             return send(`media(${k})`, () => deps.sender.sendMedia(deps.replyTarget, k, toMediaSource(source)));
         },
         image: (source) => {
-            if (!deps.sender?.sendMedia)
+            if (!deps.sender?.sendMedia) {
+                // ★ 2026-11-14（CodeRabbit 指出的排查盲区）：这条**原来直接返回 false、而且不留任何记录**。
+                //   实测：扩展报"发送失败"，而 ext-deliver.log 里一条都没有 —— 根本无从下手。
+                //   现在把"没有通道"这个原因也记进去（`sender` 是空壳通常意味着 findSessionRec 没命中会话）。
+                noteDeliver('image', false, new Error('没有发送通道：deps.sender.sendMedia 不可用（会话记录没找到？）'));
                 return Promise.resolve(false);
+            }
             return send('image', () => deps.sender.sendMedia(deps.replyTarget, 'image', toMediaSource(source)));
         },
         voice: (source) => {
-            if (!deps.sender?.sendMedia)
+            if (!deps.sender?.sendMedia) {
+                // ★ 2026-11-14（CodeRabbit 指出的排查盲区）：这条**原来直接返回 false、而且不留任何记录**。
+                //   实测：扩展报"发送失败"，而 ext-deliver.log 里一条都没有 —— 根本无从下手。
+                //   现在把"没有通道"这个原因也记进去（`sender` 是空壳通常意味着 findSessionRec 没命中会话）。
+                noteDeliver('voice', false, new Error('没有发送通道：deps.sender.sendMedia 不可用（会话记录没找到？）'));
                 return Promise.resolve(false);
+            }
             return send('voice', () => deps.sender.sendMedia(deps.replyTarget, 'voice', toMediaSource(source)));
         },
         video: (source) => {
-            if (!deps.sender?.sendMedia)
+            if (!deps.sender?.sendMedia) {
+                // ★ 2026-11-14（CodeRabbit 指出的排查盲区）：这条**原来直接返回 false、而且不留任何记录**。
+                //   实测：扩展报"发送失败"，而 ext-deliver.log 里一条都没有 —— 根本无从下手。
+                //   现在把"没有通道"这个原因也记进去（`sender` 是空壳通常意味着 findSessionRec 没命中会话）。
+                noteDeliver('video', false, new Error('没有发送通道：deps.sender.sendMedia 不可用（会话记录没找到？）'));
                 return Promise.resolve(false);
+            }
             return send('video', () => deps.sender.sendMedia(deps.replyTarget, 'video', toMediaSource(source)));
         },
         file: (source) => {
-            if (!deps.sender?.sendMedia)
+            if (!deps.sender?.sendMedia) {
+                // ★ 2026-11-14（CodeRabbit 指出的排查盲区）：这条**原来直接返回 false、而且不留任何记录**。
+                //   实测：扩展报"发送失败"，而 ext-deliver.log 里一条都没有 —— 根本无从下手。
+                //   现在把"没有通道"这个原因也记进去（`sender` 是空壳通常意味着 findSessionRec 没命中会话）。
+                noteDeliver('file', false, new Error('没有发送通道：deps.sender.sendMedia 不可用（会话记录没找到？）'));
                 return Promise.resolve(false);
+            }
             return send('file', () => deps.sender.sendMedia(deps.replyTarget, 'file', toMediaSource(source)));
         },
         // ── 官方 API（自带 token；注入了 apiCall 就优先用注入的）──────────
