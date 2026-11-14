@@ -50,7 +50,18 @@ function matchRule(rule, text, msg, logger) {
     //   每条入站都会抛 TypeError 冒出去 ⇒ 该条消息既不进上下文也不唤醒，静默丢失。
     if (Array.isArray(c.contentKeywords) && c.contentKeywords.length > 0) {
         const tl = text.toLowerCase();
-        parts.push(c.contentKeywords.some(k => k && tl.includes(String(k).toLowerCase())));
+        // ★ 2026-11-14（CodeRabbit）：元素也可能**无法转成字符串**（如 { toString: null }），
+        //   那样 String(k) 会抛 TypeError，而从 applyInjectRules 冒出去会把整条入站弄丢。
+        parts.push(c.contentKeywords.some((k) => {
+            if (!k)
+                return false;
+            try {
+                return tl.includes(String(k).toLowerCase());
+            }
+            catch {
+                return false;
+            }
+        }));
     }
     if (parts.length === 0)
         return false; // 无条件=永不触发
