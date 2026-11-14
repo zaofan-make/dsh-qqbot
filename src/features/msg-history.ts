@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join } from 'node:path';
 import type { MsgKind } from './msg-recent.js';
 import { md5sInText, normQuoteText } from '../shared/quote-match.js';
-import { appendLine, closeFile, ensureDir } from '../shared/async-append.js';
+import { appendLine, closeFile, ensureDir, forgetDirTree } from '../shared/async-append.js';
 
 /** 默认保留天数（主人定：7 天） */
 export const KEEP_DAYS = 7;
@@ -225,7 +225,15 @@ export function pruneOld(): void {
     const dir = join(historyRoot, d);
     let files: string[] = [];
     try {
-      if (!statSync(dir).isDirectory()) continue;
+      const st = statSync(dir);
+      if (!st.isDirectory()) continue;
+      // ★ 2026-11-15（CodeRabbit 那条"目录被删后缓存没失效"引出的**更深的问题**）：
+      //   写入改成异步 WriteStream 之后，目录里可能**暂时只有名字 .txt、还没有 .jsonl**
+      //   （open 是异步的，同步循环里连着写很多条时尤其明显）。
+      //   这时下面的 `alive === 0` 判断会把**正在使用的会话目录整个删掉**，
+      //   之后的写入就落进已被删除的 fd，那个群从此没有历史。
+      //   保护：最近 2 小时内动过的目录一律不碰（pruneOld 本来就是清 7 天前的东西，不急）。
+      if (Date.now() - st.mtimeMs < 2 * 60 * 60 * 1000) continue;
       files = readdirSync(dir);
     } catch {
       continue;
@@ -244,6 +252,19 @@ export function pruneOld(): void {
     }
     if (alive === 0) {
       try {
+        // ★ 2026-11-15（CodeRabbit 抓到）：删掉整个会话目录后，必须把
+        //   `ensuredDirs` / 写入流 / 本文件的 dayCache 全部作废 ——
+        //   否则 `ensureDir` 一直以为目录还在，后续 append 直接失败且**静默重复**，
+        //   那个群从此写不进历史（直到重启）。
+        forgetDirTree(dir);
+        for (const day of [...dayCache.keys()]) {
+          if (day.startsWith(dir)) dayCache.delete(day);
+        }
+        // marked 的键是 `scope:peerId`（如 group:xxx），目录名是 `group_xxx` —— 转换后清掉，
+        // 这样下次 markSession 会重建名字文件。
+        const base = dir.split(/[\\/]/).pop() ?? '';
+        const us = base.indexOf('_');
+        if (us > 0) marked.delete(base.slice(0, us) + ':' + base.slice(us + 1));
         rmSync(dir, { recursive: true, force: true });
       } catch { /* ignore */ }
     }
@@ -340,10 +361,13 @@ export function appendMsgHistory(
     appendLine(fp, JSON.stringify(row));
     // ★ 增量更新当天缓存：否则"写一条 → 下次查询判定 mtime 变了 → 重扫 1000 行"，
     //   群消息密集时等于每次查询都重扫一遍，缓存就白加了。
-    const c = dayCache.get(fp);
+    // ★ 2026-11-15（CodeRabbit 抓到）：如果还没有缓存，**先载入一次**再增量加 ——
+    //   否则"刚接受的消息"要等落盘才对同进程查询可见，紧接着的 findSenderByQuote 会漏掉它。
+    const c = dayCache.get(fp) ?? (() => { readDayRows(fp, true); return dayCache.get(fp); })();
     if (c) {
       c.rows.unshift(row);
-      if (c.rows.length > CACHE_ROWS) c.rows.length = CACHE_ROWS;
+      // ⚠️ 不再按 CACHE_ROWS 截断：截断时 byNx/byMd5/sorted 里会残留已不在 rows 中的记录
+      //   （CodeRabbit 指出）。行数由 MAX_READ_LINES 兜底。
       // 增量维护双向前缀索引（不然下次查询判定 mtime 变了 → 重扫 500 行重建）
       for (const md of Array.isArray(row.f) ? row.f : []) {
         const k = String(md).toLowerCase();
@@ -477,7 +501,13 @@ function readDayRows(file: string, cacheable: boolean): HistoryRec[] {
   try {
     text = readFileSync(file, 'utf8');
   } catch {
-    return [];
+    // ★ 2026-11-15（CodeRabbit 抓到）：文件还不存在时，cacheable 也要**建一个空缓存** ——
+    //   这样 append 拿到的就是同一份内存对象、能增量更新它；
+    //   否则"刚接受的那条消息"对同进程的紧随查询不可见（要等它落盘）。
+    if (cacheable && !dayCache.has(file)) {
+      dayCache.set(file, { key: 'dirty', rows: [], sorted: [], byNx: new Map(), byMd5: new Map() });
+    }
+    return dayCache.get(file)?.rows ?? [];
   }
   const lines = text.split('\n');
   const start = Math.max(0, lines.length - MAX_READ_LINES);
@@ -488,17 +518,19 @@ function readDayRows(file: string, cacheable: boolean): HistoryRec[] {
     try {
       const r = JSON.parse(line) as HistoryRec;
       if (r?.id) rows.push(r);
-      if (cacheable && rows.length >= CACHE_ROWS) break;
     } catch { /* 坏行跳过 */ }
   }
+  // ⚠️ 2026-11-15（CodeRabbit 抓到）：这里**不能**按 CACHE_ROWS 截断缓存 ——
+  //   通用查询（撤回、历史注入）用的是同一个函数，截断会让它们只看到最近 500 条，
+  //   比改动前少。缓存行数由 MAX_READ_LINES 兜底，一天的量远小于它。
   if (cacheable) {
     let key = 'dirty';
     try {
       const st = statSync(file);
       key = st.mtimeMs + ':' + st.size;
     } catch { /* 文件没了也无所谓 */ }
-    // ★ 建索引时顺手预归一化（`_nx`）：匹配时要拿每条正文跟被引原文比，
-    //   若每次现算 `normQuoteText`（5 条正则替换），500 条就是 2500 次正则 —— 实测占 7ms 的大头。
+    // 建索引时顺手预归一化（`_nx`）：匹配时要拿每条正文跟被引原文比，
+    // 若每次现算 `normQuoteText`（5 条正则替换），几百条就是上千次正则 —— 实测占 7ms 的大头。
     dayCache.set(file, { key, rows, ...buildIndex(rows) });
     // 控制缓存规模：只留最近几天（跨天时把最老的挤掉）
     if (dayCache.size > 8) {

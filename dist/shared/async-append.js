@@ -21,14 +21,24 @@
  * 崩溃时最多丢最后几条还没落盘的行。这些都是**历史/日志类**数据，
  * 丢几条无所谓；用 4.4ms×每条消息 换这个，不值。
  */
-import { createWriteStream, mkdirSync } from 'node:fs';
+import { createWriteStream, fsyncSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 const NL = String.fromCharCode(10);
-/** 文件路径 → 常开的写入流 */
+/** 文件路径 → 常开的写入流（Map 迭代顺序＝打开顺序，最旧的在前） */
 const streams = new Map();
+/**
+ * 同时打开的写入流上限（CodeRabbit 审查指出）。
+ * 流的键是**文件路径**，而历史台账是"群 × 天"一个文件 ——
+ * 群一多、跑得久 fd 会一直涨。超限时把最旧的关掉，下次写它再重新开。
+ */
+const MAX_STREAMS = 64;
 /**
  * 已确认存在的目录（`mkdirSync` 即使目录已存在也要一次系统调用，实测约 50~100µs）。
  * 每条群消息都会走到建目录这一步，缓存一下就是纯赚。
+ *
+ * ⚠️ **缓存必须能被失效**：`msg-history.pruneOld` 会删掉过期群的目录，
+ *   如果这里还记着"已建"，后续 `ensureDir` 直接跳过 → 目录永远不会被重建 →
+ *   **那个群从此写不进历史**（直到重启）。所以有 `forgetDirTree`。
  */
 const ensuredDirs = new Set();
 /** 确保目录存在（带进程内缓存，重复调用近乎免费） */
@@ -43,6 +53,41 @@ export function ensureDir(dir) {
         /* 建不出来就让后续写入自己失败 */
     }
 }
+/**
+ * ★ 目录被**删除**之后必须调这个（2026-11-15，CodeRabbit 抓到）。
+ * 不清缓存的话，`ensureDir` 会一直以为目录还在、直接跳过 mkdir →
+ * 之后每次 append 都写进不存在的路径、失败、而且**静默重复下去**。
+ */
+export function forgetDirTree(dir) {
+    if (!dir)
+        return;
+    ensuredDirs.delete(dir);
+    for (const key of [...streams.keys()]) {
+        if (key.startsWith(dir))
+            closeFile(key);
+    }
+}
+/** 关掉某个文件的流；**关之前先把内核缓冲刷到盘**（见函数内注释） */
+export function closeFile(file) {
+    const s = streams.get(file);
+    if (!s)
+        return;
+    streams.delete(file);
+    try {
+        // ★ 2026-11-15（CodeRabbit 抓到）：原来只有 `s.end()`，它是异步的 ——
+        //   调用方紧接着 `readFileSync` 可能读到**还没落盘**的内容，
+        //   压缩/滚动时据此生成快照就会把最新几行截掉。
+        //   这里先对 fd 做一次同步 fsync，保证"关之前数据已经在盘上"。
+        const fd = s.fd;
+        if (typeof fd === 'number' && fd >= 0)
+            fsyncSync(fd);
+    }
+    catch { /* 刷不动也只能继续 */ }
+    try {
+        s.end();
+    }
+    catch { /* ignore */ }
+}
 /** 追加一行（自动补换行、自动建目录）。出错只丢这一条，不抛。 */
 export function appendLine(file, line) {
     const text = String(line ?? '');
@@ -50,6 +95,12 @@ export function appendLine(file, line) {
         return;
     let s = streams.get(file);
     if (!s) {
+        // 超上限：淘汰最旧的那条流
+        if (streams.size >= MAX_STREAMS) {
+            const oldest = streams.keys().next().value;
+            if (oldest !== undefined)
+                closeFile(oldest);
+        }
         try {
             ensureDir(dirname(file));
             s = createWriteStream(file, { flags: 'a' });
@@ -69,20 +120,6 @@ export function appendLine(file, line) {
     catch {
         streams.delete(file);
     }
-}
-/**
- * 关掉某个文件的写入流。
- * **重写 / 重命名 / 删除这个文件之前必须调**，否则数据会写进已经被替换的旧文件。
- */
-export function closeFile(file) {
-    const s = streams.get(file);
-    if (!s)
-        return;
-    streams.delete(file);
-    try {
-        s.end();
-    }
-    catch { /* 关不掉也没别的办法 */ }
 }
 /** 全部冲刷关闭（进程退出前用；best effort，不强求 fsync） */
 export function flushAll() {

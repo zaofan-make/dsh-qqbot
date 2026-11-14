@@ -230,14 +230,20 @@ export async function handleInbound(
             : 'file';
     _text = _kind === 'text' ? String(msg.content ?? '') : `[${_kind}]`;
     // ★ 2026-11-14（主人定：不能另开独立台账）：图片指纹记进**历史台账本身**的 `f` 字段。
-    //   这样"这张图是谁发的"全从历史台账一个数据源查，attribution.jsonl 那本独立账可以撤掉。
+    //   这样"这张图是谁发的"全从历史台账一个数据源查。
     //   QQ 的图片文件名就是内容 MD5，白拿，不用下载也不用识图。
+    // ★ 2026-11-15（CodeRabbit 抓到）：**不能只按消息级 `_kind === 'image'` 判断** ——
+    //   QQ 有时把图报成 `content_type: 'file'`（比如超过尺寸阈值、或从某些端发），
+    //   那样这条整体被归成 `file`，图指纹就漏采集了，之后引用这张图依然认不出人。
+    //   改成逐附件按**扩展名**判断：文件名是 32 位 hex + 图片后缀就采。
     const _imgs: string[] = [];
-    if (_kind === 'image') {
-      for (const a of _atts as Array<{ filename?: string }>) {
-        const v = md5OfFilename(typeof a?.filename === 'string' ? a.filename : undefined);
-        if (v && !_imgs.includes(v)) _imgs.push(v);
-      }
+    for (const a of _atts as Array<{ filename?: string; contentType?: string }>) {
+      const fn = typeof a?.filename === 'string' ? a.filename : undefined;
+      const v = md5OfFilename(fn);
+      if (!v) continue;
+      const isImg = /\.(jpe?g|png|gif|webp|bmp)$/i.test(String(fn ?? ''))
+        || /^image\//i.test(String(a?.contentType ?? ''));
+      if (isImg && !_imgs.includes(v)) _imgs.push(v);
     }
     appendMsgHistory(scope, String(peerId ?? ''), {
       id: String(msg.messageId ?? ''),
