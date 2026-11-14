@@ -75,7 +75,7 @@ export function forgetDirTree(dir) {
  *   所以改成「写完等一会儿就关」：群消息密集时整段时间内只开一次流（还是微秒级），
  *   停下来 2 秒后自动 fsync + end，文件立刻可被其它程序打开。
  */
-const IDLE_CLOSE_MS = 800;
+const IDLE_CLOSE_MS = 2000;
 /** 文件路径 → 空闲关闭定时器 */
 const idleTimers = new Map();
 /** 重置某个文件的"空闲关闭"计时器 */
