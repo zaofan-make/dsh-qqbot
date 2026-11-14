@@ -198,6 +198,16 @@ export interface ExtensionToolDef {
    * ⚠️ 账号参数只交给本机 `.qqbot-extensions/tools/*.mjs`（= 主人自己写的代码），与内置工具同权限。
    */
   expose?: 'qq' | 'all';
+  /**
+   * 条件可见（2026-11-14，主人要求「没配 API 就不让 AI 看见这些工具」）：
+   * 注册前调用，返回 false ⇒ **不注册**（AI 完全看不见，不是"看得见但报错"）。
+   * 不声明 = 永远可见，与老扩展完全兼容。
+   *
+   * 为什么这就是"热开关"：注册是按会话走的（mountChannelTools），
+   * 新会话 / `/tools-reload` 都会重新求值，所以配置一改，下一轮就生效。
+   * env = { agent, config, manager, dataRoot, logger }。
+   */
+  enabled?: (env: Record<string, unknown>) => boolean | Promise<boolean>;
 }
 
 function normalizeToolModule(mod: unknown, file: string, logger: Logger): ExtensionToolDef | null {
@@ -211,6 +221,7 @@ function normalizeToolModule(mod: unknown, file: string, logger: Logger): Extens
       run?: (args: Record<string, unknown>, env: Record<string, unknown>) => unknown;
       onInteraction?: ExtensionToolDef['onInteraction'];
       expose?: unknown;
+      enabled?: unknown;
     };
     const name = String(obj?.name ?? '').trim();
     if (!name || typeof obj?.run !== 'function') {
@@ -228,6 +239,8 @@ function normalizeToolModule(mod: unknown, file: string, logger: Logger): Extens
       ...(onInteraction ? { onInteraction } : {}),
       // 同上：不声明 expose 的工具，行为与老版本一模一样
       ...(obj?.expose === 'all' ? { expose: 'all' as const } : {}),
+      // 条件可见（2026-11-14）：不声明 = 永远可见
+      ...(typeof obj?.enabled === 'function' ? { enabled: obj.enabled as ExtensionToolDef['enabled'] } : {}),
     };
   } catch (err) {
     logger.warn(`[ext-tool] ${file}: 归一化失败 ${err instanceof Error ? err.message : String(err)}`);

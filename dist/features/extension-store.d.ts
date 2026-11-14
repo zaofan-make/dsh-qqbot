@@ -72,6 +72,16 @@ export interface ExtensionToolDef {
      * ⚠️ 账号参数只交给本机 `.qqbot-extensions/tools/*.mjs`（= 主人自己写的代码），与内置工具同权限。
      */
     expose?: 'qq' | 'all';
+    /**
+     * 条件可见（2026-11-14，主人要求「没配 API 就不让 AI 看见这些工具」）：
+     * 注册前调用，返回 false ⇒ **不注册**（AI 完全看不见，不是"看得见但报错"）。
+     * 不声明 = 永远可见，与老扩展完全兼容。
+     *
+     * 为什么这就是"热开关"：注册是按会话走的（mountChannelTools），
+     * 新会话 / `/tools-reload` 都会重新求值，所以配置一改，下一轮就生效。
+     * env = { agent, config, manager, dataRoot, logger }。
+     */
+    enabled?: (env: Record<string, unknown>) => boolean | Promise<boolean>;
 }
 /** 扫描并加载扩展工具目录(P4.2; 由 channel-tools 在注册时调用) */
 export declare function loadExtensionTools(cwd: string | undefined, logger: Logger): Promise<ExtensionToolDef[]>;

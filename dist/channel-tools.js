@@ -3130,6 +3130,37 @@ export async function apply(ctx, opts) {
         if (curSig)
             extSigStore.set(ctx, curSig);
         for (const def of defs) {
+            // ★ 2026-11-14（主人要求「没配 API 就不让 AI 看见这些工具」）：**条件可见**
+            //   def.enabled(env) 返回 false ⇒ **不注册**（AI 完全看不见，不是"看得见但报错"）。
+            //   注册是按会话走的，新会话 / `/tools-reload` 都会重新求值 ⇒ 改配置后下一轮就生效。
+            //   同时回收它上次注册的那份（配置从"有"变"没有"时，旧工具必须消失）。
+            if (typeof def.enabled === 'function') {
+                let vis = true;
+                try {
+                    vis = (await def.enabled({
+                        ctx,
+                        manager: qqCh?.manager ?? bridgeCh?.manager,
+                        dataRoot: extRoot,
+                        logger: ctx.logger,
+                    })) !== false;
+                }
+                catch (err) {
+                    vis = false;
+                    extDiag(`enabled() 抛错 ⇒ 按不可见处理: ${def.name} :: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                if (!vis) {
+                    const stale = myDisposers.get(def.name);
+                    if (stale) {
+                        try {
+                            stale();
+                        }
+                        catch { /* 旧句柄已失效 */ }
+                        myDisposers.delete(def.name);
+                    }
+                    extDiag('条件隐藏(未启用): ' + def.name);
+                    continue;
+                }
+            }
             // ★ expose:'all' 的工具**不在这里注册** —— 交给 ensureExtToolsGlobal 挂到插件根
             //   （只有挂到那一层，web / 终端等非 QQ 会话才继承得到；在这儿重复注册的话，
             //    QQ 会话会同时看到「带后缀」和「不带后缀」两套工具）

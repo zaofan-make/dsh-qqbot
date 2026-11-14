@@ -1,3 +1,31 @@
+## 1.12.30 (2026-11-14)
+
+### 新：扩展工具支持「条件可见」（`enabled` 钩子）
+
+有些扩展工具依赖外部 API Key —— 没配就**不该出现在工具表里**（而不是"看得见、一调就报错"）。
+
+- `ExtensionToolDef` 新增可选 `enabled(env) => boolean | Promise<boolean>`：注册前求值，
+  返回 false 就**不注册**，并回收它上次注册的那份
+- `env` 给到 `{ ctx, manager, dataRoot, logger }`；不声明 `enabled` 的扩展行为完全不变
+- 注册本来就走"按会话 + 热刷"路径，所以这就是**热开关**：配置改完下一轮生效，不用重启
+
+### 新：扩展包 `deepseek-kit`（DeepSeek 全家桶应用 API）
+
+把官方 2026-11-13 发布的全家桶接成一套工具（扩展包形态，可上架插件市场）：
+
+| 工具/扩展 | 能力 |
+|---|---|
+| `dskit_search` | 服务端联网搜索：`thinking=true` 走深度思考搜索（多步 search / open_page / find_in_page），`images=` 按图搜索，回答带引用 |
+| `dskit_readurl` | 阅读链接（最多 10 个 URL） |
+| `dskit_ocr` | PDF/Word/PPT/图片 → 文字，可带版面坐标；长文档落盘、只回前几页 |
+| `dskit_asr` | 本地音频 → 文字（16bit WAV / Ogg Opus） |
+| `dskit_tts` | `[语音合成]` 标记说明 + 试听 + 只存文件 |
+| 出站扩展 | 正文写 `[语音合成]…[/语音合成]` → 合成真语音消息（自带设置页 schema） |
+
+- 工具统一前缀 `dskit_`，避免与 `web_search` / `bing_search` 等撞名
+- **没填 API Key、或当前 provider 不是 DeepSeek 官方时，这些工具对 AI 完全不可见**
+- 设置页字段：apiKey / baseUrl / model / 五个能力开关 / TTS 音色与格式 / 搜索默认是否开深度思考
+
 ## 1.12.29 (2026-11-14)
 
 ### 修：机器人名带方括号时，私聊头像 markdown 整段失效

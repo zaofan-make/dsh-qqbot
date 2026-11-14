@@ -152,6 +152,8 @@ function normalizeToolModule(mod, file, logger) {
             ...(onInteraction ? { onInteraction } : {}),
             // 同上：不声明 expose 的工具，行为与老版本一模一样
             ...(obj?.expose === 'all' ? { expose: 'all' } : {}),
+            // 条件可见（2026-11-14）：不声明 = 永远可见
+            ...(typeof obj?.enabled === 'function' ? { enabled: obj.enabled } : {}),
         };
     }
     catch (err) {
