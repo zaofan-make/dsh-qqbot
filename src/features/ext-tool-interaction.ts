@@ -168,10 +168,10 @@ export function createExtToolInteractionController(deps: ExtToolInteractionDeps)
       // ④ 点击者身份：群聊看 group_member_openid，单聊看 user_openid
       const openid = String(e.group_member_openid ?? e.user_openid ?? '');
       const scope = e.group_member_openid ? 'group' : 'c2c';
-      // ★★ 2026-11-14 修（审查发现）：**优先用"点击发生的那个群"**，而不是卡片注册时的 targetId。
-      //   卡片可能被转发到别的群：原来 hit.targetId 优先 ⇒ 在转发后的群里点，
-      //   动作结果却写回**原群**（人在这儿等，回执跑去那儿）。
-      const peerId = scope === 'group' ? String(e.group_openid || hit.targetId || '') : openid;
+      // 2026-11-14 记：曾想改成 e.group_openid 优先（防"卡片转发后在别的群点击写回原群"），
+      //   但主人实测：**按钮卡片转发后会直接变成纯文本，按钮消失** ⇒ 点击事件根本不会发生，
+      //   两个值永远相同。故保持原样，不为不存在的情况增加分支。
+      const peerId = scope === 'group' ? String(hit.targetId || e.group_openid || '') : openid;
       const clickedBefore = noteClicked(cardId, buttonId, openid);
 
       // ⑤ 组 ctx 并调用（抛错=未消费，但给点击者一句回执，别让人干等）
