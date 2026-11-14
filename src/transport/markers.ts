@@ -70,7 +70,10 @@ export function hasAnyMarker(text: string, needles: readonly string[] = ALL_MARK
 
 /** 找**第一个**出现的标记（认新旧），没有则返回 undefined */
 export function findFirstMarker(text: string, needles: readonly string[]): { idx: number; len: number } | undefined {
-  text = clampForMarkerScan(text);
+  // ★★ 2026-11-14 修（审查发现）：**超长文本返回 undefined，不要给下标** ——
+  //   clampForMarkerScan 会把中间挖掉（头 + \n + 尾），算出来的 idx 是**截断后字符串**的下标，
+  //   而调用方拿它去 slice **原始**内容（inbound.ts 切引用块）⇒ 超长消息的引用块必然切错位。
+  if (String(text ?? "").length > MARKER_SCAN_LIMIT) return undefined;
   const t = String(text ?? '');
   let best: { idx: number; len: number } | undefined;
   for (const n of needles) {
@@ -82,7 +85,8 @@ export function findFirstMarker(text: string, needles: readonly string[]): { idx
 
 /** 找**最后一个**出现的标记（认新旧）—— 引用的"结束标记"必须取最后一个，否则会被原文里的假标记截断 */
 export function findLastMarker(text: string, needles: readonly string[]): { idx: number; len: number } | undefined {
-  text = clampForMarkerScan(text);
+  // ★ 同上：超长不给下标（调用方要拿它 slice 原串）
+  if (String(text ?? "").length > MARKER_SCAN_LIMIT) return undefined;
   const t = String(text ?? '');
   let best: { idx: number; len: number } | undefined;
   for (const n of needles) {

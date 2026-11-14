@@ -372,6 +372,10 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
       logger.warn(`[ext-outbound] ✗ ${f} 装载失败(已跳过, 不影响其它出站扩展): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // ★★ 2026-11-14 修（审查发现）：`resetOutboundBreaker()` 原来**全仓无调用点** ——
+  //   扩展一旦被熔断（连续把消息改坏/抛错），只有重启插件才能恢复，/tools-reload 也没用。
+  //   装载 = 复位，与入站扩展的"改文件后重载即恢复"保持一致。
+  for (const e of result.extensions) { try { resetOutboundBreaker(e.name); } catch { /* ignore */ } }
   if (bucket) bucket.loaded = result.extensions;
   if (result.total > 0) {
     logger.info(
@@ -389,15 +393,31 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
  * 调用方是 `transport/outbound-buffer.ts`：**消息真的发完之后**才调。
  * 每个扩展独立 try/catch + 单次超时保护，**绝不因为扩展报错影响发送结果**。
  */
+/** 单个出站扩展 onSent 的超时（超时只放弃它，不影响其它扩展与发送结果） */
+const NOTIFY_TIMEOUT_MS = 3000;
+
+/** 给单个 Promise 套超时；超时 reject，调用方自己吞 */
+function withTimeoutSingle<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('onSent timeout')), ms);
+    if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref();
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
 export async function notifyOutboundSent(result: OutboundSentResult, owner?: unknown): Promise<void> {
   const exts = bucketOf(owner)?.loaded ?? [];
   if (exts.length === 0) return;
-  for (const ext of exts) {
-    if (typeof ext.onSent !== 'function') continue;
-    try {
-      await Promise.resolve(ext.onSent(result));
-    } catch { /* 扩展自己炸了不影响别人 */ }
-  }
+  // ★★ 2026-11-14 修（审查发现）：注释一直写着「单次超时保护」，实现却只有 try/catch，
+  //   而且是**串行 await** —— 一个扩展卡住（比如在 onSent 里做了网络请求）会拖住后面所有扩展，
+  //   还会拖住调用方（发送完成后的收尾）。改成**并行 + 单个超时**：互不拖累。
+  await Promise.allSettled(
+    exts.filter((e) => typeof e.onSent === 'function').map(async (ext) => {
+      try {
+        await withTimeoutSingle(Promise.resolve(ext.onSent!(result)), NOTIFY_TIMEOUT_MS);
+      } catch { /* 扩展自己炸了/超时，不影响别人，也不影响发送结果 */ }
+    }),
+  );
 }
 
 export function listOutboundExtensions(): OutboundExtension[] {
