@@ -56,7 +56,10 @@ function fileVersion(p) {
         return String(Math.floor(statSync(p).mtimeMs));
     }
     catch {
-        return String(Date.now());
+        // ★★ 2026-11-14 修：**绝不能返回 Date.now()** —— 这正是上面注释明令禁止的做法。
+        //   文件在扫描后/import 前消失（或 ACL 拒绝）时每次拿到新 URL
+        //   ⇒ ESM ModuleMap 永久强引用旧模块 ⇒ 长跑内存单调上涨。
+        return '0';
     }
 }
 /** 归一化为 SDK SlashCommand: 支持 default 导出 或 具名 name/handler */
@@ -126,7 +129,9 @@ export async function loadExtensionCommands(cwd, logger) {
 }
 /** 扩展目录路径(cwd 不存在时 undefined; dock/工具展示用) */
 export function extensionCommandsDir(cwd) {
-    return cwd ? join(cwd, EXT_COMMANDS_SUBDIR) : join(process.cwd(), EXT_COMMANDS_SUBDIR);
+    // ★ 2026-11-14 修：与下面 extensionToolsDir 统一做绝对化 —— 相对 cwd 时若直接 join，
+    //   面板/xistsSync 会按 process.cwd() 解析，指向一个实际不存在的位置。
+    return cwd ? join(absCwdOf(cwd) || cwd, EXT_COMMANDS_SUBDIR) : join(process.cwd(), EXT_COMMANDS_SUBDIR);
 }
 /** 扩展工具目录路径(dock/工具展示用) */
 export function extensionToolsDir(cwd) {

@@ -1703,7 +1703,10 @@ function extractVoiceTexts(
 
   if (results.length === 0 && attachments) {
     for (const att of attachments) {
-      if (att.content_type === 'voice' && att.asr_refer_text) {
+      // ★ 2026-11-14 修（审查发现）：原来只认精确等于 'voice'，
+      //   而媒体判定用的是 /voice|audio|record|amr|silk/ —— QQ 下发 'audio/silk' 时
+      //   评分/放行按语音走，但这里一条转写都取不到 ⇒ AI 只看到一条语音 URL，答非所问。
+      if (inferMediaKind(att) === 'voice' && att.asr_refer_text) {
         results.push({
           text: att.asr_refer_text.trim(),
           source: 'asr',
