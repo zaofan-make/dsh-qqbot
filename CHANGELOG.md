@@ -1,3 +1,70 @@
+## 1.12.34 (2026-11-14)
+
+### 全仓库审查 + 多实例隔离（#49–#56，九个 PR 合并）
+
+用「按文件分隔的合并快照」把 177 个 `.ts` / 47050 行通读了一遍（三路并行 + 交叉质询），
+产出 50 条 findings，本版修掉其中 26 条。**最实质的是多实例隔离——从"一处都没做"到"全链路分桶"**。
+
+### 🔴 多实例状态互相覆盖（同进程两个机器人时，后启动的会把前者顶掉）
+
+- **出站扩展链 `cfg`/`loaded` 按实例分桶**（P1）：原来模块级单例，每个实例启动都整体覆盖
+  ⇒ A 发消息时跑的是 B 装载的扩展列表、`ctx.dataRoot` 也是 B 的，A 的语音静默失效。
+  现在 key = 归一化 dataRoot，`runOutboundChain` 用 `opts.sender`（bot 对象）反查桶；
+  查不到且多桶 ⇒ **直通（fail-closed）**，绝不拿别人的扩展规则处理这条消息。
+- **登记的 owner 必须是"真正走发送链"的对象**：`middleware-setup` 里的 SDK `bot` 与
+  `createOutboundHandler(manager, sender, …)` 的 `sender` 字面量不是同一个 ⇒ WeakMap 永远 miss。
+  新增 `registerOutboundOwner()`，在 `sender` 创建后登记它。
+- **入站重载器 / 启动钩子按 dataRoot 分桶**：A 敲 `/tools-reload` 不再刷到 B；A 卸载不再跑掉 B 的清理项，
+  `disposed` 也不再是全局布尔（原来会让 B 注册的清理"注册即退订"）。
+- **`lastSetupCtx` 实例字段 → 调用方局部 holder**：并发建会话时群1 的 `agentCtx` 不会再指向群2 的作用域。
+- **`sessionId` 轮换后没更新变量**：撞 `already exists` 后轮换成功，`record.sessionId` 仍是旧值，
+  导致 `findBySessionId` 查不到、工作区挂错、该 peer 后续 `send_media` 报"通道未就绪"。
+- **新增 `dataRootOfExec()`**：广播 / `target_group` 不再回退 `managersOf()[0]`；`channelOf` 多实例时拒绝猜测。
+- key 归一化：**反斜杠 / 大小写只在 Windows 折叠**（POSIX 上它们是合法文件名字符，无条件合并会合并两个真实目录）。
+
+### 🔴 两个「文档承诺但从未生效」的接口
+
+- **入站扩展的 `selfName` 恒为 `(匿名扩展)`**：`decorate()` 比 `s.current` 赋值早 27 行 ⇒
+  两个入站扩展的 `ctx.store` 落到同一个文件互相覆盖。改成 getter + `ensureExtSession` 创建时带归属 +
+  `makeExtCaps` 内部 `selfNow()` / `storePath()` 惰性求值（**deps 里也要传 getter**，只改返回的 caps 不够）。
+- **`env.registerRoute()` 从来没成功注册过路由**：`extId` 没人传 ⇒ 恒空 ⇒ 静默 `return false`。
+  现在回落 `selfName`、按与派发端 `extCfgSafeId` **逐字一致**的规则清洗、失败留痕。
+
+### 🔴 静默丢数据
+
+- **`chunker` 单行超限不硬切**：一行 6000 字（base64 / 长 URL，无换行）会整块被 QQ 拒收 ⇒ 正文丢失。
+  新增 `hardSplit()`（按 limit 硬切、切点避开代理对、**修掉 limit=1 时的死循环**）。
+- **`msg-content-cache` 新行不进 `list`**：台账满 2000 行时最新那条被物理删除。
+- **`streaming-writer` 最后一次 `update()` 失败**：只 warn 不重试 ⇒ 句尾永久丢失。现在先重试一次，仍失败则明确告警。
+- **纯语音多段**：第一段成功就整条 `annihilate` ⇒ 第二段内容消失。改成按段记账，失败段补发文字。
+- **`idle-evictor` 只看 `lastActivity`**：长任务跑到第 30 分钟被 `agent.cancel` 掐掉。
+  加 `turnActive` 跳过 + **有界逃逸**（超过超时 4 倍仍算卡死，照常回收）。
+
+### 自动撤回
+
+- **两处读不同来源**（中间件读磁盘、bootstrap 读闭包）⇒ 面板改 `dryRun` 后一条生效一条失效。
+  抽出 `features/auto-recall.ts` 作唯一解析入口（磁盘优先 + 1 秒 TTL 缓存，顺带解决每条群消息同步读盘）。
+- **默认命名空间写错**：`im-qqbot-2` → `im-qqbot`（与 `index.ts` 的默认一致），否则主实例会去读别人的配置。
+- **`mode=drop` 读错配置层级**：顶层 `config.autoRecall` → `config.groupAdmin.autoRecall`。
+- **`dryRun` 演练模式仍会吞消息**：两处（bootstrap + middleware）都补 `&& ar.dryRun !== true`。
+
+### 其它
+
+- **禁言截止时间时区**（4 处）：本机时区拼串 + 硬写 `+08:00` ⇒ TZ=UTC 时差 8 小时。统一成 UTC+8 墙上时间。
+- **`noteDeliver` 每次发送成功都同步写盘** ⇒ 成功静默，只在失败时留痕。
+- **「没有发送通道」不再静默**：5 个媒体方法在缺通道时也写 `ext-deliver.log`（写明"会话记录没找到？"）。
+- **`extension-store.fileVersion`** catch 分支返回 `Date.now()`（正是注释禁止的做法）⇒ ESM ModuleMap 永久强引用，内存涨。
+- **`inject-rules` 的 `contentKeywords` 未校验**：缺字段 / 元素无法转字符串 ⇒ 每条入站抛 TypeError，消息静默丢失。
+- **语音转录只认 `content_type === 'voice'`**，而媒体判定是 `/voice|audio|record|amr|silk/` ⇒ `audio/silk` 拿不到转写。
+- **`/outmode` 非法参数静默切到 adaptive**：现在校验白名单，不认识就不改配置并提示。
+- **`msg_seq` 同秒撞车**：改用进程内单调递增计数器（含另外三处同样写法的发送路径）。
+
+### 验证
+
+- `npm run build`（tsc）通过
+- `ext-inbound.test.ts` 81 passed / `ext-hooks.test.ts` 16 passed / `outbound-buffer.test.ts` 4 passed / `msg-content-cache.test.ts` 5 passed
+- **实机验收**：同进程两台机器人各自发语音，**两台都出声**（修复前只有后启动那台能出）
+
 ## 1.12.33 (2026-11-14)
 
 ### 全仓库审查：3 路并行通读 140 个文件 / 39622 行，修掉前 10 条
