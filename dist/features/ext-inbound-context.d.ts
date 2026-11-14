@@ -168,13 +168,28 @@ export interface ExtCtxSession {
     };
     /** 本消息里 rewrite 过几次（诊断） */
     rewriteCount: number;
-    /** 本消息里破坏性动作成功过几次（熔断统计看增量） */
+    /** 本消息里破坏性动作成功过几次（**总数**，只用于诊断） */
     destructiveCount: number;
+    /**
+     * ★★ 2026-11-14（CodeRabbit）：按**扩展路径**分开记的破坏性动作次数。
+     *   熔断的"增量"必须看这个，不能看总数 ——
+     *   A 只调 `await next()`、下游 B 做了破坏性动作时，总数也涨了，
+     *   于是 A 的增量算成 1，连跑 10 条就轮到 A 被比例熔断（它一次动作都没做）。
+     */
+    destructiveByPath: Map<string, number>;
     /** 参与记账去重：同一个扩展在同一条消息上（早+晚）只记一次参与 */
     noted: Set<string>;
     /** 已告警过的提示（一次性，防刷屏） */
     warned: Set<string>;
 }
+/**
+ * 记一次破坏性动作（按**当前扩展路径**分开记）。
+ * 熔断的增量判定必须用 {@link destructiveCountOf} 按同一路径读，
+ * 否则 A 的 `await next()` 会把下游 B 的动作算成自己的。
+ */
+export declare function bumpDestructive(s: ExtCtxSession): void;
+/** 读某个扩展路径在本条消息里做过的破坏性动作次数（不传就用当前归属） */
+export declare function destructiveCountOf(s: ExtCtxSession, key?: string): number;
 /** 取（必要时建）某个 ctx 的扩展会话，并把动作 API 挂上去（幂等） */
 export declare function ensureExtSession(ctx: MiddlewareContext, env: ExtRunEnv, current?: {
     file: string;

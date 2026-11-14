@@ -6,6 +6,21 @@ import { makeExtCaps } from './ext-capabilities.js';
 import { replaceBotMention } from '../shared/mention-clean.js';
 import { appendAudit, checkDestructiveAllowed, isMuted as stateIsMuted, mutedUsers as stateMutedUsers, muteUser as stateMuteUser, noteDestructive, readExtState, unmuteUser as stateUnmuteUser, writeExtState, } from './ext-inbound-state.js';
 const SESSIONS = new WeakMap();
+/**
+ * 记一次破坏性动作（按**当前扩展路径**分开记）。
+ * 熔断的增量判定必须用 {@link destructiveCountOf} 按同一路径读，
+ * 否则 A 的 `await next()` 会把下游 B 的动作算成自己的。
+ */
+export function bumpDestructive(s) {
+    const k = (s.current?.path || s.current?.file) ?? "";
+    s.destructiveByPath.set(k, (s.destructiveByPath.get(k) ?? 0) + 1);
+    s.destructiveCount += 1;
+}
+/** 读某个扩展路径在本条消息里做过的破坏性动作次数（不传就用当前归属） */
+export function destructiveCountOf(s, key) {
+    const k = key ?? ((s.current?.path || s.current?.file) ?? "");
+    return s.destructiveByPath.get(k) ?? 0;
+}
 /** 取（必要时建）某个 ctx 的扩展会话，并把动作 API 挂上去（幂等） */
 export function ensureExtSession(ctx, env, current) {
     const key = ctx;
@@ -18,6 +33,7 @@ export function ensureExtSession(ctx, env, current) {
             phase: 'inbound',
             rewriteCount: 0,
             destructiveCount: 0,
+            destructiveByPath: new Map(),
             noted: new Set(),
             warned: new Set(),
         };
@@ -226,7 +242,7 @@ function annihilate(ctx, s, opts) {
             return false;
         }
         s.annihilate = reason ? { reason } : {};
-        s.destructiveCount += 1;
+        bumpDestructive(s);
         noteDestructive((s.current?.path || s.current?.file) ?? '');
         audit(s, { action: 'annihilate', target: sender, reason, text: textOf(ctx), result: ownerAck ? 'ok-owner-ack' : 'ok' });
         return true;
@@ -392,7 +408,7 @@ function silentInto(ctx, s, arg) {
         const msg = createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } });
         inject.call(agent, msg);
         s.silentInto = { injected: true, result: 'ok', chars: body.length };
-        s.destructiveCount += 1; // 熔断统计认它（与 annihilate/muteUser 同一本账）
+        bumpDestructive(s); // 熔断统计认它（与 annihilate/muteUser 同一本账）
         noteDestructive((s.current?.path || s.current?.file) ?? '');
         audit(s, { action: 'silentInto', target: senderOf(ctx), reason, text: body, result: 'ok' });
         return true;
@@ -500,7 +516,7 @@ function muteUser(ctx, s, opts) {
             audit(s, { action: 'muteUser', target: id, reason, result: 'failed-write' });
             return false;
         }
-        s.destructiveCount += 1;
+        bumpDestructive(s);
         noteDestructive((s.current?.path || s.current?.file) ?? '');
         audit(s, {
             action: 'muteUser',

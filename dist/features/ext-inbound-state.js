@@ -408,17 +408,25 @@ export function upgradeLastParticipation(file) {
 }
 /** 诊断：某扩展的熔断状态快照 */
 export function breakerStatus(file) {
-    // ★ 2026-11-14：熔断 key 已改成绝对路径，但诊断/测试常传短名（breaker.mjs）。
-    //   精确查不到时按「路径后缀」兜底匹配一次，避免为改 key 而改一堆调用点。
-    let s = breakerOf(file);
-    if (!s.tripped && s.ring.length === 0) {
-        const short = String(file || "");
+    // ★★ 2026-11-14（CodeRabbit）：查询**不能创建状态** ——
+    //   原来走 breakerOf(file)，键不存在时会插入一条空记录；
+    //   于是「先查 x.mjs、之后熔断 /pack/x.mjs」时，再查 x.mjs 会命中那条更早插入的空记录，
+    //   错误地报告"未熔断"。现在：先只读精确查，再找唯一的路径后缀匹配，都不建记录。
+    const short = String(file || "");
+    let s = breakers.get(short);
+    if (!s || (!s.tripped && s.ring.length === 0)) {
+        let suf;
         for (const [k, v] of breakers) {
-            if (k === short || k.endsWith("/" + short) || k.endsWith("\\" + short)) {
-                s = v;
+            if (k !== short && (k.endsWith("/" + short) || k.endsWith("\\" + short))) {
+                suf = v;
                 break;
             }
         }
+        if (suf && (!s || (!s.tripped && s.ring.length === 0)))
+            s = suf;
+    }
+    if (!s) {
+        return { participated: 0, destructive: 0 };
     }
     const out = {
         participated: s.ring.length,

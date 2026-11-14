@@ -107,6 +107,7 @@ import { EXT_INBOUND_SUBDIR } from './extension-store.js';
 import { registerExtInboundReloader } from './ext-reload.js';
 import { enterExtension, ensureExtSession, sessionOf, } from './ext-inbound-context.js';
 import { noteParticipation, resetBreaker, upgradeLastParticipation } from './ext-inbound-state.js';
+import { destructiveCountOf } from './ext-inbound-context.js';
 /** 扩展文件允许的扩展名（与 extension-store 的 ALLOWED_EXT 同款） */
 const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
 /** 入站扩展目录（相对数据根） */
@@ -275,9 +276,9 @@ function runEnvOf(opts, logger) {
 }
 /** 记一次"该扩展参与了这条消息"，返回熔断原因（有的话由调用方告警） */
 function noteHook(s, ext, destructiveBefore, logger) {
-    const destructive = s.destructiveCount > destructiveBefore;
-    // ★ 2026-11-14：参与/熔断的 key 一律用**绝对路径**（与 resetBreaker 对齐）
     const key = ext.path || ext.file;
+    const destructive = destructiveCountOf(s, key) > destructiveBefore; // ★ 按路径比较，别用总数
+    // ★ 2026-11-14：参与/熔断的 key 一律用**绝对路径**（与 resetBreaker 对齐）
     if (s.noted.has(key)) {
         // 早+晚两个挂点：同一条消息只记一次参与；但晚挂点又做了破坏性动作 → 把那条记录升级成 true
         if (destructive) {
@@ -360,7 +361,11 @@ export async function runEarlyInboundExtensions(exts, ctx, finalNext, logger, op
             return onward;
         };
         const s = enterExtension(ctx, env, ext, 'inbound');
-        const before = s.destructiveCount;
+        // ★★ 2026-11-14（CodeRabbit）：下游扩展在 next() 里会把 s.current 改成自己，
+        //   返回本扩展时必须恢复，否则它随后的 silentInto / muteUser 会记到下游头上。
+        const prevCur = s.current;
+        const prevPhase = s.phase;
+        const before = destructiveCountOf(s, ext.path || ext.file); // ★ 按路径取基线
         try {
             await hook(ctx, innerNext);
         }
@@ -389,6 +394,10 @@ export async function runEarlyInboundExtensions(exts, ctx, finalNext, logger, op
         }
         if (onward)
             await onward;
+        // ★★ 2026-11-14（CodeRabbit）：恢复上游归属 —— 下游在 next() 里覆盖了 s.current，
+        //   不回填的话本扩展接下去的动作会被算到下游那条路径的账上（熔断 key 已按路径分桶）。
+        s.current = prevCur;
+        s.phase = prevPhase;
         noteHook(s, ext, before, logger);
     };
     await step(0);
@@ -423,7 +432,10 @@ export async function runInboundExtensions(exts, ctx, finalNext, logger, opts) {
             return onward;
         };
         const s = enterExtension(ctx, env, ext, 'decide');
-        const before = s.destructiveCount;
+        // ★★ 2026-11-14（CodeRabbit）：同上，进下游前保存、出来后恢复归属
+        const prevCur = s.current;
+        const prevPhase = s.phase;
+        const before = destructiveCountOf(s, ext.path || ext.file); // ★ 按路径取基线
         try {
             await ext.middleware(ctx, innerNext);
         }
@@ -452,6 +464,10 @@ export async function runInboundExtensions(exts, ctx, finalNext, logger, opts) {
         }
         if (onward)
             await onward;
+        // ★★ 2026-11-14（CodeRabbit）：恢复上游归属 —— 下游在 next() 里覆盖了 s.current，
+        //   不回填的话本扩展接下去的动作会被算到下游那条路径的账上（熔断 key 已按路径分桶）。
+        s.current = prevCur;
+        s.phase = prevPhase;
         noteHook(s, ext, before, logger);
     };
     await step(0);

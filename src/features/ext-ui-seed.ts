@@ -99,8 +99,16 @@ function pickRoots(opts: SeedOpts): string[] {
     //   Windows 上 D:\a\b 与 D:/a/b 是同一个目录，但 key 不同 ⇒ 同一份数据根被扫两遍；
     //   POSIX 上大小写是区分的，无条件小写又会把两个真实目录合并。
     //   统一成：反斜杠/大小写只在 Windows 折叠。
-    const plain = s.replace(/[\\/]+/g, "/");
-    const key = process.platform === "win32" ? plain.toLowerCase() : s.replace(/\/+$/, "");
+    const key = process.platform === "win32"
+      ? (() => {
+          // Windows：折叠分隔符（但**保留 UNC 的 \\server\share 双斜杠前缀**）、去尾斜杠（盘根除外）、折大小写。
+          const unc = s.startsWith("\\\\");
+          let body = s.replace(/[\\/]+/g, "/");
+          if (unc) body = "/" + body;                 // 还原成 //server/share
+          if (!/^\/\/$/.test(body) && !/^[a-zA-Z]:\/$/.test(body)) body = body.replace(/\/+$/, "");
+          return body.toLowerCase();
+        })()
+      : s.replace(/\/+$/, "");
     if (seen.has(key)) return;
     seen.add(key);
     out.push(s);
