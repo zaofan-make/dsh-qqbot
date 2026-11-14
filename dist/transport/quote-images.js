@@ -60,6 +60,14 @@ export async function prefetchQuoteImages(quote, dataRoot, logger) {
     if (!atts.length || !dataRoot)
         return 0;
     let done = 0;
+    // ★★ 2026-11-14（CodeRabbit）：**先清理，再检查/写入** ——
+    //   原来清理在写入之后：同内容文件刚好超过 KEEP_DAYS 且 URL 缓存已过期时，
+    //   会「判已存在 → 跳过写入 → 立刻被清理删掉 → 仍然 remember 这个已删路径」。
+    //   放到循环前（内部有 24h 限流，只会真扫一次）。
+    try {
+        pruneOldReferenced(join(dataRoot, '.qqbot', 'referenced'));
+    }
+    catch { /* 清理失败不影响预取 */ }
     for (const a of atts) {
         if (done >= MAX_IMAGES)
             break;
@@ -88,8 +96,6 @@ export async function prefetchQuoteImages(quote, dataRoot, logger) {
             // ★ 内容寻址：同内容只写一次（原来每次都 writeFileSync 覆盖同名文件，白写）
             if (!existsSync(file))
                 writeFileSync(file, buf);
-            // ★ 周期性回收：只删超过 KEEP_DAYS 的，且 24 小时内最多扫一次
-            pruneOldReferenced(dir);
             rememberImagePath(url, file);
             done++;
             logger?.debug?.(`[引用图片预取] 已落盘 ${file} (${buf.length}B)`);
