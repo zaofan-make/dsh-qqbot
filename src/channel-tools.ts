@@ -2902,7 +2902,12 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
     };
     const curSig = extSigOf(defs);
     const prevSig = extSigStore.get(ctx as unknown as object);
-    if (curSig && prevSig === curSig && myDisposers.size > 0) {
+    // ★ 2026-11-14（主人实测：改完 lib / 重启后工具还是隐藏）：
+    //   签名缓存只比 name/desc/schema —— `enabled` 是**运行时**判据（Key/provider 变了它就该变），
+    //   不能参与"没变化就跳过"的短路，否则配置改了也不会重新求值。
+    //   ⇒ 只要有一个工具声明了 enabled，就每次注册都重新走一遍（判定很轻，纯内存）。
+    const hasConditional = defs.some((d) => typeof d.enabled === 'function');
+    if (!hasConditional && curSig && prevSig === curSig && myDisposers.size > 0) {
       // 完全没变化 ⇒ 直接返回，避免"先拆后建"带来的永久丢失风险
       extDiag(`扩展工具未变化(${defs.length} 个)，跳过重复注册`);
       return;
