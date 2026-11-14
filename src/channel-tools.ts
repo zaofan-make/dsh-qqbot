@@ -2450,9 +2450,8 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       if (secs > 0 && picked.length > 0) {
         const senders = [...new Set(picked.filter((p) => !p.me && /^[0-9A-Za-z]{32}$/u.test(p.s)).map((p) => p.s))].slice(0, 20);
         if (senders.length > 0) {
-          const pad = (n: number): string => String(n).padStart(2, '0');
-          const ex = new Date(Date.now() + secs * 1000);
-          const rfc = `${ex.getFullYear()}-${pad(ex.getMonth() + 1)}-${pad(ex.getDate())}T${pad(ex.getHours())}:${pad(ex.getMinutes())}:${pad(ex.getSeconds())}+08:00`;
+          // ★ 2026-11-14 修：时间字段用 UTC+8 墙上时间，才配 +08:00（TZ=UTC 时原来差 8 小时）
+          const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
           let mOk = 0;
           for (const sid of senders) {
             const mr = await ga.client.setMemberMute(gid, sid, rfc);
@@ -2493,10 +2492,9 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
-      const pad = (n: number): string => String(n).padStart(2, '0');
-      const expire = args.action === 'mute' ? new Date(Date.now() + secs * 1000) : null;
-      const rfc = expire
-        ? `${expire.getFullYear()}-${pad(expire.getMonth() + 1)}-${pad(expire.getDate())}T${pad(expire.getHours())}:${pad(expire.getMinutes())}:${pad(expire.getSeconds())}+08:00`
+      // ★ 2026-11-14 修：同上，UTC+8 墙上时间 + +08:00 偏移
+      const rfc = args.action === 'mute'
+        ? new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00'
         : null;
       const all = (Array.isArray(args.member_openids) ? args.member_openids : [])
         .map((v) => String(v).trim()).filter(Boolean)

@@ -332,9 +332,8 @@ pluginCtx) {
                         const secs = Math.max(0, Math.round(Number(ar.muteSeconds) || 0));
                         const sid = String(m.senderId ?? "");
                         if (secs > 0 && /^[0-9A-Za-z]{32}$/u.test(sid)) {
-                            const p2 = (n) => String(n).padStart(2, "0");
-                            const ex = new Date(Date.now() + secs * 1000);
-                            const rfc = `${ex.getFullYear()}-${p2(ex.getMonth() + 1)}-${p2(ex.getDate())}T${p2(ex.getHours())}:${p2(ex.getMinutes())}:${p2(ex.getSeconds())}+08:00`;
+                            // ★★ 2026-11-14 修：时间字段用 UTC+8 墙上时间，才配得上 +08:00（TZ=UTC 时原来差 8 小时）
+                            const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
                             void ga.setMemberMute(String(m.groupOpenid), sid, rfc).catch(() => undefined);
                         }
                     }

@@ -324,9 +324,10 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                         const secs = Math.max(0, Math.round(Number(ar.muteSeconds) || 0));
                         const sid = String(msg.senderId ?? '');
                         if (secs > 0 && /^[0-9A-Za-z]{32}$/u.test(sid)) {
-                            const pad = (n) => String(n).padStart(2, '0');
-                            const ex = new Date(Date.now() + secs * 1000);
-                            const rfc = `${ex.getFullYear()}-${pad(ex.getMonth() + 1)}-${pad(ex.getDate())}T${pad(ex.getHours())}:${pad(ex.getMinutes())}:${pad(ex.getSeconds())}+08:00`;
+                            // ★★ 2026-11-14 修（审查发现）：**时间字段必须和时区偏移一致**。
+                            //   原来用本机时区 getHours() 拼墙上时间、却硬写 +08:00 ——
+                            //   服务器 TZ=UTC 时，10 分钟禁言会被解释成"8 小时前"，可能立刻失效。
+                            const rfc = new Date(Date.now() + secs * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 19) + '+08:00';
                             void ga.setMemberMute(gid, sid, rfc).catch(() => undefined);
                         }
                     }
