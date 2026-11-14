@@ -11,7 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage } from './features/md-media.js';
 import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import type { Context } from '@deepseek-ai/cordis';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { dataRootOf } from './gateway/data-root.js';
 import { homedir } from 'node:os';
@@ -2206,16 +2206,23 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       },
       render: (_a, v) => [{ type: 'text', text: v.ok ? String(v.msg || '') : `失败: ${String(v.msg || '')}` }],
     },
-    execute: async (args: { action?: string; words?: string; muteSeconds?: number; enable?: boolean }) => {
+    execute: async (args: { action?: string; words?: string; muteSeconds?: number; enable?: boolean }, exec?: unknown) => {
       try {
         const prof = process.env.DSH_PROFILE || 'web';
         const base = join(homedir(), '.dsh', 'qqbot-settings', prof);
-        let file = join(base, 'im-qqbot-2.json');
+        // ★★ 2026-11-14 修（审查发现，这条最危险）：原来写死 'im-qqbot-2.json'，找不到就
+        //   **挑 mtime 最新的** —— 那可能是**别的实例**的配置，而下面会整份写回去（含 appId/appSecret）。
+        //   现在：优先用本实例的 settingsNs；拿不到就退回主账号默认 'im-qqbot'（与 index.ts 一致）；
+        //   绝不猜别的实例的文件。
+        let ns = 'im-qqbot';
+        try {
+          const mgr = channelOf(exec as never)?.manager as { config?: { settingsNs?: string } } | undefined;
+          const own = String(mgr?.config?.settingsNs ?? '').trim();
+          if (own) ns = own;
+        } catch { /* 拿不到就用默认 */ }
+        const file = join(base, ns + '.json');
         if (!existsSync(file)) {
-          const cands = existsSync(base) ? readdirSync(base).filter((f) => /^im-qqbot-.*\.json$/.test(f)) : [];
-          if (cands.length === 0) return { ok: false, msg: '找不到设置文件: ' + base, keywords: [] };
-          cands.sort((a, b) => statSync(join(base, b)).mtimeMs - statSync(join(base, a)).mtimeMs);
-          file = join(base, String(cands[0]));
+          return { ok: false, msg: '找不到本实例的设置文件: ' + file + '（不会去动别的实例的配置）', keywords: [] };
         }
         const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
         const ga = (raw.groupAdmin = (raw.groupAdmin || {}) as Record<string, unknown>);
@@ -3247,6 +3254,13 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
         extDiag(`注册成功: ${def.name}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // ★★ 2026-11-14 修（审查发现）：签名在循环**之前**就写进了 extSigStore，
+        //   于是「单个工具注册失败」之后 sig 仍是新的 ⇒ 下次命中「未变化」直接 return
+        //   ⇒ 这个工具**永久缺失**（tools_reload 也救不回，只有改文件让 mtime 变才重试）。
+        //   修法：真失败时删掉签名，强制下次重来。already registered 属幂等，不算失败。
+        if (!/already registered/i.test(msg)) {
+          try { extSigStore.delete(ctx as unknown as object); } catch { /* ignore */ }
+        }
         if (/already registered/i.test(msg)) {
           extDiag(`already registered: ${def.name}`);
           continue;
