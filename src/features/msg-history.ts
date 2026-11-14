@@ -15,9 +15,11 @@
  *       `group_recall_batch`（批量撤 + 顺带禁言）。与引用补全用的 msg-content.jsonl **互不干扰**。
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MsgKind } from './msg-recent.js';
+import { md5sInText, normQuoteText } from '../shared/quote-match.js';
+import { appendLine, closeFile, ensureDir, forgetDirTree, hasActiveStream } from '../shared/async-append.js';
 
 /** 默认保留天数（主人定：7 天） */
 export const KEEP_DAYS = 7;
@@ -25,6 +27,129 @@ export const KEEP_DAYS = 7;
 const MAX_READ_LINES = 5000;
 /** 正文摘要长度 */
 const TEXT_MAX = 200;
+
+/**
+ * ★ 2026-11-14（主人要求"22ms 还是太长，内存里塞今天的"）：**当天文件的行缓存**。
+ *
+ * 为什么需要：归属查询（引用别人一句话 → 这句话是谁说的）每次都要读当天那个
+ *   1000+ 行的 jsonl 再逐行 JSON.parse，实测 22~28ms —— 一次引用跑两次就 50ms。
+ *   把"今天这个文件解析后的行"放内存，命中时零 IO、零解析。
+ *
+ * 只缓存**今天**：昨天以前的消息不会再追加，但仍然按天换文件，
+ *   缓存它们只会白占内存；查老消息走原路径（慢一点无所谓，那种查询很少）。
+ * 只留最近 {@link CACHE_ROWS} 条：正文匹配永远是从新往旧找，老的两千条根本轮不到。
+ * 内存估算：500 条 × 约 600 字节 ≈ **300KB/群**，且跨天自动失效。
+ */
+const CACHE_ROWS = 500;
+/**
+ * 文件路径 → { key, rows: 新→旧, sorted: 按归一化正文排序的索引 }
+ *
+ * `sorted` 是为**前缀二分**建的（2026-11-14，查过资料后的结论）：
+ *   我们需要"哪条历史正文跟被引原话是同一句（允许一方是另一方的前缀）"，
+ *   这是标准的**前缀查询**。业界实测（[Autocomplete in Node][1]）：
+ *   排序数组 + 二分 = 0.2~0.8 微秒、几乎零额外内存；
+ *   Trie 查询虽快但内存按字符节点膨胀（那篇实测 1.4GB vs 0.8MB）。
+ *   中文长句上 Trie 更是灾难（一句 30 字＝30 个 Map 节点）。
+ *   所以这里只存**字符串引用**的排序数组，不复制正文、不建树。
+ *
+ * [1]: https://www.nihardaily.com/posts/autocomplete-in-node-a-14-gb-trie-loses-to-a-08-mb-table
+ */
+const dayCache = new Map<string, {
+  key: string;
+  rows: HistoryRec[];
+  /** 归一化正文的去重排序数组（方向一：查"以 query 开头"的记录） */
+  sorted: string[];
+  /** 归一化正文 → 该正文的所有记录（方向二：枚举 query 的前缀来查） */
+  byNx: Map<string, HistoryRec[]>;
+  /** 图片内容 MD5 → 记录（引用纯图时 O(1) 直接定位，不用扫行） */
+  byMd5: Map<string, HistoryRec[]>;
+}>();
+
+/**
+ * 给一天的行建"双向前缀匹配"索引（2026-11-14，按官方深度检索的结论选的方案）。
+ *
+ * 为什么不建 Trie：Node.js 里对象式 Trie 每个节点是一个对象 + Map，
+ *   300k 短语实测吃 **1.4 GB**；排序数组只要 0.8 MB 且查询 0.21~0.83 μs。
+ *   我们一天才 500~1000 条，更没有理由付那个内存税。
+ *
+ * 两个方向拆开用最便宜的结构：
+ *   ① **query 是记录前缀**（记录更长）→ 排序数组 + 二分 + 向后扫
+ *   ② **记录是 query 前缀**（被引原文被平台截断）→ 枚举 query 的每个前缀查 Map
+ *   两个都是 O(log n) / O(L)，内存只是字符串引用，不复制正文。
+ */
+function buildIndex(rows: HistoryRec[]): { sorted: string[]; byNx: Map<string, HistoryRec[]>; byMd5: Map<string, HistoryRec[]> } {
+  const byNx = new Map<string, HistoryRec[]>();
+  const byMd5 = new Map<string, HistoryRec[]>();
+  for (const r of rows) {
+    // 图片指纹索引：引用纯图时靠它 O(1) 定位（扫行要 5ms，实测）
+    for (const md of Array.isArray(r.f) ? r.f : []) {
+      const k = String(md).toLowerCase();
+      if (!k) continue;
+      const ml = byMd5.get(k);
+      if (ml) ml.push(r);
+      else byMd5.set(k, [r]);
+    }
+    const nx = (r as HistoryRec & { _nx?: string })._nx ?? normQuoteText(r.x);
+    if (!nx) continue; // 纯图/纯表情 → 匹配不到任何文本查询，不进正文索引
+    (r as HistoryRec & { _nx?: string })._nx = nx;
+    const list = byNx.get(nx);
+    if (list) list.push(r);
+    else byNx.set(nx, [r]);
+  }
+  const sorted = [...byNx.keys()].sort();
+  return { sorted, byNx, byMd5 };
+}
+
+/**
+ * 双向前缀匹配：找出所有"跟 `q` 算同一句"的记录。
+ *
+ *   · 方向一（q 是记录前缀）：`lowerBound` 定位后向后扫，直到不再以 q 开头 —— O(log n + k)
+ *   · 方向二（记录是 q 前缀）：枚举 q 的每个前缀查 `byNx` —— O(L) 次哈希，L 最大 200
+ *
+ * 比"向前扫 + 首字剪枝"稳：那个剪枝依赖字典序相邻性，遇到空串/异体字容易漏；
+ * 枚举前缀是**精确覆盖**，不会漏。
+ */
+function collectPrefixMatches(
+  idx: { sorted: string[]; byNx: Map<string, HistoryRec[]> },
+  q: string,
+): HistoryRec[] {
+  if (!q) return [];
+  const hits: HistoryRec[] = [];
+  const { sorted, byNx } = idx;
+
+  // ① q 是记录的前缀
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const v = sorted[mid];
+    if (v === undefined) break;
+    if (v < q) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < sorted.length; i++) {
+    const v = sorted[i];
+    if (!v || !v.startsWith(q)) break;
+    const list = byNx.get(v);
+    if (list) hits.push(...list);
+  }
+
+  // ② 记录是 q 的前缀（平台截断了被引原文）
+  //    从长到短枚举；q 自身那一档上面已经覆盖，这里到 q.length-1 为止。
+  const maxLen = Math.min(q.length - 1, 300);
+  for (let len = 1; len <= maxLen; len++) {
+    const list = byNx.get(q.slice(0, len));
+    if (list) hits.push(...list);
+  }
+  return hits;
+}
+
+/** 命中多条时取**时间最新**的那条（同一句话说过很多次，要的是最近一次） */
+function newestOf(rows: HistoryRec[]): HistoryRec | undefined {
+  let best: HistoryRec | undefined;
+  for (const r of rows) if (!best || Number(r.t) > Number(best.t)) best = r;
+  return best;
+}
 
 export interface HistoryRec {
   /** QQ message_id */
@@ -41,6 +166,16 @@ export interface HistoryRec {
   x: string;
   /** 是否机器人自己发的 */
   me?: boolean;
+  /**
+   * ★ 2026-11-14：图片内容指纹（QQ 图片文件名就是内容 MD5，通常 1 个）。
+   *
+   * 为什么塞进**历史台账**而不是另开一本：主人定过"不能独立台账" ——
+   *   历史台账本来就记了每条消息的 `s`（发送者）/ `x`（正文），
+   *   唯一缺的就是"这张图是哪张"。补上这一格，归属查询就能全在这一个数据源里完成。
+   * 为什么不放进 `x`：`x` 是要注入上下文的正文摘要，塞 40 个字符的文件名纯属浪费 token；
+   *   单独字段只在"有人引用这张图"时才被读。
+   */
+  f?: string[];
 }
 
 let historyRoot = '';
@@ -90,7 +225,10 @@ export function pruneOld(): void {
     const dir = join(historyRoot, d);
     let files: string[] = [];
     try {
-      if (!statSync(dir).isDirectory()) continue;
+      const st = statSync(dir);
+      if (!st.isDirectory()) continue;
+      // ★ 2026-11-15（CodeRabbit 第二轮）：**不能靠 mtime 判断目录是否活跃** ——
+      //   追加写是 `open(file,'a')`，只更新**文件**的 mtime，目录 mtime 一直是旧的。
       files = readdirSync(dir);
     } catch {
       continue;
@@ -99,8 +237,18 @@ export function pruneOld(): void {
     for (const f of files) {
       if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/u.test(f)) continue;
       if (f.slice(0, 10) < cutoffDay) {
+        // ★ 2026-11-15（CodeRabbit 第三轮）：**逐文件**判断是否活跃，而不是整目录跳过。
+        //   整目录跳过的话，一个一直在聊的群，它 8 天前的旧文件永远清不掉，
+        //   KEEP_DAYS=7 对活跃群直接失效、文件无限累积。
+        //   活跃判据：该文件还挂着写入流，或还在内存缓存里。
+        const fp = join(dir, f);
+        if (hasActiveStream(fp) || dayCache.has(fp)) {
+          alive += 1;
+          continue;
+        }
         try {
-          rmSync(join(dir, f), { force: true });
+          closeFile(fp);
+          rmSync(fp, { force: true });
         } catch { /* ignore */ }
       } else {
         alive++;
@@ -108,6 +256,19 @@ export function pruneOld(): void {
     }
     if (alive === 0) {
       try {
+        // ★ 2026-11-15（CodeRabbit 抓到）：删掉整个会话目录后，必须把
+        //   `ensuredDirs` / 写入流 / 本文件的 dayCache 全部作废 ——
+        //   否则 `ensureDir` 一直以为目录还在，后续 append 直接失败且**静默重复**，
+        //   那个群从此写不进历史（直到重启）。
+        forgetDirTree(dir);
+        for (const day of [...dayCache.keys()]) {
+          if (day.startsWith(dir)) dayCache.delete(day);
+        }
+        // marked 的键是 `scope:peerId`（如 group:xxx），目录名是 `group_xxx` —— 转换后清掉，
+        // 这样下次 markSession 会重建名字文件。
+        const base = dir.split(/[\\/]/).pop() ?? '';
+        const us = base.indexOf('_');
+        if (us > 0) marked.delete(base.slice(0, us) + ':' + base.slice(us + 1));
         rmSync(dir, { recursive: true, force: true });
       } catch { /* ignore */ }
     }
@@ -193,16 +354,205 @@ export function appendMsgHistory(
     k: (rec.k ?? 'text') as MsgKind,
     x: String(rec.x ?? '').replace(/\s+/gu, ' ').trim().slice(0, TEXT_MAX),
     ...(rec.me ? { me: true } : {}),
+    ...(rec.f && rec.f.length ? { f: rec.f.map((v) => String(v).toLowerCase()).filter(Boolean).slice(0, 4) } : {}),
   };
   try {
     const dir = dirOf(scope, peerId);
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, `${dayOf(row.t)}.jsonl`), `${JSON.stringify(row)}\n`, 'utf8');
+    ensureDir(dir);
+    const fp = join(dir, `${dayOf(row.t)}.jsonl`);
+    // ★ 2026-11-14：这里原来是 appendFileSync —— 实测 1465µs/次，而每条群消息都会走一遍。
+    //   换成常开 WriteStream 后 4µs（差 366 倍）。
+    appendLine(fp, JSON.stringify(row));
+    // ★ 增量更新当天缓存：否则"写一条 → 下次查询判定 mtime 变了 → 重扫 1000 行"，
+    //   群消息密集时等于每次查询都重扫一遍，缓存就白加了。
+    // ★ 2026-11-15（CodeRabbit 抓到）：如果还没有缓存，**先载入一次**再增量加 ——
+    //   否则"刚接受的消息"要等落盘才对同进程查询可见，紧接着的 findSenderByQuote 会漏掉它。
+    const c = dayCache.get(fp) ?? (() => { readDayRows(fp, true); return dayCache.get(fp); })();
+    if (c) {
+      c.rows.unshift(row);
+      // ⚠️ 不再按 CACHE_ROWS 截断：截断时 byNx/byMd5/sorted 里会残留已不在 rows 中的记录
+      //   （CodeRabbit 指出）。行数由 MAX_READ_LINES 兜底。
+      // 增量维护双向前缀索引（不然下次查询判定 mtime 变了 → 重扫 500 行重建）
+      for (const md of Array.isArray(row.f) ? row.f : []) {
+        const k = String(md).toLowerCase();
+        if (!k) continue;
+        const ml = c.byMd5.get(k);
+        if (ml) ml.unshift(row);
+        else c.byMd5.set(k, [row]);
+      }
+      const nx = normQuoteText(row.x);
+      if (nx) {
+        (row as HistoryRec & { _nx?: string })._nx = nx;
+        const list = c.byNx.get(nx);
+        if (list) list.unshift(row);
+        else {
+          c.byNx.set(nx, [row]);
+          // 有序数组插入（二分找位）
+          let lo = 0;
+          let hi = c.sorted.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            const v = c.sorted[mid];
+            if (v !== undefined && v < nx) lo = mid + 1;
+            else hi = mid;
+          }
+          c.sorted.splice(lo, 0, nx);
+        }
+      }
+      c.key = 'dirty';
+    }
   } catch {
     return;
   }
   writeTick = (writeTick + 1) % 200;
   if (writeTick === 0) pruneOld();
+}
+
+/**
+ * ★ 按「被引用的内容」反查原主（2026-11-14，主人定：归属就用历史台账，不另开独立账）。
+ *
+ * 两条路，都从**新→旧**走、命中即停：
+ *   ① **图片指纹**（优先）—— 引用纯图时正文只剩 `[image: xxx.png]`，归一化后是空串，
+ *      正文匹配走不通；QQ 的图片文件名就是内容 MD5，记在历史行的 `f` 字段里。
+ *   ② **正文匹配** —— 被引原话是引用时一定拿得到的东西，比"赌两个索引相等"可靠得多
+ *      （`ref_msg_idx` 与 `msg_idx` 不是同一个值，这点主人已经点破）。
+ *
+ * @param imageMd5s 额外指纹（从 `quote.attachments[].filename` 拿到的）
+ */
+export function findSenderByQuote(
+  scope: 'group' | 'c2c',
+  peerId: string,
+  text: string | undefined,
+  imageMd5s?: string[],
+): { senderName?: string; senderId?: string } | undefined {
+  if (!historyRoot || !peerId) return undefined;
+
+  // ── ① 图片指纹：走 byMd5 索引，O(1) ──
+  const mds = md5sInText(text);
+  for (const v of Array.isArray(imageMd5s) ? imageMd5s : []) {
+    const low = String(v ?? '').toLowerCase();
+    if (low && !mds.includes(low)) mds.push(low);
+  }
+  if (mds.length) {
+    const now0 = Date.now();
+    const dir0 = dirOf(scope, peerId);
+    for (const day of [dayOf(now0), dayOf(now0 - 86400000)]) {
+      const file = join(dir0, `${day}.jsonl`);
+      if (!existsSync(file)) continue;
+      let rows: HistoryRec[];
+      try {
+        rows = readDayRows(file, true);
+      } catch {
+        continue;
+      }
+      const c = dayCache.get(file);
+      const byMd5 = c ? c.byMd5 : buildIndex(rows).byMd5;
+      const hits: HistoryRec[] = [];
+      for (const md of mds) {
+        const list = byMd5.get(md);
+        if (list) hits.push(...list);
+      }
+      const r = newestOf(hits);
+      if (r && (r.s || r.n)) return { senderName: r.n, senderId: r.s };
+    }
+  }
+
+  // ── ② 正文（双向前缀匹配：排序数组二分 + 前缀 Map，O(log n) / O(L)）──
+  const q = normQuoteText(text);
+  if (q.length < 2) return undefined;
+  const now = Date.now();
+  const dir = dirOf(scope, peerId);
+  // 只看最近两天：引用目标几乎不会是更早的（群里一天上千条，两天足够）
+  for (const day of [dayOf(now), dayOf(now - 86400000)]) {
+    const file = join(dir, `${day}.jsonl`);
+    if (!existsSync(file)) continue;
+    let rows: HistoryRec[];
+    try {
+      rows = readDayRows(file, true);
+    } catch {
+      continue;
+    }
+    const c = dayCache.get(file);
+    const idx = c ? { sorted: c.sorted, byNx: c.byNx } : buildIndex(rows);
+    const hit = newestOf(collectPrefixMatches(idx, q));
+    if (hit && (hit.s || hit.n)) return { senderName: hit.n, senderId: hit.s };
+  }
+  return undefined;
+}
+
+/**
+ * 把 dayCache 控制在 8 项以内，并保住 `keep` 对应的文件。
+ * ★ 2026-11-15（CodeRabbit 第二轮）：原来只有"成功读文件"那条路径会淘汰，
+ *   "首建空缓存"的路径不会 —— 每来一个新会话就多一项，能突破上限。
+ */
+function evictDayCache(keep: string): void {
+  for (const k of [...dayCache.keys()]) {
+    if (dayCache.size <= 8) break;
+    if (k !== keep) dayCache.delete(k);
+  }
+}
+
+/**
+ * 读某一天的行（新→旧，最多 {@link MAX_READ_LINES} 行）。
+ * `cacheable=true` 时把解析结果留在内存（只给"今天"用，见 {@link dayCache}）。
+ */
+function readDayRows(file: string, cacheable: boolean): HistoryRec[] {
+  if (cacheable) {
+    const hit = dayCache.get(file);
+    if (hit) {
+      // 'dirty' = 本进程刚追加过、内存比文件新
+      if (hit.key === 'dirty') return hit.rows;
+      let key = '';
+      try {
+        const st = statSync(file);
+        key = st.mtimeMs + ':' + st.size;
+      } catch {
+        return hit.rows;
+      }
+      if (hit.key === key) return hit.rows;
+    }
+  }
+
+  let text = '';
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    // ★ 2026-11-15（CodeRabbit 抓到）：文件还不存在时，cacheable 也要**建一个空缓存** ——
+    //   这样 append 拿到的就是同一份内存对象、能增量更新它；
+    //   否则"刚接受的那条消息"对同进程的紧随查询不可见（要等它落盘）。
+    if (cacheable && !dayCache.has(file)) {
+      dayCache.set(file, { key: 'dirty', rows: [], sorted: [], byNx: new Map(), byMd5: new Map() });
+      // ★ CodeRabbit 第二轮：首建空缓存也要走淘汰，否则新会话一条就加一个、能超 8 项
+      evictDayCache(file);
+    }
+    return dayCache.get(file)?.rows ?? [];
+  }
+  const lines = text.split('\n');
+  const start = Math.max(0, lines.length - MAX_READ_LINES);
+  const rows: HistoryRec[] = [];
+  for (let i = lines.length - 1; i >= start; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    try {
+      const r = JSON.parse(line) as HistoryRec;
+      if (r?.id) rows.push(r);
+    } catch { /* 坏行跳过 */ }
+  }
+  // ⚠️ 2026-11-15（CodeRabbit 抓到）：这里**不能**按 CACHE_ROWS 截断缓存 ——
+  //   通用查询（撤回、历史注入）用的是同一个函数，截断会让它们只看到最近 500 条，
+  //   比改动前少。缓存行数由 MAX_READ_LINES 兜底，一天的量远小于它。
+  if (cacheable) {
+    let key = 'dirty';
+    try {
+      const st = statSync(file);
+      key = st.mtimeMs + ':' + st.size;
+    } catch { /* 文件没了也无所谓 */ }
+    // 建索引时顺手预归一化（`_nx`）：匹配时要拿每条正文跟被引原文比，
+    // 若每次现算 `normQuoteText`（5 条正则替换），几百条就是上千次正则 —— 实测占 7ms 的大头。
+    dayCache.set(file, { key, rows, ...buildIndex(rows) });
+    evictDayCache(file);
+  }
+  return rows;
 }
 
 export interface HistoryQuery {
@@ -218,6 +568,20 @@ export interface HistoryQuery {
   fromSelf?: boolean;
   /** 只看某个发送者 */
   senderId?: string;
+  /**
+   * ★ 2026-11-14：按**图片内容指纹**筛（QQ 图片文件名 = 内容 MD5）。
+   * 用于"有人引用了某张图 → 这张图是谁发的"。命中 `f` 字段，不看正文。
+   */
+  imageMd5?: string;
+  /**
+   * ★ 2026-11-14：**扫描行数上限**（不是命中数上限）。
+   *
+   * 为什么要单独这个：原来的 `limit` 是"命中多少条就停"，于是
+   * **今天 500 条一条都没匹配上时，会继续把昨天、前天……7 个文件全读一遍**
+   * （实测 20+ms，缓存也救不了，因为老文件本来就不缓存）。
+   * 归属查询只需要"最近的那条"，扫够就停，别为了找更老的去翻整周。
+   */
+  maxScan?: number;
 }
 
 /** 读该会话的历史（**只碰它自己的目录**），新→旧 */
@@ -238,33 +602,29 @@ export function readMsgHistory(scope: 'group' | 'c2c', peerId: string, q: Histor
   }
 
   const out: HistoryRec[] = [];
+  const maxScan = Number(q.maxScan ?? 0) > 0 ? Number(q.maxScan) : Number.POSITIVE_INFINITY;
+  let scanned = 0;
   for (const day of days) {
-    if (out.length >= limit) break;
+    if (out.length >= limit || scanned >= maxScan) break;
     const f = join(dir, `${day}.jsonl`);
     if (!existsSync(f)) continue;
-    let text = '';
-    try {
-      text = readFileSync(f, 'utf8');
-    } catch {
-      continue;
-    }
-    const lines = text.split('\n');
-    const start = Math.max(0, lines.length - MAX_READ_LINES);
-    for (let i = lines.length - 1; i >= start && out.length < limit; i--) {
-      const line = lines[i];
-      if (!line) continue;
-      let r: HistoryRec;
-      try {
-        r = JSON.parse(line) as HistoryRec;
-      } catch {
-        continue;
-      }
-      if (!r?.id) continue;
+    // 最近两天走内存缓存（今天在追加、昨天可能被引用），更早的没必要占内存
+    const rows = readDayRows(f, day === dayOf(now) || day === dayOf(now - 86400000));
+    // rows 已经是新→旧
+    for (const r of rows) {
+      if (out.length >= limit || scanned >= maxScan) break;
+      scanned += 1;
       if (Number(r.t) < from) continue;
       if (q.fromSelf !== undefined && Boolean(r.me) !== q.fromSelf) continue;
       if (q.senderId && r.s !== q.senderId) continue;
       if (q.kind && (r.k ?? 'text') !== q.kind) continue;
       if (kw && !String(r.x ?? '').toLowerCase().includes(kw)) continue;
+      // 图片指纹筛选：老记录没有 `f` 字段 → 自然不命中
+      if (q.imageMd5) {
+        const want = String(q.imageMd5).toLowerCase();
+        const has = Array.isArray(r.f) && r.f.some((v) => String(v).toLowerCase() === want);
+        if (!has) continue;
+      }
       out.push(r);
     }
   }

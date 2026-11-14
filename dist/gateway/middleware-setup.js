@@ -4,6 +4,7 @@ import { dataRootOf, stickerDirOf } from './data-root.js';
 import { stripLeadingMentions } from '../shared/mention-clean.js';
 import { buildCommandList } from '../commands/index.js';
 import { attachmentProcessor } from '../middleware/attachment.js';
+import { attributionLedger, historyRecorder } from '../middleware/attribution.js';
 import { mediaHistoryBuffer } from '../middleware/media-history.js';
 import { prefetchQuoteImages } from '../transport/quote-images.js';
 import { stickerCapture } from '../middleware/sticker-capture.js';
@@ -143,6 +144,17 @@ pluginCtx) {
         maxSize: 500,
         preferMsgElements: true,
     }));
+    // 3.92. 「这条消息是谁发的」归属台账（2026-11-14）
+    //   ★ 位置是全部意义所在 ★：**quoteRef 之后、@门控/评分/debounce 之前**。
+    //     原来这份信息只存在于 `msg-content.jsonl`，而那是写在 `assembleAgentBody` 里的
+    //     —— `handleInbound` 只由 debounce 在"要派发"时调用 ⇒ 群里没唤醒她的消息
+    //     **一条都没记**，于是引用别人发的图永远查不到原主（实测：2000 行里某人只有 6 条）。
+    //     放在这里，每条群消息都经过，与她醒不醒完全无关。
+    //   为什么非要这份账：QQ 的 103 引用消息**不下发 msg_elements[].author**
+    //     （官方文档有这字段，实测元素里根本没有），SDK 的 quoteRef 又因为
+    //     `preferMsgElements: true` 从不查 store（`quote.entry` 恒 undefined）。
+    //     三条路全断，只能自己记。
+    bot.use(attributionLedger(logger));
     // 3.95. 用户「入站中间件」扩展点（第五套扩展，2026-10-12）—— ★早挂点 onInbound ★
     //   `{dataRoot}/.qqbot-extensions/inbound/*.mjs` 里导出的 `onInbound` 挂**这里**：
     //   **quoteRef 之后、记群历史（下一步）之前** —— 四个动作里三个只有这个位置做得到：
@@ -226,6 +238,13 @@ pluginCtx) {
     bot.use(async (ctx, next) => {
         await runEarlyInboundExtensions(inboundExts, ctx, next, logger, extRunOpts(ctx));
     });
+    // 3.96. 写消息历史台账（2026-11-15，CodeRabbit 第四轮）
+    //   ★ 必须在**早挂点扩展之后**：用户扩展可以用 `annihilate` 把一条消息整条吃掉，
+    //     那种消息一个字都不该进历史。annihilate 的语义正是"不调 next、链停在这里"，
+    //     所以挂在这后面，被消灭的消息天然走不到。
+    //   归属查询留在 3.92（更早）——它要在 media-history 拼历史行之前把 state.quote 补好，
+    //   而且被消灭的消息也该能查"被引的是谁"，两件事对位置的要求正好相反，所以拆成两个中间件。
+    bot.use(historyRecorder(config, logger));
     // 3.95. 被引用图片**预取**（2026-10-01 主人要求"尽可能转换成本地路径"）：
     //   有人引用一张图问"这是啥"时，那张图我们可能从没收藏过 → 缓存/图库都查不到，
     //   引用块只能回退 QQ 长链接(带 rkey、还会过期, AI 读不了)。

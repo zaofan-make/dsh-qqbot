@@ -9,6 +9,21 @@ export interface ResolvedQuote {
         senderId?: string;
         content?: string;
     };
+    /**
+     * ★ 2026-11-14：被引用消息**是谁发的**。
+     *
+     * 为什么要有：QQ 引用消息（message_type=103）的 `msg_elements` 元素里，
+     *   官方文档写了 `author`（"该元素对应的消息发送者"），但**官方事件示例里这条根本没填**
+     *   —— 两份独立证据（官方 103 示例 + 495258544 分支的实测）都指向"线上不下发"。
+     *   于是引用块只能显示"被引原文"，模型永远不知道那句话是谁说的。
+     *
+     * 来源优先级（高 → 低）：
+     *   ① `msg_elements[].author`（哪天腾讯填了就能直接用，见 inbound 里的提取）
+     *   ② **本地台账** `msg-content.jsonl` 的 `n`/`s`（入站那一刻我们自己记的，最可靠）
+     * 两者都没有时留空 —— 引用块会退化成原来的"无条件样子"，不编造名字。
+     */
+    senderName?: string;
+    senderId?: string;
     attachments?: {
         contentType?: string;
         url?: string;
