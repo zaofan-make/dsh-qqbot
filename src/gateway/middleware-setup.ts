@@ -194,6 +194,15 @@ export async function setupMiddlewares(
   //     三条路全断，只能自己记。
   bot.use(attributionLedger(logger));
 
+  // 3.93. 写消息历史台账（2026-11-15）
+  //   ★ 顺序：**先查归属（3.92）→ 再写历史（这里）→ 才轮到 early-inbound 扩展（3.95）**。
+  //   两个理由，方向相反但都要满足：
+  //     · 写必须晚于查询 —— 否则当前这条消息自己就是"时间最新的匹配"，
+  //       A 说「我喜欢鲸鱼」、B 引用同文再发一遍时，归属会被错填成 B；
+  //     · 写必须早于扩展 —— 历史是**事实记录**，用户扩展用 annihilate 把消息
+  //       "吃掉"只是不让它进上下文/唤醒，不等于这条消息没在群里发生过，照样要记。
+  bot.use(historyRecorder(config, logger));
+
   // 3.95. 用户「入站中间件」扩展点（第五套扩展，2026-10-12）—— ★早挂点 onInbound ★
   //   `{dataRoot}/.qqbot-extensions/inbound/*.mjs` 里导出的 `onInbound` 挂**这里**：
   //   **quoteRef 之后、记群历史（下一步）之前** —— 四个动作里三个只有这个位置做得到：
@@ -278,13 +287,7 @@ export async function setupMiddlewares(
     await runEarlyInboundExtensions(inboundExts, ctx, next, logger, extRunOpts(ctx));
   });
 
-  // 3.96. 写消息历史台账（2026-11-15，CodeRabbit 第四轮）
-  //   ★ 必须在**早挂点扩展之后**：用户扩展可以用 `annihilate` 把一条消息整条吃掉，
-  //     那种消息一个字都不该进历史。annihilate 的语义正是"不调 next、链停在这里"，
-  //     所以挂在这后面，被消灭的消息天然走不到。
-  //   归属查询留在 3.92（更早）——它要在 media-history 拼历史行之前把 state.quote 补好，
-  //   而且被消灭的消息也该能查"被引的是谁"，两件事对位置的要求正好相反，所以拆成两个中间件。
-  bot.use(historyRecorder(config, logger));
+
 
   // 3.95. 被引用图片**预取**（2026-10-01 主人要求"尽可能转换成本地路径"）：
   //   有人引用一张图问"这是啥"时，那张图我们可能从没收藏过 → 缓存/图库都查不到，
