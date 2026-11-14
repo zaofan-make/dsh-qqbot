@@ -801,8 +801,8 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         //   注册键与派发键对不上 ⇒ 注册返回 true、派发却查不到处理器。
         const extId = rawId.replace(/[^A-Za-z0-9_-]/g, '');
         if (!extId) {
-          logger?.warn?.('[ext-caps] registerRoute 没有可用的扩展 id（selfName/extId/idHint 全空或被清洗成空），路由未注册');
-          // ★ 失败路径一律留痕（扩展作者看不到 logger）
+          // ★ 2026-11-14（CodeRabbit）：logger 调用本身要隔离 —— 它一抛，下面的 noteDeliver 就永远执行不到
+          try { logger?.warn?.('[ext-caps] registerRoute 没有可用的扩展 id（selfName/extId/idHint 全空或被清洗成空），路由未注册'); } catch { /* ignore */ }
           noteDeliver('registerRoute', false, new Error('没有可用的扩展 id，路由未注册：' + JSON.stringify(rawId)));
           return false;
         }
@@ -810,7 +810,9 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         const p = String(path || '/').trim() || '/';
         g.__qqbotExtRoutes.set(extId + '|' + m + '|' + p, handler);
         return true;
-      } catch {
+      } catch (err) {
+        // ★ 2026-11-14（CodeRabbit）：注册异常也要留痕，别只回一个 false
+        noteDeliver('registerRoute', false, err);
         return false;
       }
     },

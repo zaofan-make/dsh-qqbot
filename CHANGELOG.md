@@ -1,3 +1,42 @@
+## 1.12.33 (2026-11-14)
+
+### 全仓库审查：3 路并行通读 140 个文件 / 39622 行，修掉前 10 条
+
+用「一个文件一个分隔线」的合并快照（177 文件 / 47050 行）分三路并行审，
+产出 50 条 findings，本版先修影响最大的 10 条。
+
+### 🔴 两个「文档承诺但从未生效」的接口
+
+**① 入站扩展的 `selfName` 恒为 `(匿名扩展)`**
+```
+205:  decorate(ctx, s);                                // ← 构造能力包，求值 selfName
+232:  s.current = { file: ext.file, name: ext.name };  // ← 名字到这儿才设上
+```
+`who(s)` 读的是 `s.current`，而 decorate 早 27 行。两个入站扩展各自 `ctx.store.save(...)`
+会落到同一个 `inbound/data/(匿名扩展).json`，**互相覆盖、数据永久丢失**。
+修：`ensureExtSession()` 支持创建时传入归属 + `selfName` 换成 getter +
+`makeExtCaps` 的 `selfNow()`/`storePath()` 惰性求值 + **deps 里也传 getter**
+（只改返回的 caps 不够 —— 内部闭包读的是 deps，这是第一版修漏的地方）。
+
+**② `env.registerRoute()` 从来没成功注册过路由**
+`extId` 只从 `deps.extId`/`idHint` 取，而全仓没有任何构造方传 `deps.extId`，契约文档示例也不传 `idHint`
+⇒ 恒为空 ⇒ 静默 `return false`，前端 404 且无日志。修：回落 `selfName`，并按**与派发端
+`extCfgSafeId` 逐字一致**的规则清洗（只删非法字符、保留首尾下划线）；拿不到时 warn + 留痕。
+
+### 🔴 静默丢数据三处
+
+- **`chunker` 单行超限不硬切**：模型吐一行 6000 字（base64 / 长 URL，无换行）会整块以超限长度发出去，
+  被 QQ 拒收 ⇒ **该段正文丢失**。新增 `hardSplit()`：按 limit 硬切、切点回退避开代理对；表格整块超限同路。
+- **`msg-content-cache` 新行不进 `list`**：`list` 既是 `scanMsgContent` 的唯一数据源，又是超上限重写的保留集
+  ⇒ ①进程启动后写入的消息扫不到；②台账满 2000 行时最新那条被 `slice` 掉、**物理删除**。
+- **自动撤回的 `mode='drop'` 分支读错配置层级**：读顶层 `config.autoRecall`，真源在 `config.groupAdmin.autoRecall`
+  ⇒ 恒 undefined。**注意**：撤回动作本身走的是中间件那条（正常），坏的只有「连 AI 都不看」这一格。
+
+### 性能：热路径上的同步 IO
+
+- `noteDeliver` 原来**每次发送成功**都 `mkdirSync + statSync + appendFileSync`（连发 10 张图 = 10 次同步写盘）
+  ⇒ 成功静默，只有失败才留痕。
+
 ## 1.12.32 (2026-11-14)
 
 ### 🔴 修复：能力包「没有发送通道」时静默失败，且不留任何记录
