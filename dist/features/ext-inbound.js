@@ -119,14 +119,34 @@ export function inboundExtensionsDir(dataRoot) {
  * ⚠️ 挂载点（middleware-setup）持有的是**自己的**可变数组，换代时内容被换掉；
  *    这里这份只是给诊断/dispose 用。
  */
-let loaded = [];
 /**
  * 卸载时要清理的扩展，**按中间件函数身份去重**（Map key = middleware）。
  * 为什么要去重、且要留住旧版：热重载后同一个文件会产生**新的模块对象**（`?v=<mtime>`），
  * 旧版模块若起过定时器/监听，也得有人来收 —— 但同一个模块被重复装载（多实例/重复重载）
  * 不该 dispose 两次，所以用模块内稳定的中间件函数引用当身份。
  */
-const known = new Map();
+// ★★ 2026-11-14 修（CodeRabbit）：`known` / `loaded` 原来是**模块级全局** ——
+//   同进程两个机器人时，dispose 实例 A 会把实例 B 的扩展一起 dispose 掉（B 还在跑！），
+//   诊断计数也是两份混在一起。改成按 dataRoot 分桶，各实例只动自己那一桶。
+const knownByRoot = new Map();
+const loadedByRoot = new Map();
+/** 归一化 dataRoot 作桶 key：反斜杠/大小写只在 Windows 折叠 */
+function ik(dataRoot) {
+    const raw = String(dataRoot || "");
+    if (process.platform !== "win32")
+        return raw.replace(/\/+$/, "");
+    return raw.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+/** 取（必要时建）某实例的 known 桶 */
+function knownOf(dataRoot) {
+    const k = ik(dataRoot);
+    let m = knownByRoot.get(k);
+    if (!m) {
+        m = new Map();
+        knownByRoot.set(k, m);
+    }
+    return m;
+}
 /** 装载结果为空时的返回值（每次新建，避免调用方互相污染） */
 function emptyResult(files = []) {
     return { total: 0, skipped: 0, middleware: [], early: [], extensions: [], files };
@@ -212,7 +232,7 @@ export async function loadInboundExtensions(opts) {
     // ★ 2026-10-24：内置目录 + 所有扩展包（只取直接子文件）
     const hits = scanExtFiles(dataRoot, 'inbound', ALLOWED_EXT);
     if (hits.length === 0) {
-        loaded = [];
+        loadedByRoot.set(ik(dataRoot), []);
         return emptyResult();
     }
     const files = hits.map((h) => h.name);
@@ -240,15 +260,18 @@ export async function loadInboundExtensions(opts) {
             //   A 被熔断会连带停掉 B 的消灭/静默能力，诊断里还看不出是谁。
             resetBreaker(ext.path || ext.file);
             // 身份 = 中间件函数引用（同一模块重复装载时是同一个引用 → 不会重复 dispose）
-            if (!known.has(ext.middleware))
-                known.set(ext.middleware, ext);
+            {
+                const km = knownOf(dataRoot);
+                if (!km.has(ext.middleware))
+                    km.set(ext.middleware, ext);
+            }
         }
         catch (err) {
             result.skipped += 1;
             logger.warn(`[ext-inbound] ✗ ${f} 装载失败(已跳过, 不影响其它入站扩展): ${err instanceof Error ? err.message : String(err)}`);
         }
     }
-    loaded = result.extensions;
+    loadedByRoot.set(ik(dataRoot), result.extensions);
     if (result.total > 0) {
         const earlyCount = result.extensions.filter((e) => e.onInbound).length;
         logger.info(`[ext-inbound] 已装载 ${result.total} 个入站中间件: ${result.extensions.map((e) => e.name).join(', ')}` +
@@ -495,9 +518,10 @@ export function attachExtContext(ctx, logger, opts) {
  * 同时把 ext-reload 里的热重载入口摘掉 —— 否则它会一直指向这个已经死掉的实例。
  */
 export async function disposeInboundExtensions(logger, dataRoot) {
-    const list = [...known.values()].reverse();
-    known.clear();
-    loaded = [];
+    const km = knownOf(dataRoot);
+    const list = [...km.values()].reverse();
+    km.clear();
+    loadedByRoot.set(ik(dataRoot), []);
     registerExtInboundReloader(dataRoot, undefined); // ★ 必须带自己的 key，否则会把别人的入口一起摘掉
     let n = 0;
     for (const ext of list) {
@@ -517,15 +541,21 @@ export async function disposeInboundExtensions(logger, dataRoot) {
 }
 /** 重置模块级状态（仅供单元测试；生产不要调 —— 会把正在生效的扩展登记丢掉） */
 export function __resetInboundExtensionsForTest() {
-    loaded = [];
-    known.clear();
+    loadedByRoot.clear();
+    knownByRoot.clear();
 }
 /** 当前登记在册的扩展数（诊断用） */
 export function inboundExtensionsCount() {
-    return known.size;
+    let total = 0;
+    for (const m of knownByRoot.values())
+        total += m.size;
+    return total;
 }
 /** 当前生效的那一批（诊断用；返回副本，防外部改动） */
 export function currentInboundExtensions() {
-    return [...loaded];
+    const all = [];
+    for (const arr of loadedByRoot.values())
+        all.push(...arr);
+    return all;
 }
 //# sourceMappingURL=ext-inbound.js.map
