@@ -604,6 +604,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     enableApprovals: live.enableApprovals,
     approvalTimeoutMs: live.approvalTimeoutMs,
     outboundMode: live.outboundMode,
+    archiveOnNewSession: live.archiveOnNewSession,
     botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
   };
   let source: () => EditableConfig = () => entry;
@@ -624,6 +625,8 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       if (typeof next.extMetaTool === 'boolean') live.extMetaTool = next.extMetaTool;
       if (typeof next.webTurnSilent === 'boolean') live.webTurnSilent = next.webTurnSilent;
       // 本地小模型: 整块替换(面板发的是完整对象; overrides 也在里面) —— 改了就地生效, 不用重启
+      // ★ 2026-11-15：开新档自动归档（面板可改，必须同步，否则要重启才生效 —— 手册 §1 第 2 条）
+      if (typeof next.archiveOnNewSession === 'boolean') live.archiveOnNewSession = next.archiveOnNewSession;
       if (next.localModel && typeof next.localModel === 'object') live.localModel = next.localModel;
       setLexicalFallback(((live as { localModel?: { lexicalFallback?: boolean } }).localModel?.lexicalFallback) === true);   // 兜底开关热生效(settings 服务路径)
       if (typeof next.groupPrompt === 'string') live.groupPrompt = next.groupPrompt;

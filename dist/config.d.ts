@@ -263,6 +263,12 @@ export interface EditableConfig {
     /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
      *  —— 模型自己就能读图时可以关它。 */
     imageHint?: boolean;
+    /**
+     * 开新档时自动归档旧会话（默认开）。
+     * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
+     * 旧档仍可被 QQ 消息拉回可见（unarchiveSession 那条腿不动）。
+     */
+    archiveOnNewSession?: boolean;
     /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
     imageOffload?: boolean;
     /** 图片聚合(issue #40): 把连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */

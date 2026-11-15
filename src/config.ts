@@ -281,6 +281,12 @@ export interface EditableConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /**
+   * 开新档时自动归档旧会话（默认开）。
+   * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
+   * 旧档仍可被 QQ 消息拉回可见（unarchiveSession 那条腿不动）。
+   */
+  archiveOnNewSession?: boolean;
   /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
   imageOffload?: boolean;
   /** 图片聚合(issue #40): 把连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
@@ -692,6 +698,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
   outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 详细主动=与适配主动相同 + 额外把工具调用/工具结果也推到QQ(看进度用, 会更啰嗦); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
   webTurnSilent: Schema.boolean().default(false).description('web 回合静默(出站模式的附加开关): 勾上后, 在 DSH 界面里发起的回合其正文块不发到 QQ(留在 DSH); 该回合中途 QQ 有人插话则从此全部放行; 图片/文件/工具调用不受影响'),
+  archiveOnNewSession: Schema.boolean().default(true).description('开新档自动归档旧会话(默认开): /new、/bot-new、换模型 fork 出新档时, 把被取代的旧会话写进宿主「已归档」集合, 侧边栏不再堆僵尸档; 旧档仍可被 QQ 消息拉回'),
   botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS as never).description('botplay 互动事件(dock🎮装配器编辑, 保存即热更; /botplay 触发发卡)'),
 });
 

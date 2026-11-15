@@ -331,6 +331,7 @@ export const EditableConfigSchema = Schema.object({
     approvalTimeoutMs: Schema.number().default(120000).description('QQ 权限申请等待时长(ms), 超时自动拒绝'),
     outboundMode: Schema.union(['adaptive', 'detail', 'active', 'passive', 'silent', 'nothink']).default('adaptive').description('出站模式: 适配主动(默认)=收到新消息后前5次带msg_id被动回复, 超出/无新消息自动转主动(保连发); 详细主动=与适配主动相同 + 额外把工具调用/工具结果也推到QQ(看进度用, 会更啰嗦); 被动=全程带回复id(连发受QQ上限); 完全不出站=思考但不发(静默); 完全不思考=QQ入站不唤醒LLM(仅记录, 仅设置页可配)'),
     webTurnSilent: Schema.boolean().default(false).description('web 回合静默(出站模式的附加开关): 勾上后, 在 DSH 界面里发起的回合其正文块不发到 QQ(留在 DSH); 该回合中途 QQ 有人插话则从此全部放行; 图片/文件/工具调用不受影响'),
+    archiveOnNewSession: Schema.boolean().default(true).description('开新档自动归档旧会话(默认开): /new、/bot-new、换模型 fork 出新档时, 把被取代的旧会话写进宿主「已归档」集合, 侧边栏不再堆僵尸档; 旧档仍可被 QQ 消息拉回'),
     botplayEvents: Schema.array(botplayEventSchema).default(DEMO_BOTPLAY_EVENTS).description('botplay 互动事件(dock🎮装配器编辑, 保存即热更; /botplay 触发发卡)'),
 });
 const ConfigSchemaRaw = Schema.object({

@@ -1,3 +1,20 @@
+## 1.13.7 (2026-11-15)
+
+### 修
+
+- **设置页搜不到「归档」开关**（`client/qqbot-settings.js`、`config.ts`、`index.ts`）
+
+  1.13.6 只加了 `ConfigSchemaRaw`，但设置页那套是**手写表单 + 独立 schema**，按维护手册 §4.5.2 / §1-2 要补齐六处：
+
+  | 位置 | 作用 |
+  |---|---|
+  | `client/qqbot-settings.js` `FGROUPS` | 新增「⓪ 通用（会话/归档）」分组 + 字段（渲染/默认值/提交都从这一处派生） |
+  | `config.ts` `EditableConfig` 接口 | 类型认这个键 |
+  | `config.ts` `EditableConfigSchema` | 保存能过校验（否则"能看不能存"） |
+  | `index.ts` `installLiveSettings` 的 `entry` | 注册值时带上当前 live 值（否则会被 schema 默认值覆盖） |
+  | `index.ts` `sync()` | 保存后立刻应用到 `live` 配置（否则"面板改了要重启才生效"） |
+  | `config.ts` `ImQQBotConfig` / `ConfigSchemaRaw` | 1.13.6 已加 |
+
 ## 1.13.6 (2026-11-15)
 
 ### 新增
