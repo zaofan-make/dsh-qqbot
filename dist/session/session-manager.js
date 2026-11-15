@@ -517,7 +517,18 @@ export class SessionManager {
         void oldHandle.dispose().catch(() => { });
         void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger, {
             // 这个 childId 已经被下一次 fork/new 取代的话，别再挂、更别反归档（会撤销别人的自动归档）
-            isStale: () => String(this.currentSessionId(key) ?? '') !== childId,
+            //
+            // ★ 2026-11-15（CodeRabbit 第二轮）：**必须看 this.sessions 里的活动记录**，
+            //   不能用 `currentSessionId(key)` —— resolver 的 sessionId 映射会被
+            //   `clearModelOverride` 清掉（那时活动记录还活着），清掉后 currentSessionId
+            //   回落成派生 id，就会把这个**仍在用的会话**误判成过期：挂载重试被中止、
+            //   已完成挂载的也会跳过反归档。
+            isStale: () => {
+                const rec = this.sessions.get(key);
+                if (!rec)
+                    return true; // 记录没了 = 确实失效
+                return String(rec.sessionId ?? '') !== childId;
+            },
         });
         // ★ 2026-11-15（群友提的补丁）：新档建好后，把**被取代的旧档**收进「已归档」，
         //   侧边栏不再堆僵尸档。fail-soft + 幂等（见 archiveSessionDurably 注释）；
@@ -894,7 +905,13 @@ export class SessionManager {
         // 修复侧边栏归属(上游 PR #21 移植): 创建/恢复会话后挂到 cwd 对应工作区分组,
         // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。
         void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, sessionId, this.logger, {
-            isStale: () => String(this.currentSessionId(key) ?? '') !== sessionId,
+            // 同上：以活动记录为准，不看 resolver 映射（会被 clearModelOverride 清掉）
+            isStale: () => {
+                const rec = this.sessions.get(key);
+                if (!rec)
+                    return true;
+                return String(rec.sessionId ?? '') !== sessionId;
+            },
         });
         // ★★ 2026-11-05（issue #39 问题 1 的**真正根治点**，主人追问"为什么非得在 QQ 里说话才注册"）：
         //   扩展工具的注册原来只挂在 `agent/inbox/claimed` 与 `agent/pre-step` 两个钩子上 ——
