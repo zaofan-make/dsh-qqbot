@@ -36,7 +36,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { attachSessionToWorkspaceWithRetry, unarchiveSession } from './workspace-attach.js';
+import { archiveSessionDurably, attachSessionToWorkspaceWithRetry, unarchiveSession } from './workspace-attach.js';
 /** 通道工具注册诊断: 默认关闭; 设环境变量 QQBOT_DIAG_FILE 启用 */
 const SM_DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
 function diagSm(line) {
@@ -467,6 +467,8 @@ export class SessionManager {
     }
     /** fork 当前会话 → 新 childId; inherit=true 用旧历史做 seed(切模型), false 全新空档; 失败降级 dispose */
     async forkCurrentSession(key, record, route, inherit) {
+        // ★ 2026-11-15：fork 会把这个 record 的 sessionId 换掉，旧值先记下来 —— 之后要归档它
+        const preForkSessionId = String(record.sessionId ?? '');
         const sessionsService = this.getSessionsService();
         if (!sessionsService) {
             this.logger.warn(`fork unavailable, fallback to dispose: key=${key}`);
@@ -511,6 +513,12 @@ export class SessionManager {
         record.lastActivity = Date.now();
         void oldHandle.dispose().catch(() => { });
         void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger);
+        // ★ 2026-11-15（群友提的补丁）：新档建好后，把**被取代的旧档**收进「已归档」，
+        //   侧边栏不再堆僵尸档。fail-soft + 幂等（见 archiveSessionDurably 注释）；
+        //   开关 `archiveOnNewSession` 默认开，关掉就恢复原行为。
+        if (preForkSessionId && preForkSessionId !== childId && this.config.archiveOnNewSession !== false) {
+            void archiveSessionDurably(this.ctx, preForkSessionId, this.logger);
+        }
         this.logger.info(`forked session: key=${key} → ${childId} ${seed ? '(继承历史)' : '(全新空档, 旧会话存档为 parent)'} route=${route ? `${route.provider}/${route.model}` : 'session-own'}`);
     }
     clearModelOverride(scope, peerId) {
@@ -737,6 +745,8 @@ export class SessionManager {
         // resume 必失败, 且 sessionId 是 sessionKey 确定性派生的(重试还是同一个坏档)。
         // forceNew → 先把本 peer 的 sessionId 轮换成全新随机 id(断开坏档, 旧档文件原样保留),
         // 后面走标准创建链: resume 命中不到 → 落到 create, 得到干净新档; 下次入站也 resume 新档。
+        // ★ 2026-11-15：轮换前先把**旧 sessionId**记下来 —— 新档建好后要把它归档
+        const preRotate = String(this.currentSessionId(key) ?? '');
         if (opts?.forceNew) {
             const rotated = SessionId(randomUUID());
             try {
@@ -748,6 +758,10 @@ export class SessionManager {
             }
             catch { /* ignore */ }
             this.logger.info(`getOrCreate(forceNew): 弃档重开 key=${key} new=${rotated}`);
+            // 弃档重开也算"开新档"：旧档进「已归档」（与 fork 那条同款，fail-soft + 幂等）
+            if (preRotate && preRotate !== rotated && this.config.archiveOnNewSession !== false) {
+                void archiveSessionDurably(this.ctx, preRotate, this.logger);
+            }
         }
         // 2026-09-11: 先定 sessionId, 再按「会话级」查模型路由 —— 新会话(sessionId 无 override)回落全局默认
         const sessionId = SessionId(this.currentSessionId(key));

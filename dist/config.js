@@ -350,6 +350,7 @@ const ConfigSchemaRaw = Schema.object({
     c2cShowBotAvatar: Schema.boolean().default(false).description('私聊出站首行显示机器人头像（官方私聊没有头像，群里才有；默认关）'),
     streaming: Schema.boolean().default(true).description('是否启用流式输出（群聊始终不启用）'),
     sessionIdleTimeout: Schema.number().default(30 * 60 * 1000).description('会话闲置超时(ms)'),
+    archiveOnNewSession: Schema.boolean().default(true).description('开新档自动归档旧会话(默认开): /new、/bot-new、换模型 fork 出新档时, 把被取代的旧会话写进宿主「已归档」集合, 侧边栏不再堆僵尸档; 旧档仍可被 QQ 消息拉回'),
     maxQueue: Schema.number().default(20).description('并发队列最大长度'),
     processingTimeoutMs: Schema.number().default(120000).description('处理超时(ms)'),
     historyLimit: Schema.number().default(10).description('群历史缓冲条数'),
