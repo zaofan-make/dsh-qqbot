@@ -251,6 +251,15 @@ export async function attachSessionToWorkspace(
   cwd: string | undefined,
   sessionId: string,
   logger: Logger,
+  /**
+   * ★ 2026-11-15（CodeRabbit）：**有效性检查**。
+   *
+   * 背景：这个函数末尾会无条件 `unarchiveSession`（"顺带把误归档的会话拉回可见"）。
+   * 而 `attachSessionToWorkspaceWithRetry` 会重试到 5 秒 —— 如果这期间用户 /new 换了新档、
+   * 我们刚把旧档归档，旧档的重试链跑完时会把它**又拉回可见**（取消掉刚做的归档）。
+   * 传了这个回调，就能在反归档前问一句"这个 sessionId 还是当前档吗"，不是就跳过。
+   */
+  opts?: { isStale?: () => boolean },
 ): Promise<boolean> {
   const registry = getRegistry(ctx);
   if (!registry) return false; // workspaceRegistry 未挂载(如 headless profile) → 静默跳过
@@ -271,6 +280,11 @@ export async function attachSessionToWorkspace(
     }
   }
   // 顺带把误归档的会话拉回可见(归档与工作区归属无关, 故不依赖 cwd)
+  // ★ 但**已经被新档取代**的会话不该被拉回来：那会把刚做的自动归档撤销掉
+  if (opts?.isStale?.() === true) {
+    diag(`skip-unarchive-stale ${sessionId}`);
+    return ok;
+  }
   await unarchiveSession(ctx, sessionId, logger);
   return ok;
 }
@@ -299,14 +313,17 @@ export function attachSessionToWorkspaceWithRetry(
   cwd: string | undefined,
   sessionId: string,
   logger: Logger,
+  opts?: { isStale?: () => boolean },
 ): void {
   if (!getRegistry(ctx)) return;   // headless：没 registry 就别白跑五轮
   void (async () => {
     for (let i = 0; i < ATTACH_RETRY_DELAYS.length; i++) {
       const wait = ATTACH_RETRY_DELAYS[i]!;
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      // 已被新档取代 → 没必要再挂，更不能再走到反归档
+      if (opts?.isStale?.() === true) { diag(`attach-abort-stale ${sessionId}`); return; }
       try {
-        if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger)) {
+        if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger, opts)) {
           if (i > 0) diag(`attach-ok-after-retry ${sessionId} attempt=${i + 1} cwd=${cwd ?? ''}`);
           return;
         }

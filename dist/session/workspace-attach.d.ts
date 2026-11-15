@@ -35,6 +35,19 @@ export declare function archiveSessionDurably(ctx: Context, sessionId: string, l
  * 会话可用性总入口: 挂到工作区 + 保证不在归档里(两者都幂等 + fail-soft)。
  * SessionManager.getOrCreate **创建/恢复**会话后调用, fire-and-forget 不阻塞主链。
  */
-export declare function attachSessionToWorkspace(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger): Promise<boolean>;
-export declare function attachSessionToWorkspaceWithRetry(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger): void;
+export declare function attachSessionToWorkspace(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger, 
+/**
+ * ★ 2026-11-15（CodeRabbit）：**有效性检查**。
+ *
+ * 背景：这个函数末尾会无条件 `unarchiveSession`（"顺带把误归档的会话拉回可见"）。
+ * 而 `attachSessionToWorkspaceWithRetry` 会重试到 5 秒 —— 如果这期间用户 /new 换了新档、
+ * 我们刚把旧档归档，旧档的重试链跑完时会把它**又拉回可见**（取消掉刚做的归档）。
+ * 传了这个回调，就能在反归档前问一句"这个 sessionId 还是当前档吗"，不是就跳过。
+ */
+opts?: {
+    isStale?: () => boolean;
+}): Promise<boolean>;
+export declare function attachSessionToWorkspaceWithRetry(ctx: Context, cwd: string | undefined, sessionId: string, logger: Logger, opts?: {
+    isStale?: () => boolean;
+}): void;
 //# sourceMappingURL=workspace-attach.d.ts.map

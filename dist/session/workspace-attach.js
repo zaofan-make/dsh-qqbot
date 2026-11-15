@@ -220,7 +220,16 @@ export async function archiveSessionDurably(ctx, sessionId, logger) {
  * 会话可用性总入口: 挂到工作区 + 保证不在归档里(两者都幂等 + fail-soft)。
  * SessionManager.getOrCreate **创建/恢复**会话后调用, fire-and-forget 不阻塞主链。
  */
-export async function attachSessionToWorkspace(ctx, cwd, sessionId, logger) {
+export async function attachSessionToWorkspace(ctx, cwd, sessionId, logger, 
+/**
+ * ★ 2026-11-15（CodeRabbit）：**有效性检查**。
+ *
+ * 背景：这个函数末尾会无条件 `unarchiveSession`（"顺带把误归档的会话拉回可见"）。
+ * 而 `attachSessionToWorkspaceWithRetry` 会重试到 5 秒 —— 如果这期间用户 /new 换了新档、
+ * 我们刚把旧档归档，旧档的重试链跑完时会把它**又拉回可见**（取消掉刚做的归档）。
+ * 传了这个回调，就能在反归档前问一句"这个 sessionId 还是当前档吗"，不是就跳过。
+ */
+opts) {
     const registry = getRegistry(ctx);
     if (!registry)
         return false; // workspaceRegistry 未挂载(如 headless profile) → 静默跳过
@@ -242,6 +251,11 @@ export async function attachSessionToWorkspace(ctx, cwd, sessionId, logger) {
         }
     }
     // 顺带把误归档的会话拉回可见(归档与工作区归属无关, 故不依赖 cwd)
+    // ★ 但**已经被新档取代**的会话不该被拉回来：那会把刚做的自动归档撤销掉
+    if (opts?.isStale?.() === true) {
+        diag(`skip-unarchive-stale ${sessionId}`);
+        return ok;
+    }
     await unarchiveSession(ctx, sessionId, logger);
     return ok;
 }
@@ -262,7 +276,7 @@ export async function attachSessionToWorkspace(ctx, cwd, sessionId, logger) {
  * 最终失败只留一行 warn + 一条诊断（开 diagLog 后见 qqbot-archive.log）。幂等安全。
  */
 const ATTACH_RETRY_DELAYS = [0, 300, 900, 2000, 5000];
-export function attachSessionToWorkspaceWithRetry(ctx, cwd, sessionId, logger) {
+export function attachSessionToWorkspaceWithRetry(ctx, cwd, sessionId, logger, opts) {
     if (!getRegistry(ctx))
         return; // headless：没 registry 就别白跑五轮
     void (async () => {
@@ -270,8 +284,13 @@ export function attachSessionToWorkspaceWithRetry(ctx, cwd, sessionId, logger) {
             const wait = ATTACH_RETRY_DELAYS[i];
             if (wait > 0)
                 await new Promise((r) => setTimeout(r, wait));
+            // 已被新档取代 → 没必要再挂，更不能再走到反归档
+            if (opts?.isStale?.() === true) {
+                diag(`attach-abort-stale ${sessionId}`);
+                return;
+            }
             try {
-                if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger)) {
+                if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger, opts)) {
                     if (i > 0)
                         diag(`attach-ok-after-retry ${sessionId} attempt=${i + 1} cwd=${cwd ?? ''}`);
                     return;
