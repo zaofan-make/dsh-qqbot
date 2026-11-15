@@ -29,10 +29,12 @@ export default async function onOutbound(ctx, next) {
 | --- | --- |
 | `ctx.text` | 本条出站正文（只读；要改请用 `ctx.rewrite()`） |
 | `ctx.kind` | `'text' \| 'markdown' \| 'media' \| 'card' \| 'forward' \| 'other'` |
+| `ctx.source` | `'assistant/message' \| 'tool/call' \| 'tool/result' \| 'turn/end' \| 'unknown'` |
 | `ctx.target` | `{ scope, peerId, msgId? }` —— **被动回复靠它自带的 msgId** |
 | `ctx.turnId` / `ctx.chunkIndex` / `ctx.isLastChunk` | 回合内定位 |
 | **`ctx.phase`** | `'send'` = 正文**发送前**；`'turnEnd'` = **回合真正结束** |
 | `ctx.rewrite(t)` / `ctx.annihilate(why)` | 改写 / 消灭本条出站 |
+| `ctx.transform(fn)` | 同步变换内容，返回一条、多条或 `null` / `[]` |
 | `ctx.sendMedia({path\|url,text?})` / `ctx.send(text)` | 额外补发（**先被动、失败/超限自动转主动**） |
 | `ctx.background(fn)` | ★ **丢后台**：不 await、不阻塞正文（见下） |
 | `ctx.note(msg)` | 审计/诊断一行（最坏丢日志，绝不抛） |

@@ -3,6 +3,14 @@ import type { Logger } from '../types.js';
 export declare const EXT_OUTBOUND_SUBDIR = "outbound";
 /** 其他扩展取"出站操控器"的全局键（Symbol.for ⇒ 跨模块实例单例，同 ext-inbound 的 HANDLER_KEY 手法） */
 export declare const OUTBOUND_API_KEY: unique symbol;
+/** 一条待发送内容 */
+export interface OutboundMessage {
+    text: string;
+    kind: OutboundCtx['kind'];
+    source: OutboundCtx['source'];
+}
+/** 同步内容变换；返回一条、多条或 null/[] */
+export type OutboundTransform = (message: Readonly<OutboundMessage>) => OutboundMessage | OutboundMessage[] | null;
 /** 一次出站的载体（正文 + 元信息），扩展可读写 `text` */
 export interface OutboundCtx {
     /** 本条出站正文（扩展可读；改它请用 rewrite()） */
@@ -11,6 +19,8 @@ export interface OutboundCtx {
     segments: unknown[];
     /** 这条出站是什么 */
     kind: 'text' | 'markdown' | 'media' | 'card' | 'forward' | 'other';
+    /** 产生本条消息的宿主事件 */
+    source: 'assistant/message' | 'tool/call' | 'tool/result' | 'turn/end' | 'unknown';
     /** 回复目标（被动回复优先靠它自带的 msgId） */
     target: {
         scope?: string;
@@ -37,6 +47,8 @@ export interface OutboundCtx {
     logger: Logger;
     /** 改写本条出站正文；返回 false = 已经消灭了（改也没意义） */
     rewrite(newText: string): boolean;
+    /** 登记同步内容变换（仅 send 阶段） */
+    transform(fn: OutboundTransform): boolean;
     /** 消灭本条出站（**之后不要调 next()**，否则引擎会记 warn）；返回 false = 已熔断/被拒 */
     annihilate(reason: string): boolean;
     /**
@@ -154,6 +166,7 @@ export interface RunOutboundOptions {
     chunkIndex?: number;
     isLastChunk?: boolean;
     kind?: OutboundCtx['kind'];
+    source?: OutboundCtx['source'];
     segments?: unknown[];
     apiCall?: unknown;
     kernel?: unknown;
@@ -197,18 +210,26 @@ export declare function resetOutboundBreaker(name?: string): void;
 export declare function outboundActive(): boolean;
 /** 最近一次出站的 ctx（其他扩展可用它拿 target 往同一个会话补发） */
 export declare function lastOutboundCtx(): OutboundCtx | null;
-/**
- * 构造一条出站的 ctx（**导出**出来，方便其他扩展/工具直接造一条去发）。
- */
-export declare function makeOutboundCtx(initialText: string, opts?: RunOutboundOptions, state?: {
+interface OutboundChainState {
     text: string;
     killed: boolean;
     reason: string;
-}): OutboundCtx;
+    transforms?: Array<{
+        fn: OutboundTransform;
+        extension?: OutboundExtension;
+    }>;
+    extension?: OutboundExtension;
+}
+/**
+ * 构造一条出站的 ctx（**导出**出来，方便其他扩展/工具直接造一条去发）。
+ */
+export declare function makeOutboundCtx(initialText: string, opts?: RunOutboundOptions, state?: OutboundChainState): OutboundCtx;
 /** 一条出站的执行结果 */
 export interface OutboundRunResult {
     /** 最终要发的正文（可能被扩展改写） */
     text: string;
+    /** 变换后的消息（省略时沿用 text） */
+    messages?: OutboundMessage[];
     /** 是否被消灭（调用方应**跳过发送**） */
     killed: boolean;
     /** 消灭原因（诊断用） */
@@ -268,4 +289,5 @@ export declare function sendViaOutboundChannel(payload: {
  * ```
  */
 export declare function installOutboundApi(): void;
+export {};
 //# sourceMappingURL=ext-outbound.d.ts.map

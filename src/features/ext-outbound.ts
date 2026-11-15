@@ -50,6 +50,16 @@ export const EXT_OUTBOUND_SUBDIR = 'outbound';
 /** 其他扩展取"出站操控器"的全局键（Symbol.for ⇒ 跨模块实例单例，同 ext-inbound 的 HANDLER_KEY 手法） */
 export const OUTBOUND_API_KEY = Symbol.for('im-qqbot.outbound');
 
+/** 一条待发送内容 */
+export interface OutboundMessage {
+  text: string;
+  kind: OutboundCtx['kind'];
+  source: OutboundCtx['source'];
+}
+
+/** 同步内容变换；返回一条、多条或 null/[] */
+export type OutboundTransform = (message: Readonly<OutboundMessage>) => OutboundMessage | OutboundMessage[] | null;
+
 /** 一次出站的载体（正文 + 元信息），扩展可读写 `text` */
 export interface OutboundCtx {
   /** 本条出站正文（扩展可读；改它请用 rewrite()） */
@@ -58,6 +68,8 @@ export interface OutboundCtx {
   segments: unknown[];
   /** 这条出站是什么 */
   kind: 'text' | 'markdown' | 'media' | 'card' | 'forward' | 'other';
+  /** 产生本条消息的宿主事件 */
+  source: 'assistant/message' | 'tool/call' | 'tool/result' | 'turn/end' | 'unknown';
   /** 回复目标（被动回复优先靠它自带的 msgId） */
   target: { scope?: string; peerId?: string; msgId?: string } | null;
   /** 本回合 id（同一回合的所有正文块共享；没有回合概念时是空串） */
@@ -82,6 +94,8 @@ export interface OutboundCtx {
   // ── 动作（出站独有）────────────────────────────────────────────
   /** 改写本条出站正文；返回 false = 已经消灭了（改也没意义） */
   rewrite(newText: string): boolean;
+  /** 登记同步内容变换（仅 send 阶段） */
+  transform(fn: OutboundTransform): boolean;
   /** 消灭本条出站（**之后不要调 next()**，否则引擎会记 warn）；返回 false = 已熔断/被拒 */
   annihilate(reason: string): boolean;
   /**
@@ -194,6 +208,7 @@ export interface RunOutboundOptions {
   chunkIndex?: number;
   isLastChunk?: boolean;
   kind?: OutboundCtx['kind'];
+  source?: OutboundCtx['source'];
   segments?: unknown[];
   apiCall?: unknown;
   kernel?: unknown;
@@ -460,13 +475,21 @@ export function lastOutboundCtx(): OutboundCtx | null {
   return lastCtx;
 }
 
+interface OutboundChainState {
+  text: string;
+  killed: boolean;
+  reason: string;
+  transforms?: Array<{ fn: OutboundTransform; extension?: OutboundExtension }>;
+  extension?: OutboundExtension;
+}
+
 /**
  * 构造一条出站的 ctx（**导出**出来，方便其他扩展/工具直接造一条去发）。
  */
 export function makeOutboundCtx(
   initialText: string,
   opts: RunOutboundOptions = {},
-  state: { text: string; killed: boolean; reason: string } = { text: initialText, killed: false, reason: '' },
+  state: OutboundChainState = { text: initialText, killed: false, reason: '' },
 ): OutboundCtx {
   const logger = opts.logger ?? ({ info() {}, warn() {}, debug() {}, error() {} } as unknown as Logger);
   const t = (opts.target ?? null) as OutboundCtx['target'];
@@ -474,6 +497,7 @@ export function makeOutboundCtx(
     text: state.text,
     segments: Array.isArray(opts.segments) ? opts.segments : [],
     kind: opts.kind ?? 'text',
+    source: opts.source ?? 'unknown',
     target: t,
     turnId: String(opts.turnId ?? ''),
     chunkIndex: Number(opts.chunkIndex ?? 0),
@@ -489,6 +513,11 @@ export function makeOutboundCtx(
       if (state.killed) return false;
       state.text = String(newText ?? '');
       self.text = state.text;
+      return true;
+    },
+    transform(fn): boolean {
+      if (state.killed || self.phase !== 'send') return false;
+      (state.transforms ??= []).push({ fn, extension: state.extension });
       return true;
     },
     annihilate(reason: string): boolean {
@@ -540,6 +569,8 @@ export function makeOutboundCtx(
 export interface OutboundRunResult {
   /** 最终要发的正文（可能被扩展改写） */
   text: string;
+  /** 变换后的消息（省略时沿用 text） */
+  messages?: OutboundMessage[];
   /** 是否被消灭（调用方应**跳过发送**） */
   killed: boolean;
   /** 消灭原因（诊断用） */
@@ -572,7 +603,7 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
   const exts = bucket?.loaded ?? [];
   if (exts.length === 0) return { text, killed: false, reason: '', ran: 0 };
 
-  const state = { text: String(text ?? ''), killed: false, reason: '' };
+  const state: OutboundChainState = { text: String(text ?? ''), killed: false, reason: '' };
   const ctx = makeOutboundCtx(state.text, merged, state);
   lastCtx = ctx;
   active += 1;
@@ -593,6 +624,8 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
         called = true;
         await next();
       };
+      const previousExtension = state.extension;
+      state.extension = ext;
       try {
         await ext.middleware(ctx, onceNext);
         if (!called && !state.killed) {
@@ -607,10 +640,25 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
         );
         // 出错 ⇒ 放行（宁可不改，也不能把消息弄丢）
         if (!state.killed) await next();
+      } finally {
+        state.extension = previousExtension;
       }
     };
     await next();
-    return { text: state.text, killed: state.killed, reason: state.reason, ran };
+    let messages: OutboundMessage[] | undefined;
+    if (!state.killed && state.transforms?.length) {
+      messages = [{ text: state.text, kind: ctx.kind, source: ctx.source }];
+      for (const { fn, extension } of state.transforms) {
+        if (extension && (breaker.get(extension.name) ?? 0) >= BREAKER_LIMIT) continue;
+        try {
+          messages = messages.flatMap((message) => fn(message) ?? []);
+        } catch (err) {
+          if (extension) noteBreaker(extension.name, logger);
+          logger.warn(`[ext-outbound] ${extension?.name ?? 'transform'} 内容变换失败，保留本次变换前的消息: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return { text: state.text, killed: state.killed, reason: state.reason, ran, ...(messages ? { messages } : {}) };
   } finally {
     active -= 1;
   }

@@ -6,6 +6,7 @@
  */
 import type { SessionRecord } from '../session/index.js';
 import type { Logger, ReplyTarget } from '../types.js';
+import type { OutboundCtx } from '../features/ext-outbound.js';
 /** QQ 流式会话（openStream 返回） */
 export interface StreamSessionLike {
     update(content: string): Promise<unknown>;
@@ -91,6 +92,8 @@ extHook?: {
     isLastChunk?: boolean;
     /** 这条出站是什么（默认 text） */
     kind?: 'text' | 'markdown' | 'media' | 'card' | 'forward' | 'other';
+    /** 产生本条消息的宿主事件（默认 unknown） */
+    source?: OutboundCtx['source'];
     /** 数据根（扩展的 store 用它） */
     dataRoot?: string;
     /** 主人 openid 白名单 */
