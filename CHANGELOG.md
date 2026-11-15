@@ -1,3 +1,24 @@
+## 1.13.6 (2026-11-15)
+
+### 新增
+
+- **开新档时自动归档被取代的旧会话**（`session/workspace-attach.ts`、`session/session-manager.ts`、`config.ts`）
+
+  `/new`、`/bot-new`、换模型 fork 出新档之后，旧档还留在侧边栏、得自己一个个点归档。
+  现在新档建好那一刻，旧档 id 写进宿主的 `archivedSessionIds`。
+
+  - `archiveSessionDurably()`：与已有的反归档 `unarchiveSession()` 严格对称
+    （同一个 registry 写入队列 / `setState` 优先回落 `global.set` / `stats` + `diag` 记账）
+  - 开关 `archiveOnNewSession`（默认开），关掉恢复原行为
+  - 幂等 + fail-soft：已在归档集合里直接 return；失败只 warn，绝不挡住开新档
+
+  经 CodeRabbit 三轮审查修正了三个时序问题：
+  1. `preForkSessionId` 改到 `agents.create` 之后读 —— 否则两个重叠 fork 会读到同一个 A，B 永远不被归档
+  2. `attachSessionToWorkspace(WithRetry)` 加 `isStale` —— 它末尾无条件 `unarchiveSession`，
+     而重试链最长 5 秒；这期间开新档并归档旧档后，旧档重试跑完会把它又拉回来。
+     判断依据是 `this.sessions` 里的**活动记录**（不看 resolver 映射，那个会被 `clearModelOverride` 清掉）
+  3. `forceNew` 的归档挪到"新档确实建成功之后" —— 原来先归档再创建，创建失败会误藏旧档
+
 ## 1.13.5 (2026-11-15)
 
 ### 修
