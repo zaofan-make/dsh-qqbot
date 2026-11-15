@@ -386,6 +386,14 @@ export interface ImQQBotConfig {
     streaming: boolean;
     /** 每会话最大闲置时长(ms)，超时自动回收 */
     sessionIdleTimeout: number;
+    /**
+     * 开新档时自动归档旧会话（默认开）。
+     *
+     * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主的
+     * `archivedSessionIds`，侧边栏不再堆一串僵尸档；旧档仍可被 QQ 消息拉回可见
+     * （`unarchiveSession` 那条腿完全不动）。关掉就恢复原行为。
+     */
+    archiveOnNewSession: boolean;
     /** 并发队列最大长度 */
     maxQueue: number;
     /** 处理超时(ms)，超时中断当前 LLM 调用 */

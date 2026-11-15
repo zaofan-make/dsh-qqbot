@@ -64,8 +64,12 @@ function diag(line: string): void {
   diagWrite('qqbot-archive', line);   // ★ 收口到统一诊断底座（默认关）
 }
 
-/** 反归档统计(供 /api/qqbot-settings/_debug 与排障查看) */
-const stats = { unarchived: 0, lastUnarchivedId: '', lastUnarchivedAt: 0, lastError: '' };
+/** 归档/反归档统计(供 /api/qqbot-settings/_debug 与排障查看) */
+const stats = {
+  unarchived: 0, lastUnarchivedId: '', lastUnarchivedAt: 0, lastError: '',
+  // ★ 2026-11-15（群友提的补丁）：开新档时**正向**归档旧会话，与反归档并存
+  archived: 0, lastArchivedId: '', lastArchivedAt: 0,
+};
 
 /** 取 workspaceRegistry(未挂载时 undefined; 全程 fail-soft) */
 function getRegistry(ctx: Context): WorkspaceRegistryLike | undefined {
@@ -146,14 +150,92 @@ export async function unarchiveSession(ctx: Context, sessionId: string, logger: 
   }
 }
 
-/** 供诊断: 反归档统计(有多少次真的把会话从归档里拉回可见) */
+/** 供诊断: 归档/反归档统计 */
 export function workspaceAttachState(): {
   unarchived: number;
   lastUnarchivedId: string;
   lastUnarchivedAt: number;
+  archived: number;
+  lastArchivedId: string;
+  lastArchivedAt: number;
   lastError: string;
 } {
   return { ...stats };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 正向归档（开新档时把被取代的旧会话收进「已归档」）
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * 把 id 加进归档集合（串行 + 持久化）。
+ * 与 {@link removeFromArchived} 严格对称：同一个 registry 写入队列，不会和宿主 UI 的归档写交错。
+ */
+async function addToArchived(registry: WorkspaceRegistryLike, sessionId: string): Promise<boolean> {
+  const write = async (): Promise<boolean> => {
+    const archived = readArchived(registry);
+    if (archived.includes(sessionId)) return false; // 幂等：已经在里面就当成功过
+    const state = registry.state;
+    if (state === undefined) return false;
+    const next = { ...state, archivedSessionIds: [...archived, sessionId] };
+    if (typeof registry.setState === 'function') {
+      // 正常路径: 宿主 setState = 落盘 + 更新内存(会触发 controller 推 follow 'archived' 帧)
+      await registry.setState(next);
+      return true;
+    }
+    // 兜底: 直接写 domain global, 并同步内存 state(否则下一次 requireState 会把旧集合写回去)
+    const global = (registry as unknown as { global?: { set?: (value: unknown) => Promise<void> } }).global;
+    if (typeof global?.set !== 'function') return false;
+    await global.set(next);
+    (registry as { state?: unknown }).state = next;
+    return true;
+  };
+  return typeof registry.enqueueOperation === 'function'
+    ? await registry.enqueueOperation(write)
+    : await write();
+}
+
+/**
+ * 开新档后，把**被取代的旧会话**收进宿主的「已归档」集合。
+ *
+ * ★ 2026-11-15（群友提的补丁，本机验过方案）：现在 `/new`、`/bot-new`、换模型 fork 完，
+ *   旧档还留在侧边栏，得自己一个个点归档。
+ *
+ * 安全性（与反归档同款）：
+ *   · **幂等**：已在归档集合里直接返回 false；
+ *   · **fail-soft**：整个 try/catch 包住，失败只 warn，绝不挡住开新档；调用处全是 `void`；
+ *   · **不抢反向逻辑**：`unarchiveSession`（旧档被 QQ 消息再次触发时拉回可见）完全不动，两条腿并存；
+ *   · **串行写**：走 `registry.enqueueOperation`，不会和宿主 UI 的归档写冲突。
+ *
+ * @returns true = 本次真的加进去了
+ */
+export async function archiveSessionDurably(ctx: Context, sessionId: string, logger: Logger): Promise<boolean> {
+  try {
+    const registry = getRegistry(ctx);
+    if (!registry) {
+      stats.lastError = 'no-workspaceRegistry';
+      return false;
+    }
+    const id = String(sessionId);
+    if (!id) return false;
+    const added = await addToArchived(registry, id);
+    if (added) {
+      stats.archived += 1;
+      stats.lastArchivedId = id;
+      stats.lastArchivedAt = Date.now();
+      stats.lastError = '';
+      logger.info?.(`[workspace-attach] session ${id} 已归档(被新档取代)`);
+      diag(`archived ${id}`);
+    }
+    return added;
+  } catch (err) {
+    // fail-soft: 归档失败绝不影响开新档
+    const msg = err instanceof Error ? err.message : String(err);
+    stats.lastError = msg;
+    logger.warn?.(`[workspace-attach] archive skipped: ${msg}`);
+    diag(`archive-failed ${sessionId}: ${msg}`);
+    return false;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -169,6 +251,15 @@ export async function attachSessionToWorkspace(
   cwd: string | undefined,
   sessionId: string,
   logger: Logger,
+  /**
+   * ★ 2026-11-15（CodeRabbit）：**有效性检查**。
+   *
+   * 背景：这个函数末尾会无条件 `unarchiveSession`（"顺带把误归档的会话拉回可见"）。
+   * 而 `attachSessionToWorkspaceWithRetry` 会重试到 5 秒 —— 如果这期间用户 /new 换了新档、
+   * 我们刚把旧档归档，旧档的重试链跑完时会把它**又拉回可见**（取消掉刚做的归档）。
+   * 传了这个回调，就能在反归档前问一句"这个 sessionId 还是当前档吗"，不是就跳过。
+   */
+  opts?: { isStale?: () => boolean },
 ): Promise<boolean> {
   const registry = getRegistry(ctx);
   if (!registry) return false; // workspaceRegistry 未挂载(如 headless profile) → 静默跳过
@@ -189,6 +280,11 @@ export async function attachSessionToWorkspace(
     }
   }
   // 顺带把误归档的会话拉回可见(归档与工作区归属无关, 故不依赖 cwd)
+  // ★ 但**已经被新档取代**的会话不该被拉回来：那会把刚做的自动归档撤销掉
+  if (opts?.isStale?.() === true) {
+    diag(`skip-unarchive-stale ${sessionId}`);
+    return ok;
+  }
   await unarchiveSession(ctx, sessionId, logger);
   return ok;
 }
@@ -217,14 +313,17 @@ export function attachSessionToWorkspaceWithRetry(
   cwd: string | undefined,
   sessionId: string,
   logger: Logger,
+  opts?: { isStale?: () => boolean },
 ): void {
   if (!getRegistry(ctx)) return;   // headless：没 registry 就别白跑五轮
   void (async () => {
     for (let i = 0; i < ATTACH_RETRY_DELAYS.length; i++) {
       const wait = ATTACH_RETRY_DELAYS[i]!;
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      // 已被新档取代 → 没必要再挂，更不能再走到反归档
+      if (opts?.isStale?.() === true) { diag(`attach-abort-stale ${sessionId}`); return; }
       try {
-        if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger)) {
+        if (await attachSessionToWorkspace(ctx, cwd, sessionId, logger, opts)) {
           if (i > 0) diag(`attach-ok-after-retry ${sessionId} attempt=${i + 1} cwd=${cwd ?? ''}`);
           return;
         }

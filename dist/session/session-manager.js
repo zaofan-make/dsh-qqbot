@@ -36,7 +36,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { attachSessionToWorkspaceWithRetry, unarchiveSession } from './workspace-attach.js';
+import { archiveSessionDurably, attachSessionToWorkspaceWithRetry, unarchiveSession } from './workspace-attach.js';
 /** 通道工具注册诊断: 默认关闭; 设环境变量 QQBOT_DIAG_FILE 启用 */
 const SM_DIAG_FILE = process.env.QQBOT_DIAG_FILE || '';
 function diagSm(line) {
@@ -503,6 +503,11 @@ export class SessionManager {
             ...(composed.setup ? { setup: composed.setup } : {}),
         });
         this.modelResolver.setSessionId(key, childId);
+        // ★ 2026-11-15（CodeRabbit）：**在 await 之后、替换记录之前**读旧 id。
+        //   原来放在函数最开头 —— 但 `forkCurrentSession` 前面有 `agents.create` 这个 await，
+        //   两个重叠的 fork 会在 await 前都读到同一个 A：后一个把前一个创建的 B 顶掉时，
+        //   B 永远没被归档。放到这里，每次替换都能归档"当前实际被替换的那个"。
+        const preForkSessionId = String(record.sessionId ?? '');
         const oldHandle = record.handle;
         record.sessionId = childId;
         record.agent = created.agent;
@@ -510,7 +515,27 @@ export class SessionManager {
         record.agentPreset = composed.agentPreset;
         record.lastActivity = Date.now();
         void oldHandle.dispose().catch(() => { });
-        void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger);
+        void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger, {
+            // 这个 childId 已经被下一次 fork/new 取代的话，别再挂、更别反归档（会撤销别人的自动归档）
+            //
+            // ★ 2026-11-15（CodeRabbit 第二轮）：**必须看 this.sessions 里的活动记录**，
+            //   不能用 `currentSessionId(key)` —— resolver 的 sessionId 映射会被
+            //   `clearModelOverride` 清掉（那时活动记录还活着），清掉后 currentSessionId
+            //   回落成派生 id，就会把这个**仍在用的会话**误判成过期：挂载重试被中止、
+            //   已完成挂载的也会跳过反归档。
+            isStale: () => {
+                const rec = this.sessions.get(key);
+                if (!rec)
+                    return true; // 记录没了 = 确实失效
+                return String(rec.sessionId ?? '') !== childId;
+            },
+        });
+        // ★ 2026-11-15（群友提的补丁）：新档建好后，把**被取代的旧档**收进「已归档」，
+        //   侧边栏不再堆僵尸档。fail-soft + 幂等（见 archiveSessionDurably 注释）；
+        //   开关 `archiveOnNewSession` 默认开，关掉就恢复原行为。
+        if (preForkSessionId && preForkSessionId !== childId && this.config.archiveOnNewSession !== false) {
+            void archiveSessionDurably(this.ctx, preForkSessionId, this.logger);
+        }
         this.logger.info(`forked session: key=${key} → ${childId} ${seed ? '(继承历史)' : '(全新空档, 旧会话存档为 parent)'} route=${route ? `${route.provider}/${route.model}` : 'session-own'}`);
     }
     clearModelOverride(scope, peerId) {
@@ -737,6 +762,10 @@ export class SessionManager {
         // resume 必失败, 且 sessionId 是 sessionKey 确定性派生的(重试还是同一个坏档)。
         // forceNew → 先把本 peer 的 sessionId 轮换成全新随机 id(断开坏档, 旧档文件原样保留),
         // 后面走标准创建链: resume 命中不到 → 落到 create, 得到干净新档; 下次入站也 resume 新档。
+        // ★ 2026-11-15：轮换前先把**旧 sessionId**记下来 —— 新档**建成功后**才归档它
+        //   （CodeRabbit：原来在这里就归档，若后面 resume/create 全失败、startNewSession 返回 failed，
+        //     旧档已经被藏起来了，而实际上没有任何新档取代它 ⇒ 得等创建成功再归档）
+        const preRotate = String(this.currentSessionId(key) ?? '');
         if (opts?.forceNew) {
             const rotated = SessionId(randomUUID());
             try {
@@ -850,6 +879,12 @@ export class SessionManager {
                 }
             }
         }
+        // ★ 2026-11-15（CodeRabbit）：**新档确实建成功了，这时才归档旧档**。
+        //   放在 forceNew 分支里原来是"先归档再创建"——若 resume/create 全失败，
+        //   旧档已经被藏起来，而实际没有任何新档取代它。
+        if (opts?.forceNew && preRotate && this.config.archiveOnNewSession !== false) {
+            void archiveSessionDurably(this.ctx, preRotate, this.logger);
+        }
         const record = {
             sessionKey: key,
             sessionId,
@@ -869,7 +904,15 @@ export class SessionManager {
         this.sessions.set(key, record);
         // 修复侧边栏归属(上游 PR #21 移植): 创建/恢复会话后挂到 cwd 对应工作区分组,
         // 防刷新后落 Ungrouped。幂等 + fail-soft(内部全吞), fire-and-forget 不阻塞主链。
-        void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, sessionId, this.logger);
+        void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, sessionId, this.logger, {
+            // 同上：以活动记录为准，不看 resolver 映射（会被 clearModelOverride 清掉）
+            isStale: () => {
+                const rec = this.sessions.get(key);
+                if (!rec)
+                    return true;
+                return String(rec.sessionId ?? '') !== sessionId;
+            },
+        });
         // ★★ 2026-11-05（issue #39 问题 1 的**真正根治点**，主人追问"为什么非得在 QQ 里说话才注册"）：
         //   扩展工具的注册原来只挂在 `agent/inbox/claimed` 与 `agent/pre-step` 两个钩子上 ——
         //   它们都是**回合事件**。于是会话说"创建了、但没跑过回合"时（冷启动后的空闲会话），
