@@ -240,7 +240,8 @@ export function outboundExtensionsDir(dataRoot: string): string {
  *   runOutboundChain 用 `opts.sender` 反查该实例的桶。**查不到且多桶 ⇒ 直通（fail-closed，不猜）**。
  */
 interface ObBucket {
-  cfg: { dataRoot: string; logger: Logger };
+  /** cfg.apiCall = 官方 API 调用 `(method, path, body)`；群管理功能没开时是 undefined */
+  cfg: { dataRoot: string; logger: Logger; apiCall?: unknown };
   loaded: OutboundExtension[];
   breaker: Map<string, number>;
 }
@@ -255,14 +256,14 @@ function obKey(dataRoot: string | undefined): string {
   return raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
-function ensureBucket(dataRoot: string, logger: Logger): ObBucket {
+function ensureBucket(dataRoot: string, logger: Logger, apiCall?: unknown): ObBucket {
   const k = obKey(dataRoot);
   let b = buckets.get(k);
   if (!b) {
-    b = { cfg: { dataRoot: String(dataRoot ?? ''), logger }, loaded: [], breaker: new Map<string, number>() };
+    b = { cfg: { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) }, loaded: [], breaker: new Map<string, number>() };
     buckets.set(k, b);
   } else {
-    b.cfg = { dataRoot: String(dataRoot ?? ''), logger };
+    b.cfg = { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) };
   }
   fallbackKey = k;
   return b;
@@ -279,8 +280,8 @@ function bucketOf(sender?: unknown): ObBucket | undefined {
 }
 
 /** 配置出站扩展的数据根与日志器（插件启动时调一次；热刷时复用） */
-export function configureOutboundExtensions(opts: { dataRoot: string; logger: Logger; owner?: object }): void {
-  ensureBucket(opts.dataRoot, opts.logger);
+export function configureOutboundExtensions(opts: { dataRoot: string; logger: Logger; owner?: object; apiCall?: unknown }): void {
+  ensureBucket(opts.dataRoot, opts.logger, opts.apiCall);
   // owner = 该实例的 QQBotSender（bot）对象：runOutboundChain 从 opts.sender 反查它
   if (opts.owner) ownerKey.set(opts.owner, obKey(opts.dataRoot));
 }
@@ -596,6 +597,9 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
   const merged: RunOutboundOptions = {
     ...(bucket?.cfg.dataRoot ? { dataRoot: bucket.cfg.dataRoot } : {}),
     ...(bucket?.cfg.logger ? { logger: bucket.cfg.logger } : {}),
+    // ★ 2026-11-15：出站扩展也要能发**按钮卡片**、调官方 API（`/会话列表` 那种 msg_type:2），
+    //   而 apiCall 原来只给了入站/命令/工具三套，出站这边漏了 ⇒ ctx.apiCall 恒为 undefined。
+    ...(bucket?.cfg.apiCall ? { apiCall: bucket.cfg.apiCall } : {}),
     ...opts,
   };
   const logger = merged.logger ?? ({ info() {}, warn() {}, debug() {}, error() {} } as unknown as Logger);
@@ -651,7 +655,27 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
       for (const { fn, extension } of state.transforms) {
         if (extension && (breaker.get(extension.name) ?? 0) >= BREAKER_LIMIT) continue;
         try {
-          messages = messages.flatMap((message) => fn(message) ?? []);
+          messages = messages.flatMap((message) => {
+            const out = fn(message) as unknown;
+            // ★ 2026-11-15（issue #62）：**返回值必须校验**。
+            //   扩展很容易把变换写成 `async (m) => ...`（想读个文件/查个词库），
+            //   而 `flatMap` 不会等待 Promise ⇒ 它会把这个 Promise 当成"一条消息"塞进列表，
+            //   transport 随后读 `msg.text` 得到 undefined ⇒ **整条消息变成空字符串发不出去**，
+            //   而且不进 catch（Promise 没 reject）、不计熔断、扩展自己也收不到失败回调。
+            //   这里把它变成一次**明确的异常**：走下面现成的 catch（warn + 熔断 + 保留原消息）。
+            if (out !== null && out !== undefined && typeof (out as { then?: unknown }).then === 'function') {
+              throw new Error('transform 必须同步返回，不能返回 Promise（去掉 async）');
+            }
+            if (out === null || out === undefined) return [];
+            const list = Array.isArray(out) ? out : [out];
+            // 逐条校验：必须是对象且 text 是字符串 —— 否则 transport 那边同样会炸
+            return list.filter((m): m is OutboundMessage => {
+              if (!m || typeof m !== 'object') return false;
+              const text = (m as { text?: unknown }).text;
+              if (typeof text !== 'string') return false;
+              return true;
+            });
+          });
         } catch (err) {
           if (extension) noteBreaker(extension.name, logger);
           logger.warn(`[ext-outbound] ${extension?.name ?? 'transform'} 内容变换失败，保留本次变换前的消息: ${err instanceof Error ? err.message : String(err)}`);

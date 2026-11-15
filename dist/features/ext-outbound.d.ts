@@ -180,6 +180,7 @@ export declare function configureOutboundExtensions(opts: {
     dataRoot: string;
     logger: Logger;
     owner?: object;
+    apiCall?: unknown;
 }): void;
 /** 当前已配置的出站扩展数据根（空串=没配）—— 供热刷判断"刷的是不是你要的那个实例" */
 /**

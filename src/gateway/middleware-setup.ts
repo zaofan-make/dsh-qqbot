@@ -273,7 +273,18 @@ export async function setupMiddlewares(
   //   ② 首次装载 + 装"出站操控器"（`globalThis[Symbol.for('im-qqbot.outbound')]`）供**其他扩展**调用。
   try {
     // ★ P1：owner = 本实例的 bot 对象 —— runOutboundChain 靠 opts.sender 反查它所属的桶
-  configureOutboundExtensions({ dataRoot: dataRootOf(config), logger, owner: bot as unknown as object });
+  configureOutboundExtensions({
+    dataRoot: dataRootOf(config),
+    logger,
+    owner: bot as unknown as object,
+    // ★ 2026-11-15：出站扩展也要能发按钮卡片（`msg_type: 2` + keyboard），
+    //   这条路只能走带 token 的官方 API。
+    //   ⚠️ **不能只取 groupAdmin**：它带 `config.groupAdmin.enabled` 开关，没开就是 undefined，
+    //      而"发条消息"根本不需要群管理权限。`mediaApi` 是素材上传用的轻量客户端，
+    //      与群管理开关无关（见 SessionManager.mediaApi 的注释），拿它兜底。
+    apiCall: (manager.groupAdmin as { apiCall?: unknown } | undefined)?.apiCall
+      ?? (manager as unknown as { mediaApi?: { apiCall?: unknown } }).mediaApi?.apiCall,
+  });
     installOutboundApi();
     const ro = await reloadOutboundExtensions();
     if (ro.total > 0) {

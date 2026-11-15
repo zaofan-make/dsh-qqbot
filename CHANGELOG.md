@@ -1,3 +1,24 @@
+## 1.13.5 (2026-11-15)
+
+### 修
+
+- **扩展把 transform 写成 async 会让整条消息静默丢失**（`features/ext-outbound.ts`，issue #62）
+
+  `messages.flatMap((m) => fn(m) ?? [])` 不会等待 Promise，于是 `async (m) => ...` 返回的
+  Promise 被当成"一条消息"，transport 读 `msg.text` 得到 `undefined`，
+  **整条消息变成空字符串发不出去**；而且不进 catch、不计熔断、扩展也收不到失败。
+
+  现在在 flatMap 里做返回值校验：**返回 Promise → 抛错走异常路径**（warn + `noteBreaker` + 保留变换前的消息）；
+  返回的每条消息还要求 `text` 是字符串，不合法直接过滤掉。
+
+### 新增
+
+- **出站扩展补上 `apiCall`**（`features/ext-outbound.ts`、`gateway/middleware-setup.ts`）
+
+  出站链原来只有 `dataRoot`/`logger`，`ctx.apiCall` 恒为 `undefined` ⇒ 扩展发不了按钮卡片。
+  现在从 `manager.groupAdmin?.apiCall ?? manager.mediaApi?.apiCall` 注入
+  —— **发消息不该依赖群管理开关**，`mediaApi` 与它无关，用来兜底。
+
 ## 1.13.2 (2026-11-15)
 
 ### 修
