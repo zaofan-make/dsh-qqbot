@@ -88,6 +88,14 @@ interface PendingSegment {
    * 而 `ownerCount` 仍在涨 ⇒ 出现 `ownerCount > total` 这种自相矛盾的快照。
    */
   total: number;
+  /**
+   * **独立的去重集合**（2026-11-17，CodeRabbit）。
+   *
+   * 不能拿 `items` 判重：`items` 有 `MAX_PENDING` 截断，被挤出去的 id 再重投一次
+   * 就会被当成"新消息"再计一次 `total`（实测应为 501 却变 502，`ownerCount` 也会重复累加）。
+   * 这个集合只存 id，上限比 `items` 宽一档，足够覆盖重投窗口。
+   */
+  seen: Set<string>;
 }
 
 /** 当前累积（还没唤醒的那一段） */
@@ -116,7 +124,7 @@ export function noteSegmentItem(sessionKey: unknown, item: SegmentItem, isOwner:
   const k = keyOf(sessionKey);
   if (!k || !item?.id) return;
   let seg = pending.get(k);
-  if (!seg) { seg = { items: [], ownerCount: 0, total: 0 }; pending.set(k, seg); }
+  if (!seg) { seg = { items: [], ownerCount: 0, total: 0, seen: new Set() }; pending.set(k, seg); }
   // 同一条重复入站（重试/聚合）只记一次
   if (seg.items.some((it) => it.id === item.id)) return;
   seg.items.push(item);

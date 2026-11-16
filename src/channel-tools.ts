@@ -13,7 +13,7 @@ import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage } from './
 import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import type { Context } from '@deepseek-ai/cordis';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { dataRootOf } from './gateway/data-root.js';
 import { homedir } from 'node:os';
 import type { SessionManager } from './session/session-manager.js';
@@ -467,7 +467,13 @@ type SessionRec = Exclude<ReturnType<SessionManager['findByAgent']>, undefined>;
  * 归一化只在 win32 折叠大小写：POSIX 上 `/srv/Bot` 与 `/srv/bot` 是两个实例。
  */
 function normRootPath(s: unknown): string {
-  const p = String(s ?? '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  let p = String(s ?? '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  // ★ 2026-11-17（CodeRabbit Major）：**先 resolve 成绝对路径再比**。
+  //   `opts.dataRoot` 可能是相对路径（`./bot-a`），而 `manager.dataRoot` 经 `dataRootOf()`
+  //   已经是绝对路径（`/srv/bot-a`）—— 不 resolve 就永远比不中，多实例修复等于没生效。
+  try {
+    if (p) p = resolve(p).replace(/[\\/]+/g, '/');
+  } catch { /* 解析失败就用原串 */ }
   return process.platform === 'win32' ? p.toLowerCase() : p;
 }
 

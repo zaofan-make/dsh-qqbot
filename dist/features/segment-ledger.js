@@ -66,7 +66,7 @@ export function noteSegmentItem(sessionKey, item, isOwner) {
         return;
     let seg = pending.get(k);
     if (!seg) {
-        seg = { items: [], ownerCount: 0, total: 0 };
+        seg = { items: [], ownerCount: 0, total: 0, seen: new Set() };
         pending.set(k, seg);
     }
     // 同一条重复入站（重试/聚合）只记一次
