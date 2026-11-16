@@ -502,16 +502,24 @@ function channelOf(exec) {
  * 归一化只在 win32 折叠大小写：POSIX 上 `/srv/Bot` 与 `/srv/bot` 是两个实例。
  */
 function normRootPath(s) {
-    let p = String(s ?? '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
-    // ★ 2026-11-17（CodeRabbit Major）：**先 resolve 成绝对路径再比**。
-    //   `opts.dataRoot` 可能是相对路径（`./bot-a`），而 `manager.dataRoot` 经 `dataRootOf()`
-    //   已经是绝对路径（`/srv/bot-a`）—— 不 resolve 就永远比不中，多实例修复等于没生效。
+    let p = String(s ?? '');
+    const isWin = process.platform === 'win32';
+    // ★ 反斜杠归一化**只在 Windows 做**（CodeRabbit）：POSIX 上 `\` 是合法的目录名字符，
+    //   `/srv/a\b` 与 `/srv/a/b` 是两个不同目录；无脑替换会让它们撞成同一个实例。
+    if (isWin)
+        p = p.replace(/[\\/]+/g, '/');
+    p = p.replace(/\/+$/, '');
+    // ★ 先 resolve 成绝对路径再比（CodeRabbit Major）：`opts.dataRoot` 可能是 `./bot-a`，
+    //   而 `manager.dataRoot` 经 `dataRootOf()` 已是绝对路径 —— 不 resolve 永远比不中。
     try {
         if (p)
-            p = resolve(p).replace(/[\\/]+/g, '/');
+            p = resolve(p);
     }
     catch { /* 解析失败就用原串 */ }
-    return process.platform === 'win32' ? p.toLowerCase() : p;
+    // resolve 在 Windows 上可能又吐出反斜杠，这里再折一次；POSIX 不动
+    if (isWin)
+        p = p.replace(/[\\/]+/g, '/').toLowerCase();
+    return p;
 }
 /** 在已注册实例里找 `dataRoot` 与给定值相同的那个 */
 function findManagerByRoot(extRoot) {
