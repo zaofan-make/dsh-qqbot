@@ -457,6 +457,32 @@ type SessionRec = Exclude<ReturnType<SessionManager['findByAgent']>, undefined>;
  * 解析"当前执行 agent → 会话 + 通道"(多账号/热更新后 agent 引用可能跨实例或换新对象):
  * ① ctx 通道的 manager 按引用/id 找(findByAgent 已含 id 兜底); ② 找不到→遍历所有实例桥再找。
  */
+/**
+ * 按 **dataRoot** 找到实例对应的 SessionManager（2026-11-17，CodeRabbit 指出）。
+ *
+ * 为什么需要它：`sess`（按 agent/sessionId 反查）失败时，原来两条路各自回落到
+ * "第一个桥" —— 结果**能力包（caps）选了 A 实例、可见性判断（enabled）选了 B 实例**，
+ * 同一个扩展在两处看到不同的 `manager.config`，条件判定给出相反答案。
+ *
+ * 归一化只在 win32 折叠大小写：POSIX 上 `/srv/Bot` 与 `/srv/bot` 是两个实例。
+ */
+function normRootPath(s: unknown): string {
+  const p = String(s ?? '').replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
+/** 在已注册实例里找 `dataRoot` 与给定值相同的那个 */
+function findManagerByRoot(extRoot: unknown): unknown {
+  try {
+    const want = normRootPath(extRoot);
+    if (!want) return undefined;
+    for (const m of managersOf()) {
+      if (normRootPath((m as unknown as { dataRoot?: string }).dataRoot) === want) return m;
+    }
+  } catch { /* ignore */ }
+  return undefined;
+}
+
 function findSessionRec(ch: QQChannel | undefined, exec: { agent?: unknown }): { ch: QQChannel; rec: SessionRec } | undefined {
   // ★★ 2026-11-06（主人实测：web 回合里 send_media 一直报「通道未就绪」）：
   //   **根因在这里** —— 原来只按 `findByAgent(exec.agent)` 匹配。
@@ -2994,7 +3020,10 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
             ctx,
             agent: agentOf,
             provider: providerOf,
-            manager: qqCh?.manager ?? bridgeCh?.manager,
+            // ⑤ 与 caps **同源**（CodeRabbit）：extRoot 归属的实例优先。
+            //   否则可能出现「caps 选了 A 实例、可见性看的是 B 实例」——
+            //   同一个扩展在两处读到不同的 manager.config，条件判定给出相反答案。
+            manager: (findManagerByRoot(extRoot) ?? qqCh?.manager ?? bridgeCh?.manager) as never,
             dataRoot: extRoot,
             logger: ctx.logger,
           })) !== false;
@@ -3089,18 +3118,10 @@ const toolDefs: Array<{ name: string; tool: unknown }> = [
               //   `qqCh?.manager` —— 而 qqCh 自己也是"第一个桥"的回落 ⇒ **appId 串到别的实例**，
               //   发出去报 11255。这里补一层：**按 dataRoot 匹配实例**（extRoot 是本调用方算好的，
               //   一定属于当前实例），匹配不上才走老回落。
-              const mgrByRoot = (() => {
-                try {
-                  if (!extRoot) return undefined;
-                  const want = String(extRoot).replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
-                  for (const m of managersOf()) {
-                    const dr = String((m as unknown as { dataRoot?: string }).dataRoot ?? '')
-                      .replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
-                    if (dr && dr === want) return m;
-                  }
-                } catch { /* ignore */ }
-                return undefined;
-              })();
+              //   ⚠️ 归一化**只在 win32 折叠大小写**（CodeRabbit）：POSIX 上 /srv/Bot 与 /srv/bot
+              //      是两个不同实例，统一 toLowerCase 会把它们判成同一个 → 又串台。
+              // 与 enabled(env) 同源：统一走 findManagerByRoot（CodeRabbit）
+              const mgrByRoot = findManagerByRoot(extRoot) as never;
               const mgr = (sess?.ch.manager ?? mgrByRoot ?? qqCh?.manager ?? bridgeCh?.manager) as unknown as {
                 config?: { appId?: string; appSecret?: string; owners?: string[] };
                 groupAdmin?: { apiCall?: (m: 'GET' | 'POST' | 'PATCH' | 'DELETE', p: string, b?: unknown) => Promise<unknown> };

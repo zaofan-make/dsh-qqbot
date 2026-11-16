@@ -423,7 +423,7 @@ export default { name: 'qq_send', expose: 'all', description: '…', inputSchema
 | # | 坑 | 结论 |
 |---|---|---|
 | 1 | 工具写成命名导出 | 扫描器只认 **`export default { name, description, inputSchema, run }`**；`inputSchema` 是**扁平写法**（键 → `{ type, description }`），不是标准 JSON Schema |
-| 2 | `tools/` 下新增/改名的工具，`/tools-reload` 之后仍 `unknown tool` | **热刷只重建命令表，不重扫工具**。工具在会话创建时挂载 ⇒ 必须**重启宿主**（或开新会话） |
+| 2 | `tools/` 下新增/改名的工具，热刷后仍 `unknown tool` | **两条入口行为不同**：`tools_reload`（AI 工具）→ `reloadAllChannelTools()` → 重 import `channel-tools.js` 并跑 `apply()`，**会重扫工具目录**；`/tools-reload`（斜杠命令）只走 `rebuildCommandTable`，**只重建命令表**。真遇到 `unknown tool` 时，**先查它是不是根本没被扫到**（`loadExtensionTools` 有 `缺 name 或 run, 跳过` 的 warn），别急着归因；实在拿不准就重启宿主 / 开新会话 |
 | 3 | 多实例下卡片发不出去，报 `11255 资源不存在` | `env.api` 的 `apiCall` 会绑到**另一台机器人**。发消息一律优先 **`env.card()` / `env.markdown()`**（走插件 sender，实例归属正确）；直连 `env.api` 只在确认 `env.dataRoot` 一致时用 |
 | 4 | 想让机器人发"点开就能播"的音乐卡 | **官方 API 禁发 ARK**（`msg_type=3` → `40034126`，appId/peer 都正确也一样）。能做的：图文卡（`msg_type=8`）/ 语音消息 `[MEDIA:voice]`（点开即播，60 秒）/ 音频文件（`msg_type=7`）。客户端"解析 H5 显示播放器"那层没开放给机器人 |
 

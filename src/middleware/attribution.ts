@@ -26,6 +26,7 @@
  *
  * ⚠️ 只读 + 只回填，不写任何存储、不阻断消息，出错一律吞掉。
  */
+import { noteSegmentItem } from '../features/segment-ledger.js';
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -195,6 +196,30 @@ export function historyRecorder(config: ImQQBotConfig, logger: Logger) {
           ...(h.f.length ? { f: h.f } : {}),
           ...(msg.me ? { me: true } : {}),
         });
+
+        // ── 分段台账（2026-11-17，CodeRabbit Major 修正）──
+        //   ⚠️ 必须记在**防抖聚合之前**的逐条位置。原来放在 handleInbound 里，
+        //   而聚合会把「主人先说 + 群友后说」合并成一次入站，那时只记得到最后一条
+        //   ⇒ 快照错误返回 hasOwner=false（主人明明说过话）。
+        //   历史台账 2026-11-15 就是因为同样原因搬到这儿来的。
+        try {
+          const owners = Array.isArray(config.groupAdmin?.owners)
+            ? config.groupAdmin!.owners!.map(String)
+            : [];
+          noteSegmentItem(
+            `${kind}:${peerId}`,
+            {
+              id: String(msg.messageId ?? ''),
+              s: String(msg.senderId ?? ''),
+              n: String(msg.senderName ?? msg.senderId ?? ''),
+              t: Date.now(),
+              k: h.k,
+              x: h.x,
+              ...(msg.me ? { me: true } : {}),
+            },
+            owners.includes(String(msg.senderId ?? '')),
+          );
+        } catch { /* 台账失败不影响主链 */ }
       }
     } catch (err) {
       logger.debug?.(`im-qqbot: 写消息历史失败(忽略): ${err instanceof Error ? err.message : String(err)}`);

@@ -97,7 +97,14 @@ export declare function captureSegment(sessionKey: unknown, opts?: {
     wokeSenderId?: string;
     ownerOpenid?: string;
 }): SegmentSnapshot;
-/** 读上一段的快照（没唤醒过 / 已重启 → undefined） */
+/**
+ * 读上一段的快照（没唤醒过 / 已重启 → undefined）。
+ *
+ * ★ 2026-11-17（CodeRabbit）：**返回独立副本，不把内部对象交出去**。
+ *   以前直接返回 `lastSnap` 里的那个对象 —— 扩展一句 `seg.items.reverse()`
+ *   或改 `seg.items[0].s`，别的扩展随后读到的就是被改过的内容，
+ *   "唤醒时定格、之后不变" 这条契约实际是假的。
+ */
 export declare function getPrevSegment(sessionKey: unknown): SegmentSnapshot | undefined;
 /** 当前累积但还没唤醒的那段（调试/诊断用） */
 export declare function peekPendingSegment(sessionKey: unknown): {

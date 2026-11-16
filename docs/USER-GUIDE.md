@@ -389,7 +389,7 @@ contextMemoMaxItems: 20   # 备忘条数上限（超出丢最旧，1~500）
 ### 三个最容易踩的坑
 
 1. **工具写成命名导出 → 扫描器不认**：必须 `export default { name, description, inputSchema, async run() {} }`。
-2. **改完工具不生效 → 要重启**：`/tools-reload` 只重建命令表；新工具在"会话创建"时挂上。
+2. **改完工具不生效**：`tools_reload`（工具）会重扫 `tools/` 并重注册；`/tools-reload`（斜杠命令）只重建命令表。真遇到 `unknown tool` 先看日志里有没有 `缺 name 或 run, 跳过`——那是文件格式问题，不是热刷问题。实在拿不准就重启。
 3. **卡片发不出去、报 11255 → 别用 `env.api`**：多实例下它会串到另一台机器人，用 `env.card()`。
 
 ### 一个天花板：官方发不了"点开就播"的音乐卡

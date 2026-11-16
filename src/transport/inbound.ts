@@ -9,7 +9,7 @@
  * - Layer 5: agentBody（history + base 拼合）
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
-import { noteSegmentItem, captureSegment } from '../features/segment-ledger.js';
+import { captureSegment } from '../features/segment-ledger.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -209,6 +209,9 @@ export async function handleInbound(
   const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
 
   // ── 分段台账（2026-11-17）──
+  //   记录已搬到 middleware/attribution.ts（**防抖聚合之前**的逐条位置）——
+  //   放这里会漏掉被聚合的前几条（CodeRabbit Major）。
+  //   本文件只负责**唤醒时定格快照**（captureSegment），segKey / segOwnerOpenid 供它用。
   //   宿主的 user/message 只带 { kind:'user' }，senderId 一旦 append 就再也拿不回来；
   //   防抖窗口 flush 完就销毁。所以**只能在这一刻记一笔**，唤醒时读走并清空。
   //   格式与 msg-history.HistoryRec 完全一致（id/s/n/t/k/x/me），将来想落盘直接就是那行。
@@ -219,17 +222,6 @@ export async function handleInbound(
       return os.includes(String(msg.senderId ?? '')) ? String(msg.senderId) : '';
     } catch { return ''; }
   })();
-  try {
-    noteSegmentItem(segKey, {
-      id: String(msg.messageId ?? ''),
-      s: String(msg.senderId ?? ''),
-      n: String(msg.senderName ?? ''),
-      t: Date.now(),
-      k: 'text',
-      x: String(msg.content ?? '').replace(/\s+/g, ' ').slice(0, 80),
-      me: false,
-    }, !!segOwnerOpenid);
-  } catch { /* 台账失败绝不影响主链 */ }
 
   const replyTarget: ReplyTarget = {
     scope,

@@ -153,9 +153,17 @@ export function makeExtCaps(deps) {
             try {
                 const sc = String(deps.scope ?? '');
                 const pid = String(deps.peerId ?? '');
-                return sc && pid ? getPrevSegment(`${sc}:${pid}`) : undefined;
+                // ⑥ 留痕（CodeRabbit）：环境缺失和"还没快照"是两回事，别让扩展作者分不清
+                if (!sc || !pid) {
+                    noteDeliver('prevSegment', false, new Error(`缺少会话坐标 scope=${sc || '(空)'} peerId=${pid || '(空)'}`));
+                    return undefined;
+                }
+                const snap = getPrevSegment(`${sc}:${pid}`);
+                // 正常查不到快照（本会话还没唤醒过）属于预期情况，保持静默
+                return snap;
             }
-            catch {
+            catch (err) {
+                noteDeliver('prevSegment', false, err);
                 return undefined;
             }
         },

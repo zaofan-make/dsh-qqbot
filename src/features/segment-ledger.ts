@@ -81,6 +81,13 @@ export interface SegmentSnapshot {
 interface PendingSegment {
   items: SegmentItem[];
   ownerCount: number;
+  /**
+   * **独立累计**的去重后总条数（2026-11-17，CodeRabbit 指出）。
+   *
+   * 不能拿 `items.length` 当总数：`MAX_PENDING` 截断后它会停在 500，
+   * 而 `ownerCount` 仍在涨 ⇒ 出现 `ownerCount > total` 这种自相矛盾的快照。
+   */
+  total: number;
 }
 
 /** 当前累积（还没唤醒的那一段） */
@@ -109,10 +116,11 @@ export function noteSegmentItem(sessionKey: unknown, item: SegmentItem, isOwner:
   const k = keyOf(sessionKey);
   if (!k || !item?.id) return;
   let seg = pending.get(k);
-  if (!seg) { seg = { items: [], ownerCount: 0 }; pending.set(k, seg); }
+  if (!seg) { seg = { items: [], ownerCount: 0, total: 0 }; pending.set(k, seg); }
   // 同一条重复入站（重试/聚合）只记一次
   if (seg.items.some((it) => it.id === item.id)) return;
   seg.items.push(item);
+  seg.total += 1;                     // ★ 独立累计（不受 items 截断影响）
   if (isOwner) seg.ownerCount += 1;
   if (seg.items.length > MAX_PENDING) seg.items.splice(0, seg.items.length - MAX_PENDING);
 }
@@ -136,14 +144,16 @@ export function captureSegment(
   const ownerOpenid = String(opts?.ownerOpenid ?? '').trim();
   const wokeSenderId = String(opts?.wokeSenderId ?? '').trim();
   const snap: SegmentSnapshot = {
-    items: items.slice(-MAX_SNAPSHOT_ITEMS),
+    items: items.slice(-MAX_SNAPSHOT_ITEMS).map((it) => ({ ...it })),   // ★ 深拷贝一份，别把内部对象交出去
     hasOwner: (seg?.ownerCount ?? 0) > 0,
     ownerCount: seg?.ownerCount ?? 0,
-    total: items.length,
+    total: seg?.total ?? 0,            // ★ 用独立累计值，不是 items.length
     wokeByOwner: !!ownerOpenid && !!wokeSenderId && ownerOpenid === wokeSenderId,
     wokeBy: String(opts?.wokeById ?? ''),
     capturedAt: Date.now(),
   };
+  Object.freeze(snap.items);           // 数组本身也冻上（元素已拷贝）
+  Object.freeze(snap);                 // 「唤醒时定格，之后不变」—— 契约要真的成立
   if (k) {
     lastSnap.set(k, snap);
     pending.delete(k);   // ★ 唤醒即清空：下一段从零开始记
@@ -151,10 +161,23 @@ export function captureSegment(
   return snap;
 }
 
-/** 读上一段的快照（没唤醒过 / 已重启 → undefined） */
+/**
+ * 读上一段的快照（没唤醒过 / 已重启 → undefined）。
+ *
+ * ★ 2026-11-17（CodeRabbit）：**返回独立副本，不把内部对象交出去**。
+ *   以前直接返回 `lastSnap` 里的那个对象 —— 扩展一句 `seg.items.reverse()`
+ *   或改 `seg.items[0].s`，别的扩展随后读到的就是被改过的内容，
+ *   "唤醒时定格、之后不变" 这条契约实际是假的。
+ */
 export function getPrevSegment(sessionKey: unknown): SegmentSnapshot | undefined {
   const k = keyOf(sessionKey);
-  return k ? lastSnap.get(k) : undefined;
+  const snap = k ? lastSnap.get(k) : undefined;
+  if (!snap) return undefined;
+  // 内部那份是冻结的，这里返回一份可写的浅拷贝（items 也复制一遍元素）
+  return {
+    ...snap,
+    items: snap.items.map((it) => ({ ...it })),
+  };
 }
 
 /** 当前累积但还没唤醒的那段（调试/诊断用） */
