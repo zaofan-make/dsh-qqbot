@@ -1,3 +1,45 @@
+## 1.13.14 (2026-11-17)
+
+### 新增
+
+- **分段台账**（`features/segment-ledger.ts`，暴露为 `env.prevSegment()`）
+
+  宿主的 `user/message` 只有 `{ kind: 'user' }`、**不带发送者**；防抖窗口有 senderId 但 flush 完就销毁；落盘台账能查但要读文件（分段压缩每回合扫全段太慢）。
+  ⇒ 在**入站那一刻**记一笔，**唤醒即定格快照并清空**。
+
+  - 字段与 `msg-history.HistoryRec` **完全一致**（id/s/n/t/k/x/me）
+  - 记录点在 `middleware/attribution.ts`（**防抖聚合之前、逐条**）——放 `handleInbound` 会漏掉被聚合的前几条
+  - 唤醒时 `captureSegment` 定格：`{ items, hasOwner, ownerCount, total, wokeByOwner, wokeBy, capturedAt }`
+  - 快照**冻结**、读取返回副本 ⇒ "唤醒时定格、之后不变"是真的
+  - 去重集合 `seen` 与保留窗口 `items` **分开**，被挤出的 id 重投不会重复计数
+
+### 修
+
+- **多实例下凭据串台**（`channel-tools.ts`，实测症状 `11255 资源不存在`）
+
+  `sess` 反查失败时原来直接回落 `qqCh?.manager`，而 `qqCh` 自己也是"第一个桥"的回落 ⇒ **appId 串到另一台机器人**（实测拿到 1905708994，本机应为 1905515836）。
+
+  新增 `findManagerByRoot(extRoot)`：**先 resolve 成绝对路径**，**只在 win32 折叠反斜杠与大小写**（POSIX 上 `/srv/a\b` 与 `/srv/a/b` 是两个目录）。
+
+- **可见性与能力包同源**：`def.enabled(env)` 的 `manager` 也走 `findManagerByRoot`，
+  否则会出现"caps 选 A 实例、可见性看 B 实例"，同一扩展读到不同 `manager.config`。
+
+- **`env.prevSegment()` 失败留痕**：环境缺失写 `noteDeliver('prevSegment', false, …)`；
+  "还没快照"保持静默（属预期）。
+
+### 文档（三份）
+
+- `extension-contract.md`：新增「⚠️ 先读这条：**限制行为要改返回值，别让工具忽隐忽现**」
+  + `env.prevSegment()` + 多实例串台 + ARK 禁发定论
+- `MAINTAINER-NOTES.md` §4.7：同一原则 + 本轮踩的四条坑
+- `USER-GUIDE.md`：扩展能加什么 / 三个坑 / 音乐卡天花板
+
+### 关键原则
+
+**条件判定放 `run()` 里返回拒绝，不要用 `enabled()` 动态切可见性。**
+宿主每步 `claim → assemble（拍工具表快照） → pre-step`，工具表一变整个 prompt 前缀失效；
+"这轮主人说没说话"这种判据每回合都变 ⇒ 等于每轮全价重算。
+`enabled` 只适合几乎不变的条件，而且它只管可见性、**管不住执行**。
 ## 1.13.13 (2026-11-17)
 
 ### 新增
