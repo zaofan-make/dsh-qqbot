@@ -7253,25 +7253,7 @@ var QQS_THEME_CSS = [
             h('div', { style: S.sub }, '把「市场」放第一位：想装扩展先看这里。下面也有怎么写自己的扩展')),
           h('button', { style: S.btn, onClick: function () { setTick(tick + 1) } }, loading ? '刷新中…' : '刷新')),
 
-        // 统计卡
-        h('div', { style: S.stats },
-          statCard(S, '市场', marketCount, '个可一键安装'),
-          statCard(S, '内置扩展', builtinTotal, '个文件'),
-          statCard(S, '扩展包', packList.length, '个包 · 共 ' + packTotal + ' 个扩展'),
-          statCard(S, '带设置页', settingsCount, '个扩展可配置')),
 
-        // 路径提示
-        h('div', { style: S.pathBox },
-          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '当前工作区'), h('code', { style: S.code }, (data.workspaceCwd || curWorkspaceCwd() || '（未识别，回退到默认数据根）'),
-            data.workspaceFrom && data.workspaceFrom !== 'default'
-              ? h('span', { style: { fontSize: 10.5, opacity: .6, marginLeft: 6 } }, 'via ' + data.workspaceFrom)
-              : null)),
-          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '内置目录'), h('code', { style: S.code }, data.builtinRoot || '—')),
-          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '扩展包目录'), h('code', { style: S.code }, data.packsRoot || '—'))),
-          // 2026-10-25 主人要求：面板上要能直接看到当前装的 qqbot 插件版本
-          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '插件版本'), h('code', { style: S.code }, data.pluginVersion ? ('v' + data.pluginVersion) : '—')),
-
-        // 页签
         // ★ 2026-11-16 主人要求：加一段「怎么写扩展」的提醒（可折叠，默认收起）
         h('details', {
           style: { margin: '0 0 12px', padding: '10px 12px', border: '1px solid var(--border-weak, #e5e5e5)', borderRadius: 8, background: 'var(--bg-weak, #fafafa)', fontSize: 12.5, lineHeight: 1.7 },
@@ -7292,11 +7274,24 @@ var QQS_THEME_CSS = [
               h('code', { style: { fontSize: 11.5 } }, 'packs/'), ' 下；合并后「市场」里就能搜到、点一下装。'),
           )),
 
+        // 路径提示
+        h('div', { style: S.pathBox },
+          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '当前工作区'), h('code', { style: S.code }, (data.workspaceCwd || curWorkspaceCwd() || '（未识别，回退到默认数据根）'),
+            data.workspaceFrom && data.workspaceFrom !== 'default'
+              ? h('span', { style: { fontSize: 10.5, opacity: .6, marginLeft: 6 } }, 'via ' + data.workspaceFrom)
+              : null)),
+          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '内置目录'), h('code', { style: S.code }, data.builtinRoot || '—')),
+          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '扩展包目录'), h('code', { style: S.code }, data.packsRoot || '—'))),
+          // 2026-10-25 主人要求：面板上要能直接看到当前装的 qqbot 插件版本
+          h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '插件版本'), h('code', { style: S.code }, data.pluginVersion ? ('v' + data.pluginVersion) : '—')),
+
+        // 页签
+
         h('div', { style: S.tabs },
+          tabBtn(S, '市场', 'market', tab, setTab, marketCount),
           tabBtn(S, '内置扩展', 'builtin', tab, setTab, builtinTotal),
           tabBtn(S, '扩展包', 'packs', tab, setTab, packList.length),
-          tabBtn(S, '设置中心', 'settings', tab, setTab, settingsCount),
-          tabBtn(S, '市场', 'market', tab, setTab, marketCount)),
+          tabBtn(S, '设置中心', 'settings', tab, setTab, settingsCount)),
 
         // 内容
         tab === 'market'
