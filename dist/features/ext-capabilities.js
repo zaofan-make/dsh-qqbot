@@ -38,6 +38,7 @@
  * `clickCount` / `reloadSelf` 等**卡片专属**成员，给工具/命令用只会让作者困惑。
  * 这里只做「三套共有」的那一层，实现上仍是同一批底层原语（sender / session / token）。
  */
+import { getPrevSegment } from './segment-ledger.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { registerExtToolCard } from './ext-tool-cards.js';
 import { dirname, join } from 'node:path';
@@ -147,6 +148,25 @@ export function makeExtCaps(deps) {
         }
     };
     return {
+        // 分段台账（2026-11-17）：上一段消息的快照，items 与 msg-history.HistoryRec 完全同款
+        prevSegment: () => {
+            try {
+                const sc = String(deps.scope ?? '');
+                const pid = String(deps.peerId ?? '');
+                // ⑥ 留痕（CodeRabbit）：环境缺失和"还没快照"是两回事，别让扩展作者分不清
+                if (!sc || !pid) {
+                    noteDeliver('prevSegment', false, new Error(`缺少会话坐标 scope=${sc || '(空)'} peerId=${pid || '(空)'}`));
+                    return undefined;
+                }
+                const snap = getPrevSegment(`${sc}:${pid}`);
+                // 正常查不到快照（本会话还没唤醒过）属于预期情况，保持静默
+                return snap;
+            }
+            catch (err) {
+                noteDeliver('prevSegment', false, err);
+                return undefined;
+            }
+        },
         // 2026-10-25：把当前执行者 openid 也暴露出来（此前只在内部用于算 user.isOwner，
         // 扩展侧读 caps.actorOpenid 一直是 undefined，与 actorOpenid 这个已文档化的 deps 字段不对称）。
         actorOpenid: actorOpenid || undefined,

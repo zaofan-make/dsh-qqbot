@@ -1,3 +1,44 @@
+/**
+ * ext-capabilities.ts — 给「用户扩展」用的统一能力包（2026-10-06）
+ *
+ * ── 为什么有这个东西 ───────────────────────────────────────────────
+ * 插件有三套用户扩展：`commands/`（自定义斜杠命令）、`tools/`（自定义 QQ 工具）、
+ * `botplay/`（卡片事件模块）。三套的能力面原本**严重不均**：
+ *
+ *   · botplay 卡片：`card()` / `emit` / `markdown` / `image` / `at` / `store` /
+ *     `api()` / **`appId`+`appSecret`** / `appendWake` —— 精装版
+ *   · 扩展工具  ：只有裸 `{cwd, manager, sender, replyTarget, exec, ctx, logger}`
+ *                 —— 想发张卡得自己 `sender.sendMarkdown(target, text)`，
+ *                    以至于主人不得不专门写一个 `send_md.mjs` 来干这一件事
+ *   · 自定义命令：**最窄**，只有一个消息 ctx
+ *
+ * 本模块把「大家都该有」的那部分做成**一套**，三处注入同一个面：
+ * 让**第三方作者**写扩展时不用再自己接生。
+ *
+ * ── 拿到什么（写扩展时直接 `env.xxx` / `caps.xxx`）───────────────────
+ *   发送： text(s) / markdown(s) / markdownCard(s) / image(src) / voice(src) /
+ *          video(src) / file(src) / media(kind, src) / at(openid)
+ *   官方 API： appId / appSecret / api(path, {method, body})
+ *              —— ★ 自带 token 与 2 小时缓存，**不依赖 groupAdmin 开关**
+ *   持久化： store.load() / store.save(obj)   （落数据根，插件升级不丢）
+ *   上下文： appendSilent(text) / appendWake(text)   ← 见下面「安全」
+ *   身份：  user.{openid,name,isOwner} / owners / peer.{scope,peerId}
+ *   杂项：  log(...)
+ *
+ * ── ★ 安全：appendSilent 必须过表面守卫 ─────────────────────────────
+ * dsh 的 v4 会话格式要求 `system/message`（人设）是 surface 的**第一个节点**
+ * （见 `session/surface-guard.ts` 的事故记录）。全新会话里人设还没落，
+ * 此时静默 append 会**把整份会话日志写废**。
+ * ⇒ 本模块的 `appendSilent` **一律先过 `canSilentlyAppend()`**，不安全就**拒绝执行**
+ *   并返回 false（内容不丢：调用方可以改走 `appendWake`）。
+ *   `appendWake` 走的是正常回合（dsh 会先补人设），所以**天然安全**。
+ *
+ * ── 设计取舍 ───────────────────────────────────────────────────
+ * 不直接复用 `botplay-ext.ts` 的 `makeExtContext()`：那个 ctx 带 `card()` /
+ * `clickCount` / `reloadSelf` 等**卡片专属**成员，给工具/命令用只会让作者困惑。
+ * 这里只做「三套共有」的那一层，实现上仍是同一批底层原语（sender / session / token）。
+ */
+import { type SegmentSnapshot } from './segment-ledger.js';
 import type { Logger } from '../types.js';
 /** 媒体类型（与 sender.sendMedia 的 kind 对齐） */
 export type ExtMediaKind = 'image' | 'voice' | 'video' | 'file';
@@ -232,6 +273,29 @@ export interface ExtCapabilities {
     appSecret: string;
     /** ★ 2026-10-16：数据根（扩展之间共享一小份状态时用它拼固定路径；空串=拿不到，别拿它拼相对路径写盘） */
     dataRoot: string;
+    /**
+     * **上一段消息的快照**（2026-11-17 主人定，给扩展作者用）。
+     *
+     * 「一段」= 上一次唤醒到现在这段。为什么不能自己查：
+     *   · 宿主的 `user/message` 的 `source` 只有 `{ kind: 'user' }`，append 之后 senderId 就没了；
+     *   · 防抖窗口虽有 senderId，但 flush 完就销毁，且只覆盖"还没派发的"；
+     *   · 落盘台账（msg-history）能查，但要读文件，每回合扫全段太慢。
+     *   ⇒ 插件在**入站那一刻**记一笔（`segment-ledger`），唤醒时定格成快照。
+     *
+     * 返回（没快照时 `undefined`）：
+     * ```js
+     * {
+     *   items: [{ id, s, n, t, k, x, me }],  // ← 与 msg-history.HistoryRec 完全同款
+     *   hasOwner: boolean,     // 这段里主人说过话吗
+     *   ownerCount: number,    // 主人说了几条
+     *   total: number,         // 这段一共几条
+     *   wokeByOwner: boolean,  // 这次是不是主人叫醒的
+     *   wokeBy: string,        // 触发唤醒那条的 message_id
+     *   capturedAt: number,
+     * }
+     * ```
+     */
+    prevSegment(): SegmentSnapshot | undefined;
     at(id: string): string;
     text(s: string): Promise<boolean>;
     markdown(s: string): Promise<boolean>;

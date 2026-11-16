@@ -1,3 +1,41 @@
+## 1.13.13 (2026-11-17)
+
+### 新增
+
+- **分段台账**（`features/segment-ledger.ts`，暴露为 `env.prevSegment()`）
+
+  宿主的 `user/message` 的 `source` 只有 `{ kind: 'user' }`、**不带发送者**；
+  防抖窗口有 senderId 但 flush 完就销毁；落盘台账能查但要读文件（分段压缩每回合扫全段太慢）。
+  ⇒ 在**入站那一刻**记一笔，**唤醒即定格快照并清空**。
+
+  - 字段与 `msg-history.HistoryRec` **完全一致**（id/s/n/t/k/x/me），将来想落盘就是那一行
+  - 一个会话一条台账，**唤醒即清空** ⇒ 永远只有当前这一段，不随消息数增长，不需要容量上限
+  - 返回 `{ items, hasOwner, ownerCount, total, wokeByOwner, wokeBy, capturedAt }`
+
+### 修
+
+- **多实例下凭据串台**（`channel-tools.ts`）
+
+  症状：卡片发不出去，报 `11255 请求的资源不存在(用户/群已注销)`，但 group openid 是对的。
+
+  根因：`sess` 找不到时直接回落 `qqCh?.manager`，而 `qqCh` 自己也是"第一个桥"的回落
+  ⇒ **appId 串到另一台机器人**（实测拿到 1905708994，本机应为 1905515836）。
+
+  修法：中间插一层**按 dataRoot 匹配实例**（extRoot 是本调用方算好的，一定属于当前实例）。
+
+### 文档（三份都补）
+
+- `extension-contract.md`：新增「⚠️ 先读这条：**限制行为要改返回值，别让工具忽隐忽现**」
+  + `env.prevSegment()` + 多实例串台 + ARK 禁发定论
+- `MAINTAINER-NOTES.md` §4.7：同一原则 + 本轮踩的四条坑
+- `USER-GUIDE.md`：扩展能加什么 / 三个坑 / 音乐卡天花板
+
+### 关键原则
+
+**条件判定放 `run()` 里返回拒绝，不要用 `enabled()` 动态切可见性。**
+宿主每步 `claim → assemble（拍工具表快照） → pre-step`，工具表一变整个 prompt 前缀失效；
+"这轮主人说没说话"这种判据每回合都变 ⇒ 等于每轮全价重算。
+`enabled` 只适合几乎不变的条件，而且它只管可见性、**管不住执行**。
 ## 1.13.12 (2026-11-16)
 
 ### 改
