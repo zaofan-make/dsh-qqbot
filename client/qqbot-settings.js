@@ -6921,7 +6921,7 @@ var QQS_THEME_CSS = [
 
 
     // ═════════════════════════════════════════════════════════════════════════
-    // 「QQ机器人扩展」会话页签（2026-10-24）
+    // 「QQ 扩展功能」会话页签（2026-10-24）
     //
     // 会话页顶部与「对话 / 轨迹 / 记忆 / 白板看板」并列，进会话就能看到当前工作区
     // 装了哪些扩展，不用切到设置页。数据来源 GET /api/qqbot-settings/extensions。
@@ -7018,7 +7018,7 @@ var QQS_THEME_CSS = [
       var _a = useState(null), data = _a[0], setData = _a[1]
       var _b = useState(true), loading = _b[0], setLoading = _b[1]
       var _c = useState(''), err = _c[0], setErr = _c[1]
-      var _d = useState('builtin'), tab = _d[0], setTab = _d[1]
+      var _d = useState('market'), tab = _d[0], setTab = _d[1]
       var _e = useState(0), tick = _e[0], setTick = _e[1]
       var _sel = useState(null), sel = _sel[0], setSel = _sel[1]   // 正在编辑哪个扩展的设置
       function openSettings(info) { setSel(info) }
@@ -7249,15 +7249,30 @@ var QQS_THEME_CSS = [
         // 头部
         h('div', { style: S.head },
           h('div', null,
-            h('div', { style: S.title }, 'QQ 机器人扩展'),
-            h('div', { style: S.sub }, '当前工作区已装的扩展；放独立目录的扩展包也能在这里看到')),
+            h('div', { style: S.title }, 'QQ 扩展功能'),
+            h('div', { style: S.sub }, '把「市场」放第一位：想装扩展先看这里。下面也有怎么写自己的扩展')),
           h('button', { style: S.btn, onClick: function () { setTick(tick + 1) } }, loading ? '刷新中…' : '刷新')),
 
-        // 统计卡
-        h('div', { style: S.stats },
-          statCard(S, '内置扩展', builtinTotal, '个文件'),
-          statCard(S, '扩展包', packList.length, '个包 · 共 ' + packTotal + ' 个扩展'),
-          statCard(S, '带设置页', settingsCount, '个扩展可配置')),
+
+        // ★ 2026-11-16 主人要求：加一段「怎么写扩展」的提醒（可折叠，默认收起）
+        h('details', {
+          style: { margin: '0 0 12px', padding: '10px 12px', border: '1px solid var(--border-weak, #e5e5e5)', borderRadius: 8, background: 'var(--bg-weak, #fafafa)', fontSize: 12.5, lineHeight: 1.7 },
+        },
+          h('summary', { style: { cursor: 'pointer', fontWeight: 600, outline: 'none' } },
+            '🧩 想要什么功能？先看看能不能自己写个扩展（契约 / 写法 / 上传）'),
+          h('div', { style: { marginTop: 8, opacity: .92 } },
+            h('div', null, h('b', null, '为什么写：'), '不用改插件本体，就能给它加工具、加斜杠命令、改写她发出去的话、接事件钩子。'),
+            h('div', null, h('b', null, '契约在哪：'), h('code', { style: { fontSize: 11.5 } }, 'docs/extension-contract.md'), ' —— 每个扩展点的 ctx 上有什么、能调什么、哪些必须同步返回、坑在哪，全在里面。'),
+            h('div', null, h('b', null, '写一个：'), '单个 .mjs 文件，默认导出对象即可：'),
+            h('div', { style: { margin: '2px 0 2px 12px', fontFamily: 'monospace', fontSize: 11.5, opacity: .85 } },
+              "export default { name: 'my-ext', async execute(args) { return { ok: true, msg: 'hi' } } }"),
+            h('div', null, h('b', null, '放到哪：'), '内置目录下的 tools / commands / inbound / outbound / hooks / botplay 子目录，丢进去点「刷新」即生效，不用重启。完整例子见 ',
+              h('code', { style: { fontSize: 11.5 } }, 'examples/'), '。'),
+            h('div', null, h('b', null, '想分享给别人：'), '整理成一个包目录（加 ',
+              h('code', { style: { fontSize: 11.5 } }, 'qqbot-pack.json'), ' 和封面），提到 ',
+              h('code', { style: { fontSize: 11.5 } }, 'zaofan-make/dsh-qqbot-plugins'), ' 的 ',
+              h('code', { style: { fontSize: 11.5 } }, 'packs/'), ' 下；合并后「市场」里就能搜到、点一下装。'),
+          )),
 
         // 路径提示
         h('div', { style: S.pathBox },
@@ -7271,11 +7286,12 @@ var QQS_THEME_CSS = [
           h('div', { style: S.pathRow }, h('span', { style: S.pathKey }, '插件版本'), h('code', { style: S.code }, data.pluginVersion ? ('v' + data.pluginVersion) : '—')),
 
         // 页签
+
         h('div', { style: S.tabs },
+          tabBtn(S, '市场', 'market', tab, setTab, marketCount),
           tabBtn(S, '内置扩展', 'builtin', tab, setTab, builtinTotal),
           tabBtn(S, '扩展包', 'packs', tab, setTab, packList.length),
-          tabBtn(S, '设置中心', 'settings', tab, setTab, settingsCount),
-          tabBtn(S, '市场', 'market', tab, setTab, marketCount)),
+          tabBtn(S, '设置中心', 'settings', tab, setTab, settingsCount)),
 
         // 内容
         tab === 'market'
@@ -8029,7 +8045,7 @@ var QQS_THEME_CSS = [
             function (props) { return h(QqbotHome, { close: props && props.close }) })
         })
       })
-      // 「QQ机器人扩展」会话页签：**只在 QQ 会话里注入**（2026-10-28 主人定）
+      // 「QQ 扩展功能」会话页签：**只在 QQ 会话里注入**（2026-10-28 主人定）
       //   为什么不用 DOM 隐藏：`slots.inject(key, cb)` 的返回值是 disposer（已核 ui-renderer 源码：
       //   `return () => { disposeController(); }`），注销后宿主 `slots.subscribe("conversation.view")`
       //   会自动刷新页签列表 —— 比按文案找按钮稳得多。
@@ -8040,7 +8056,7 @@ var QQS_THEME_CSS = [
           try {
             _extTabDisposed = slots.inject('conversation.view', function () {
               return slots.register(
-                { name: 'conversation.view', id: 'qqbot-ext', order: 81, label: 'QQ机器人扩展' },
+                { name: 'conversation.view', id: 'qqbot-ext', order: 81, label: 'QQ 扩展功能' },
                 ExtPanel)
             }) || null
             if (!_extTabDisposed) _extTabDisposed = function () {}
