@@ -1,3 +1,4 @@
+import { rootOf } from '../shared/root-ctx.js';
 import { join } from 'node:path';
 import { QQBot } from '@tencent-connect/qqbot-nodejs';
 import { FULL_INTENTS } from '@tencent-connect/qqbot-nodejs/protocol';
@@ -744,7 +745,9 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     });
     setApprovalDispatch(myNs, myApprovalHandler);
     // 挂到宿主根 ctx(与 Web GUI 审批转发器同层)并 prepend 插链首 —— 保证本 bot 的审批先被 QQ 通道接管
-    const approvalCtx = ((ctx.root) || ctx);
+    // issue #64: cordis ≥ 4.0.0-rc.12 移除了 ctx.root，读它**直接抛错**（`|| ctx` 兜底救不了）。
+    // 这里原来抛在 WebSocket 建立**之前** ⇒ 网关完全起不来（Bot ready 从不打印、online=false）。
+    const approvalCtx = rootOf(ctx);
     approvalCtx.on('approval/request', makeApprovalListener(myApprovalHandler), { prepend: true });
     // ── expose:'all' 的扩展工具：**启动即注册**（2026-10-10 主人定）────────────
     //  ⚠️ 之前它只挂在 agent/pre-step 上（那是"每个 QQ 会话每步"才触发）⇒

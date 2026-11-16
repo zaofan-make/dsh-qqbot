@@ -273,17 +273,6 @@ window.__ModuleLoader__.load({
     // wide: 宽输入框         rows: textarea 行数            options: radio 选项
     var FGROUPS = [
       {
-        id: 'general', icon: '⓪', title: '通用（会话/归档）',
-        desc: '跟「开新档」有关的开关。宿主侧边栏的归档数据本身存在 ~/.dsh/storages/workspace.json 的 global.archivedSessionIds 里，这个开关只决定插件要不要往里写。',
-        fields: [
-          {
-            k: 'archiveOnNewSession', kw: '归档 旧会话 新档 new bot-new 换模型 侧边栏 僵尸档 workspace',
-            t: 'bool', label: '开新档时自动归档旧会话（默认开）：/new、/bot-new、换模型 fork 出新档时，把被取代的旧会话写进宿主「已归档」，侧边栏不再堆僵尸档；旧档仍可被 QQ 消息拉回可见',
-            def: true,
-          },
-        ],
-      },
-      {
         id: 'prompt', icon: '①', title: '群里她要一直记住的守则',
         desc: '每轮回复都会带上的一段提醒(所有 QQ 群都生效)。默认是"表情包礼仪"。'
           + '这里也能直接写人设/性格要求 —— 改完点下方「保存」立刻生效, 不用去改 cordis.patch.yml'
@@ -436,10 +425,21 @@ window.__ModuleLoader__.load({
           { t: 'custom', render: function (ctx) { return h(GroupAdminPanel, { key: 'ga-' + (ctx.ns || 'main'), ns: ctx.ns || undefined }) } },
         ],
       },
+      {
+        id: 'general', icon: '⑩', title: '会话设置',
+        desc: '跟「开新档」有关的开关。宿主侧边栏的归档数据本身存在 ~/.dsh/storages/workspace.json 的 global.archivedSessionIds 里，这个开关只决定插件要不要往里写。',
+        fields: [
+          {
+            k: 'archiveOnNewSession', kw: '归档 旧会话 新档 new bot-new 换模型 侧边栏 僵尸档 workspace',
+            t: 'bool', label: '开新档时自动归档旧会话（默认开）：/new、/bot-new、换模型 fork 出新档时，把被取代的旧会话写进宿主「已归档」，侧边栏不再堆僵尸档；旧档仍可被 QQ 消息拉回可见',
+            def: true,
+          },
+        ],
+      },
     ]
 
     // 分区导航的短名(完整标题太长)
-    var GSHORT = { prompt: '① 守则', rate: '② 回复节奏', sticker: '③ 表情包', rules: '④ 小提醒', diag: '⑤ 诊断日志', timers: '⑥ 定时', approval: '⑦ 审批', ask: '⑧ 提问卡片', group: '⑨ 群管理' }
+    var GSHORT = { prompt: '① 守则', rate: '② 回复节奏', sticker: '③ 表情包', rules: '④ 小提醒', diag: '⑤ 诊断日志', timers: '⑥ 定时', approval: '⑦ 审批', ask: '⑧ 提问卡片', group: '⑨ 群管理', general: '⑩ 会话设置' }
 
     // ── 搜索（2026-10-10 主人定）：上栏=精确(字面)，下栏=模糊/语义 ───────────────
     // 语义侧**程序算**、零依赖、离线即时：字符 bigram ＋ IDF 加权余弦；

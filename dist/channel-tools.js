@@ -8,6 +8,7 @@
  * 复制进共享 node_modules，也不得在 dependencies 里自带 dsh-tools(避免双包)。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { rootOf } from './shared/root-ctx.js';
 import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage } from './features/md-media.js';
 import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -4454,7 +4455,7 @@ function ensureGainToolGlobal(globalCtx, logger, on = true) {
         }
         if (g.__qqbotGainToolReg)
             return;
-        const rootCtx = ((globalCtx?.root) ?? globalCtx);
+        const rootCtx = rootOf(globalCtx); // issue #64: cordis ≥ rc.12 移除了 ctx.root，可选链也拦不住抛错
         const gctx = rootCtx;
         let toolsObj;
         try {
@@ -4698,7 +4699,7 @@ export function ensureExtToolsGlobal(globalCtx) {
 export function ensureContextToolsGlobal(globalCtx) {
     // 2026-10-21 修（trace 实证）：restrict 报 "names unknown global tools" => 我们注册的层不是「全局层」。
     //   cordis 的 ctx.root 才是根作用域；拿不到就退回传入值（行为不变）。
-    const rootOfGlobal = (globalCtx.root ?? globalCtx);
+    const rootOfGlobal = rootOf(globalCtx); // issue #64
     if (rootOfGlobal !== globalCtx)
         traceToolReg('[ctxtool-reg] 用 root ctx 注册（不同于传入的 ctx）');
     try {

@@ -13,6 +13,7 @@
  * 挂载 preset（工具集、prompt sections 等），实现场景化配置。
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { rootOf } from '../shared/root-ctx.js';
 import { absCwdOf } from '../util/abs-path.js';
 import { describeExtCommandReload, describeExtInboundReload, describeExtOutboundReload, reloadExtCommands, reloadExtInbound, reloadExtOutbound } from '../features/ext-reload.js';
 import { SessionId } from '@deepseek-ai/dsh-session';
@@ -1352,7 +1353,9 @@ export class SessionManager {
    *    热更新内容变化 → 注入新版(历史保留旧版, 后续回合靠新版 KV cache)。
    */
   async ensureGroupRules(_record: SessionRecord): Promise<void> {
-    const hostCtx = ((this.ctx as unknown as { root?: Context }).root ?? this.ctx) as unknown as {
+    // issue #64: cordis ≥ 4.0.0-rc.12 移除了 ctx.root，读它直接抛错；
+    // 原来这处被 `?.catch?.(()=>{})` 吞掉 ⇒ 群守则/工具表注入**静默失效**。统一走 rootOf()。
+    const hostCtx = rootOf(this.ctx) as unknown as {
       on?: (event: string, listener: (...args: unknown[]) => unknown) => void;
     };
     if (!hostCtx?.on || (this as unknown as Record<string, unknown>).__rulesMounted) return;
