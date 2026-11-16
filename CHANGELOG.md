@@ -1,3 +1,48 @@
+## 1.13.9 (2026-11-16)
+
+### 修（致命）
+
+- **cordis >= 4.0.0-rc.12 下网关完全起不来**（`shared/root-ctx.ts` + 4 处调用点，issue #64）
+
+  `cordis@4.0.0-rc.12` 移除了 `ctx.root`：根上下文是 `ctx[Context.root]`，即 `Symbol.for('cordis.root')`。
+  插件里读 `ctx.root` 会**直接抛异常**（`cannot get property "root" without inject`），
+  而不是返回 `undefined` —— 所以 `ctx.root ?? ctx` / `|| ctx` 的兜底**永远执行不到**。
+
+  后果：
+  - `gateway/bootstrap.ts` 抛在 WebSocket 建立**之前** ⇒ `Bot ready` 从不打印、`online=false`，
+    但 REST 心跳照发、`api.sgroup.qq.com` 零连接（看起来"没网络问题"）
+  - `channel-tools.ts` ×2 ⇒ 元工具注册失败刷屏、`expose:'all'` 挂到错误层
+  - `session-manager.ts` ⇒ 被 `?.catch?.(()=>{})` 吞掉，群守则/工具表注入**静默失效**
+
+  新增 `rootOf()`：**先读 Symbol（新版有值）→ 回落 `.root`（旧版有值、新版会抛被 catch）→ 返回自身**，
+  全程不抛。没有退回"只用 try/catch 读 .root"的写法 —— 那会一路落到非根 ctx，
+  功能静默降级比崩更难查。
+
+  配 6 条 `root-ctx.test.ts` 回归。感谢 @baitwo02 提供的完整定位与复现步骤。
+
+## 1.13.8 (2026-11-15)
+
+### 修
+
+- **设置页搜不到「归档」开关**（`client/qqbot-settings.js`、`config.ts`、`index.ts`）
+
+  1.13.6 只加了 `ConfigSchemaRaw`，但设置页是**手写表单 + 独立 schema**，按维护手册 §4.5.2 / §1-2 补齐六处：
+  `FGROUPS`（新增「⑩ 会话设置」分组）/ `EditableConfig` 接口 / `EditableConfigSchema` /
+  `installLiveSettings` 的 `entry` 与 `sync()`。缺了后两个就是"面板保存了要重启才生效"。
+
+## 1.13.7 (2026-11-15)
+
+### 修
+
+- 出站扩展补 `apiCall`（`groupAdmin ?? mediaApi`，发消息不该依赖群管理开关）
+- `transform` 返回 Promise 时明确报错（issue #62，原来会静默丢整条消息）
+
+## 1.13.6 (2026-11-15)
+
+### 新增
+
+- **开新档时自动归档被取代的旧会话**（`session/workspace-attach.ts`、`session/session-manager.ts`、`config.ts`）
+  含 `archiveOnNewSession` 开关（默认开）。经 CodeRabbit 三轮审查修正时序问题。
 ## 1.13.7 (2026-11-15)
 
 ### 修
