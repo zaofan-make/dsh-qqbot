@@ -272,6 +272,38 @@ handler 返回 `{ok:false,...}` 会原样透传，其它值包成 `{ok:true, dat
 | 宿主自重启 | `await env.restart()` | 复用内置 `/bot-restart`（自动识别启动命令、强补 `--no-open`）。默认**仅主人**可触发；要放开写 `env.restart({ requireOwner: false })` |
 | 回调按钮卡 | `env.registerInteractionCard({cardId, buttonIds, expireAt})` | 发**带回调按钮**的卡片必须先登记，否则点了没人认 |
 
+### ⚠️ 先读这条：**限制行为要改返回值，别让工具忽隐忽现**（2026-11-17 主人定）
+
+**结论**：想让工具"在某些情况下不可用"，**在 `run()` 里判断、返回一句拒绝**；
+**不要**用 `enabled()` 让它动态消失/出现。
+
+```js
+// ✅ 推荐：工具始终可见（工具表稳定 → prompt 缓存不破），执行时按条件拒绝
+async run(args, env) {
+  const seg = env.prevSegment?.();
+  if (!seg?.hasOwner) {
+    return { ok: false, msg: '这一轮主人没发话，先别自作主张。' };
+  }
+  // ... 正常逻辑
+}
+
+// ❌ 别这样：工具表每变一次都要重拍快照
+enabled: (env) => env.prevSegment()?.hasOwner === true,
+```
+
+**为什么**（缓存账，很贵）：
+
+宿主的每步顺序是 `claim → assemble（拍工具表快照） → pre-step`。
+**工具表一变，整个 system prompt 前缀就失效**，这一轮的全部上下文都要重新计费。
+而"主人这一轮说没说话"这种判据**每回合都可能变** ⇒ 工具表每回合抖一次 ⇒ **等于每轮都在全价重算**。
+
+**什么时候仍然可以用 `enabled`**：条件**几乎不变**（比如"这个工具只在 deepseek provider 下有意义"），
+变化频率远低于会话生命周期。**绝不要**拿它挂"每回合都可能变"的判据。
+
+**安全边界也要记住**：`enabled` 只管"看不看得见"，**管不住执行** ——
+已经拿到工具名的调用方照样能调。真要防"被别人操控 agent"，校验必须写在 `run()` 里。
+
+
 ### 工具的条件可见性：`enabled(env)`（2026-11-16 补登）
 
 **只有工具扩展（`tools/`）有这一个钩子。** 用来回答一个问题：*这个工具，在当前这个会话里该不该出现？*
@@ -326,6 +358,68 @@ export default {
 > ⚠️ 坑（2026-11-14 修过）：工具**签名缓存**曾经在 `enabled` 求值之前就短路了，导致带 `enabled` 的工具永远拿到缓存结果、看不到它该隐藏。现在带 `enabled` 的工具**不走签名缓存**，每次按会话现算。写扩展时不用管，但排查"该隐藏的没隐藏"时记得这条。
 
 > ⚠️ 边界：`enabled` **只控制可见性，不控制执行**。已经拿到工具名的会话不会被拦——真正的权限校验仍要写在 `run()` 里。
+
+### `env.prevSegment()` —— 上一段消息（2026-11-17 新增）
+
+宿主 `user/message` 的 `source` 只有 `{ kind: 'user' }`、**不带发送者**；
+防抖窗口有 `senderId` 但 flush 完就销毁；落盘台账能查但要读文件（每回合扫全段太慢）。
+⇒ 插件在**入站那一刻**记一笔（`features/segment-ledger`），**唤醒时定格成快照**。
+
+```js
+const seg = env.prevSegment?.();   // 没有快照时 undefined
+// seg.items        ← [{ id, s, n, t, k, x, me }]，与 msg-history.HistoryRec **完全同款**
+// seg.hasOwner     // 这段里主人说过话吗
+// seg.ownerCount   // 主人说了几条
+// seg.total        // 这段一共几条
+// seg.wokeByOwner  // 这次是不是主人叫醒的
+// seg.wokeBy       // 触发唤醒那条的 message_id
+// seg.capturedAt
+```
+
+「一段」= 上一次唤醒到现在这段；**唤醒即清空**（所以它永远只有当前这一段，不随消息增长）。
+
+> ⚠️ 用它做判据时**按上一节的原则**：在 `run()` 里判、返回拒绝，别拿去当 `enabled`。
+
+### 多实例：`env.api` 会串台，发消息优先 `env.card`（2026-11-17 实测）
+
+**症状**：卡片发不出去，报 `11255「请求的资源不存在(用户/群已注销)」`，但 group openid 明明是对的。
+
+**根因**：`env.api` 来自 per-agent 的 caps，注入的 `apiCall` 在**多实例**场景下可能绑到**另一台机器人**的凭据
+（实测 `envAppId` 拿到了另一个实例的 appId）。
+
+**正确姿势**（按可靠性排序）：
+
+| 需求 | 用什么 |
+|---|---|
+| 发 markdown / 图文卡片 / 媒体 | **`env.card()` / `env.markdown()` / `env.image()`** —— 内部走插件的 sender，实例归属正确 |
+| 必须直连官方 API | `env.api()`，但**先确认 `env.dataRoot` 与目标实例一致**；拿不准则别用 |
+| 条件可见性判据 | `env.provider` / `env.prevSegment()` / `env.config.*`（都是纯内存，不涉及实例路由） |
+
+> 2026-11-17 顺手修了宿主侧一处：`channel-tools` 里 `mgr` 的回落链原来会直接落到"第一个桥"，
+> 现在中间插了**按 `dataRoot` 匹配实例**，`appId` 与 `dataRoot` 不会再错位。
+
+### 官方 API 发不了「可点击播放」的音乐卡（2026-11-17 定论）
+
+实测 `msg_type=3`（ARK）在单聊/群聊**被平台拒绝**，返回 `40034126`：
+
+```json
+{"msg_type":3,"ark":{"app":"com.tencent.music","view":"music","meta":{"music":{...}}}}
+→ {"ok":false,"err":{"code":"40034126","human":"调用失败(错误码 40034126)"}}
+```
+
+（appId / peer 都确认正确，所以不是串台；`view:"Share"` + `meta.Share.musicId` 的 QQ 互联写法同样被拒。）
+
+**能做的最接近的**：
+
+| 方案 | 效果 |
+|---|---|
+| `msg_type=8` 图文卡片 | 封面 + 标题 + 描述 + 跳转，**聊天窗口里不能直接播** |
+| `[MEDIA:voice\|本地音频]` | QQ 原生语音气泡，**点一下就在聊天里播**（60 秒上限） |
+| `msg_type=7` 富媒体 | 发 mp3 文件，点开用 QQ 播放器 |
+
+网易云/QQ 音乐那种"点开就在聊天里播"的原生分享卡，是 **QQ 客户端解析 H5 深链接**后自己渲染的，
+这层能力**没有开放给机器人**。QQ 互联文档里的 `QQApiAudioObject` / `ArkObject` 是**端上 SDK**（App 内分享），
+机器人是服务端 HTTP，没有对应通道。
 
 ### `env.manager` —— 会话管理器（2026-11-08 补登）
 

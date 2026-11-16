@@ -38,6 +38,7 @@
  * `clickCount` / `reloadSelf` 等**卡片专属**成员，给工具/命令用只会让作者困惑。
  * 这里只做「三套共有」的那一层，实现上仍是同一批底层原语（sender / session / token）。
  */
+import { getPrevSegment, type SegmentSnapshot } from './segment-ledger.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { registerExtToolCard } from './ext-tool-cards.js';
 import { dirname, join } from 'node:path';
@@ -238,6 +239,31 @@ export interface ExtCapabilities {
   appSecret: string;
   /** ★ 2026-10-16：数据根（扩展之间共享一小份状态时用它拼固定路径；空串=拿不到，别拿它拼相对路径写盘） */
   dataRoot: string;
+
+  /**
+   * **上一段消息的快照**（2026-11-17 主人定，给扩展作者用）。
+   *
+   * 「一段」= 上一次唤醒到现在这段。为什么不能自己查：
+   *   · 宿主的 `user/message` 的 `source` 只有 `{ kind: 'user' }`，append 之后 senderId 就没了；
+   *   · 防抖窗口虽有 senderId，但 flush 完就销毁，且只覆盖"还没派发的"；
+   *   · 落盘台账（msg-history）能查，但要读文件，每回合扫全段太慢。
+   *   ⇒ 插件在**入站那一刻**记一笔（`segment-ledger`），唤醒时定格成快照。
+   *
+   * 返回（没快照时 `undefined`）：
+   * ```js
+   * {
+   *   items: [{ id, s, n, t, k, x, me }],  // ← 与 msg-history.HistoryRec 完全同款
+   *   hasOwner: boolean,     // 这段里主人说过话吗
+   *   ownerCount: number,    // 主人说了几条
+   *   total: number,         // 这段一共几条
+   *   wokeByOwner: boolean,  // 这次是不是主人叫醒的
+   *   wokeBy: string,        // 触发唤醒那条的 message_id
+   *   capturedAt: number,
+   * }
+   * ```
+   */
+  prevSegment(): SegmentSnapshot | undefined;
+
   at(id: string): string;
   text(s: string): Promise<boolean>;
   markdown(s: string): Promise<boolean>;
@@ -456,6 +482,16 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
   };
 
   return {
+    // 分段台账（2026-11-17）：上一段消息的快照，items 与 msg-history.HistoryRec 完全同款
+    prevSegment: () => {
+      try {
+        const sc = String(deps.scope ?? '');
+        const pid = String(deps.peerId ?? '');
+        return sc && pid ? getPrevSegment(`${sc}:${pid}`) : undefined;
+      } catch {
+        return undefined;
+      }
+    },
     // 2026-10-25：把当前执行者 openid 也暴露出来（此前只在内部用于算 user.isOwner，
     // 扩展侧读 caps.actorOpenid 一直是 undefined，与 actorOpenid 这个已文档化的 deps 字段不对称）。
     actorOpenid: actorOpenid || undefined,

@@ -403,6 +403,30 @@ export default { name: 'qq_send', expose: 'all', description: '…', inputSchema
 5. **注册成功没** —— `OK registered xxx__<tag>`；
 6. **是不是被剪枝了** —— 该会话是不是非 QQ 通道（那就该看不见）。
 
+## 4.7 扩展的条件判定：**改返回值，别动工具表**（2026-11-17 主人定，必读）
+
+**一句话**：想让工具"某些情况下不能用"，就在 `run()` 里判、返回一句拒绝；
+**不要**用 `enabled()` 让它忽隐忽现 —— 那是拿**缓存**换功能。
+
+**为什么（很贵）**：宿主每步 `claim → assemble（拍工具表快照） → pre-step`。
+工具表一变 ⇒ 整个 system prompt 前缀失效 ⇒ **这一轮全部上下文重新计费**。
+而"主人这轮说没说话"这种判据每回合都可能变 ⇒ 工具表每回合抖一次 ⇒ 等于每轮全价重算。
+
+**`enabled` 的正确用途**：条件几乎不变（如"只在某 provider 下有意义的工具"）。
+**错误用途**：`hasOwner` / `unread` / 当前消息内容这类高频判据。
+
+**安全边界**：`enabled` 只管可见性，**不管执行** —— 已拿到工具名的调用方照样能调。
+真要防别人操控 agent，校验必须写在 `run()` 里。
+
+### 同一批踩出来的四条（2026-11-16 ~ 17 实测，扩展/工具相关）
+
+| # | 坑 | 结论 |
+|---|---|---|
+| 1 | 工具写成命名导出 | 扫描器只认 **`export default { name, description, inputSchema, run }`**；`inputSchema` 是**扁平写法**（键 → `{ type, description }`），不是标准 JSON Schema |
+| 2 | `tools/` 下新增/改名的工具，`/tools-reload` 之后仍 `unknown tool` | **热刷只重建命令表，不重扫工具**。工具在会话创建时挂载 ⇒ 必须**重启宿主**（或开新会话） |
+| 3 | 多实例下卡片发不出去，报 `11255 资源不存在` | `env.api` 的 `apiCall` 会绑到**另一台机器人**。发消息一律优先 **`env.card()` / `env.markdown()`**（走插件 sender，实例归属正确）；直连 `env.api` 只在确认 `env.dataRoot` 一致时用 |
+| 4 | 想让机器人发"点开就能播"的音乐卡 | **官方 API 禁发 ARK**（`msg_type=3` → `40034126`，appId/peer 都正确也一样）。能做的：图文卡（`msg_type=8`）/ 语音消息 `[MEDIA:voice]`（点开即播，60 秒）/ 音频文件（`msg_type=7`）。客户端"解析 H5 显示播放器"那层没开放给机器人 |
+
 ## 5. 变更纪律
 
 1. 改 `m1/dsh-qqbot-public - 副本/src` → build → check → 本地/新环境实测 → 才 push。

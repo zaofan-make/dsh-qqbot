@@ -9,6 +9,7 @@
  * - Layer 5: agentBody（history + base 拼合）
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { noteSegmentItem, captureSegment } from '../features/segment-ledger.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -206,6 +207,29 @@ export async function handleInbound(
 
   const scope: ChatScope = msg.kind === 'group' ? 'group' : 'c2c';
   const peerId = scope === 'group' ? (msg.groupOpenid ?? msg.senderId) : msg.senderId;
+
+  // ── 分段台账（2026-11-17）──
+  //   宿主的 user/message 只带 { kind:'user' }，senderId 一旦 append 就再也拿不回来；
+  //   防抖窗口 flush 完就销毁。所以**只能在这一刻记一笔**，唤醒时读走并清空。
+  //   格式与 msg-history.HistoryRec 完全一致（id/s/n/t/k/x/me），将来想落盘直接就是那行。
+  const segKey = `${scope}:${peerId}`;
+  const segOwnerOpenid = (() => {
+    try {
+      const os = Array.isArray(config.groupAdmin?.owners) ? config.groupAdmin.owners!.map(String) : [];
+      return os.includes(String(msg.senderId ?? '')) ? String(msg.senderId) : '';
+    } catch { return ''; }
+  })();
+  try {
+    noteSegmentItem(segKey, {
+      id: String(msg.messageId ?? ''),
+      s: String(msg.senderId ?? ''),
+      n: String(msg.senderName ?? ''),
+      t: Date.now(),
+      k: 'text',
+      x: String(msg.content ?? '').replace(/\s+/g, ' ').slice(0, 80),
+      me: false,
+    }, !!segOwnerOpenid);
+  } catch { /* 台账失败绝不影响主链 */ }
 
   const replyTarget: ReplyTarget = {
     scope,
@@ -1049,6 +1073,14 @@ export async function handleInbound(
     // 无 append 能力 → 兜底照常 followup(保证消息不丢, 但会唤醒; 罕见路径)
     record.lastInboundAt = Date.now();
     record.turnActive = true;
+    // 唤醒 = 这一段结束：先定格快照（含本条）再清空（主人定：唤醒即清空）
+    try {
+      captureSegment(segKey, {
+        wokeById: String(msg.messageId ?? ''),
+        wokeSenderId: String(msg.senderId ?? ''),
+        ownerOpenid: segOwnerOpenid,
+      });
+    } catch { /* ignore */ }
     record.agent.followup(message);
     logger.debug(`→ followup sent(nothink 兜底): key=${scope}:${peerId}`);
     return;
@@ -1082,6 +1114,14 @@ export async function handleInbound(
     logger.warn(`[图片聚合] 注入失败(不影响唤醒): ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // 唤醒 = 这一段结束：先定格快照（含本条）再清空（主人定：唤醒即清空）
+  try {
+    captureSegment(segKey, {
+      wokeById: String(msg.messageId ?? ''),
+      wokeSenderId: String(msg.senderId ?? ''),
+      ownerOpenid: segOwnerOpenid,
+    });
+  } catch { /* ignore */ }
   record.agent.followup(message);
   logger.debug(`→ followup sent: key=${scope}:${peerId}`);
 

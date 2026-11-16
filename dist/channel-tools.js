@@ -3321,7 +3321,27 @@ export async function apply(ctx, opts) {
                         //   免得作者为了发一张 markdown 还得专门写一个工具（历史上的 send_md.mjs 就是这个）。
                         //   ⚠️ 只补不覆盖：cwd/manager/sender/replyTarget/exec/ctx/logger 保持原样。
                         try {
-                            const mgr = (sess?.ch.manager ?? qqCh?.manager ?? bridgeCh?.manager);
+                            // ★ 2026-11-17 修（实测 11255「资源不存在」的根因）：
+                            //   `sess` 找不到时（agent 反查失败：web 回合 / 刚重启 / 多实例），原来直接回落
+                            //   `qqCh?.manager` —— 而 qqCh 自己也是"第一个桥"的回落 ⇒ **appId 串到别的实例**，
+                            //   发出去报 11255。这里补一层：**按 dataRoot 匹配实例**（extRoot 是本调用方算好的，
+                            //   一定属于当前实例），匹配不上才走老回落。
+                            const mgrByRoot = (() => {
+                                try {
+                                    if (!extRoot)
+                                        return undefined;
+                                    const want = String(extRoot).replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+                                    for (const m of managersOf()) {
+                                        const dr = String(m.dataRoot ?? '')
+                                            .replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+                                        if (dr && dr === want)
+                                            return m;
+                                    }
+                                }
+                                catch { /* ignore */ }
+                                return undefined;
+                            })();
+                            const mgr = (sess?.ch.manager ?? mgrByRoot ?? qqCh?.manager ?? bridgeCh?.manager);
                             const recAny = sess?.rec;
                             const ga = mgr?.groupAdmin;
                             const caps = makeExtCaps({
