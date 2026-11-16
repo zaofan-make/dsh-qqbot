@@ -272,6 +272,61 @@ handler 返回 `{ok:false,...}` 会原样透传，其它值包成 `{ok:true, dat
 | 宿主自重启 | `await env.restart()` | 复用内置 `/bot-restart`（自动识别启动命令、强补 `--no-open`）。默认**仅主人**可触发；要放开写 `env.restart({ requireOwner: false })` |
 | 回调按钮卡 | `env.registerInteractionCard({cardId, buttonIds, expireAt})` | 发**带回调按钮**的卡片必须先登记，否则点了没人认 |
 
+### 工具的条件可见性：`enabled(env)`（2026-11-16 补登）
+
+**只有工具扩展（`tools/`）有这一个钩子。** 用来回答一个问题：*这个工具，在当前这个会话里该不该出现？*
+
+```js
+export default {
+  name: 'dskit_search',
+  description: '用 DeepSeek 官方联网搜索',
+  inputSchema: { query: 'string' },
+
+  // ★ 不声明 = 永远可见（与老扩展完全兼容）
+  enabled: (env) => {
+    // env.provider 是「当前会话实际在用的服务商」
+    return String(env.provider || '').includes('deepseek');
+  },
+
+  async run(args, env) { /* ... */ },
+};
+```
+
+#### `env` 里有什么
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `env.ctx` | `Context` | 注册时的 ctx |
+| `env.agent` | `unknown \| undefined` | 当前会话的 agent（QQ 会话里才有，非 QQ 会话常是 `undefined`） |
+| **`env.provider`** | `string` | **当前会话实际生效的服务商**。两个来源依次取：① `agent.session.requestContext().provider`（运行时）；② `manager.modelResolver.getEffectiveRoute(sessionKey, sessionId)`（读持久化的 `model-prefs.json`）。**两条都拿不到就是 `''`** |
+| `env.manager` | `SessionManager` | 会话管理器（见上一节） |
+| `env.dataRoot` | `string` | 扩展根目录 |
+| `env.logger` | `Logger` | 插件 logger |
+
+#### 返回值语义
+
+| 返回 | 结果 |
+|---|---|
+| 不声明 | **永远可见** |
+| `true` / 非 `false` 的真值 | 可见 |
+| `false` | **这个会话里不注册它**；如果之前注册过，会被 dispose 掉 |
+| **抛错** | **按不可见处理**（fail-closed），并写一条 `extDiag` |
+
+#### 为什么它能当"热开关"
+
+注册是**按会话**走的（`mountChannelTools`），新会话、`/tools-reload` 都会重新求值。
+所以配置一改、模型一换，**下一轮就生效**，不用重启宿主。
+
+#### 典型用法
+
+- **按服务商分流**：只在 `deepseek` 下显示 DeepSeek 全家桶工具；`opencode` 会话里彻底隐藏（别人的 key 不该白拿你的额度）。
+- **按有没有 key 分流**：用户填了自己的 key → 谁都可见；没填 → 只有 `provider` 含 `deepseek` 时才复用宿主的 `DEEPSEEK_API_KEY`。
+- **按身份分流**：高危工具（改配置、踢人）只在 `config.owners` 里的会话显示。
+
+> ⚠️ 坑（2026-11-14 修过）：工具**签名缓存**曾经在 `enabled` 求值之前就短路了，导致带 `enabled` 的工具永远拿到缓存结果、看不到它该隐藏。现在带 `enabled` 的工具**不走签名缓存**，每次按会话现算。写扩展时不用管，但排查"该隐藏的没隐藏"时记得这条。
+
+> ⚠️ 边界：`enabled` **只控制可见性，不控制执行**。已经拿到工具名的会话不会被拦——真正的权限校验仍要写在 `run()` 里。
+
 ### `env.manager` —— 会话管理器（2026-11-08 补登）
 
 扩展拿到的 `env.manager` 就是插件内部的 **SessionManager 实例**，可以直接操作 QQ 会话。
@@ -554,6 +609,7 @@ LLM 该主动调用才做事        → tools/
 
 ## 7. 变更记录（契约相关）
 
+- **2026-11-16**：补登**工具的条件可见性** `enabled(env)`（此前只在源码里，契约没写）。含 `env.provider` 的两个真相源、返回 `false`/抛错的语义（fail-closed）、以及"注册按会话走所以是热开关"。
 - **v1.9.2**：入站扩展（第五套）**能力面对齐** —— 直接复用统一能力包（此前只有一套私有小 ctx，
   `store` / `api()` / `markdown` / `appendSilent` 等一项都没有）；**入站操控那一组也进了包**（`caps.inbound`）。
 - **v1.9.0**：新增第五套扩展点 `inbound/`（早/晚双挂点 + 四个动作 + 四条保命件）。
