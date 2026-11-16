@@ -5,6 +5,7 @@
  * dsh session/event → createOutboundHandler → QQ 出站。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import { rootOf } from '../shared/root-ctx.js';
 import { join } from 'node:path';
 import { QQBot, type ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import { FULL_INTENTS } from '@tencent-connect/qqbot-nodejs/protocol';
@@ -754,7 +755,9 @@ export async function bootstrapGateway(
   }) as never;
   setApprovalDispatch(myNs, myApprovalHandler as never);
   // 挂到宿主根 ctx(与 Web GUI 审批转发器同层)并 prepend 插链首 —— 保证本 bot 的审批先被 QQ 通道接管
-  const approvalCtx = (((ctx as unknown as { root?: { ctx?: unknown } | unknown }).root) || ctx) as unknown as {
+    // issue #64: cordis ≥ 4.0.0-rc.12 移除了 ctx.root，读它**直接抛错**（`|| ctx` 兜底救不了）。
+    // 这里原来抛在 WebSocket 建立**之前** ⇒ 网关完全起不来（Bot ready 从不打印、online=false）。
+    const approvalCtx = rootOf(ctx) as unknown as {
     on(event: string, handler: (...args: unknown[]) => unknown, config?: { prepend?: boolean }): void;
   };
   approvalCtx.on('approval/request', makeApprovalListener(myApprovalHandler as never) as never, { prepend: true });
