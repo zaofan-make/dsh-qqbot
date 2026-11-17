@@ -2269,14 +2269,17 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
       }
     },
   });
-  /** 踢人（2026-10-20：平台已开放「移除群成员」，主人实测授权后加的写工具） */
+  /** 踢人（2026-10-20 加；2026-11-17 官方把「批量移除」从内邀改成正式开放，实测可用） */
   const kickMemberTool = defineTool({
     name: 'group_kick',
     description: '群管理(写,危险): 把成员移出群(踢人)，可批量 ≤20。需机器人是群管理员、且平台后台勾选了「移除群成员」。**仅主人明确要求时调用**。不填 gid = 当前会话所在的群。',
     parameters: {
       gid: { type: 'string', description: '目标群 openid(可选; 不填=当前会话所在的群)' },
       member_openids: { type: 'array', items: { type: 'string' }, description: '要移出的成员 openid(≤20 个)' },
-      add_to_blacklist: { type: 'boolean', description: '同时加入成员黑名单(默认 false)' },
+      // ★ 2026-11-17：官方文档已删掉这个字段（请求体只剩 member_openids），
+      //   但实测服务端仍认、响应里也还回 add_to_member_blacklist_fail_openids。
+      //   当 deprecated 用：默认不传，只有明确要拉黑才带上。
+      add_to_blacklist: { type: 'boolean', description: '（已弃用，官方 2026-11-16 从文档移除）同时加入成员黑名单(默认 false，可能随时失效)' },
     },
     output: {
       schema: {
@@ -2308,10 +2311,12 @@ export async function apply(ctx: Context, opts?: { dataRoot?: string; cwd?: stri
         if (r?.ok !== true) {
           const code = String(r?.err?.code || '');
           const human = String(r?.err?.human || '');
+          // 2026-11-17：mapErrHuman 已覆盖 40103011/40103012（两条都是"开关没开"），
+          //   所以 human 里已经带了**下一步该去哪开**，这里不再叠一堆猜的原因。
+          const tail = human && /→/.test(human) ? '' : '（常见原因: 平台未勾选该权限 / 机器人非管理员 / 对方是群主或管理员）';
           return {
             ok: false,
-            msg: '踢人失败: ' + (human || code || '(平台无返回)') + (code ? ' [code=' + code + ']' : '') +
-              '（常见原因: 平台未勾选该权限 / 机器人非管理员 / 对方是群主或管理员）',
+            msg: '踢人失败: ' + (human || code || '(平台无返回)') + (code ? ' [code=' + code + ']' : '') + tail,
           };
         }
         const failN = Array.isArray(r.data?.add_to_member_blacklist_fail_openids)

@@ -4609,6 +4609,10 @@ var QQS_THEME_CSS = [
         })
         api('group/members_local', q).then(function (d) {
           state.members = (d && d.ok && Array.isArray(d.members) ? d.members : []).map(function (m) { return { mid: m.mid, name: m.name || '' } })
+          state.membersLoading = false
+          paintBody()
+        }).catch(function () {
+          state.membersLoading = false
           paintBody()
         })
       }
@@ -4869,7 +4873,8 @@ var QQS_THEME_CSS = [
           var hsub = state.hammerSub || 'mute'
           body += '<div class="dk-row" style="gap:6px;margin:2px 0">'
             + '<button class="dk-btn' + (hsub === 'mute' ? ' ok' : '') + '" data-hsub="mute">🔇 禁言</button>'
-            + '<button class="dk-btn' + (hsub === 'kick' ? ' ok' : '') + '" data-hsub="kick">👢 踢人</button>'
+            + '<button class="dk-btn' + (hsub === 'kick' ? ' ok' : '') + '" data-hsub="kick" title="走 QQ 群官网(扫码登录)：能看到 QQ 号/昵称/头衔，按 QQ 号踢">📋 群成员信息</button>'
+            + '<button class="dk-btn' + (hsub === 'apikick' ? ' ok' : '') + '" data-hsub="apikick" title="走官方 API(机器人凭据，不用扫码)：只认 openid">🥾 官方踢人</button>'
             + '<button class="dk-btn' + (hsub === 'auto' ? ' ok' : '') + '" data-hsub="auto">♻️ 自动撤回</button>'
             + '</div>'
           if (hsub === 'mute') {
@@ -4882,6 +4887,8 @@ var QQS_THEME_CSS = [
             body += '<div class="dk-list" id="dk-mute-list"></div>'
           } else if (hsub === 'kick') {
             body += hammerKickHtml()
+          } else if (hsub === 'apikick') {
+            body += hammerApiKickHtml()
           } else {
             body += hammerAutoRecallHtml()
           }
@@ -5385,6 +5392,124 @@ var QQS_THEME_CSS = [
           + '<div class="dk-msg" style="line-height:1.5;color:#888">执行点在「入站扩展之后」：选"仍进 AI"=扩展与 AI 都照常收到、只是聊天记录里消失；选"直接吞掉"=扩展照常执行、但这条不进 AI。机器人需为群管理员，且官方撤回窗口只有 2 分钟。</div>'
           + '<div class="dk-msg" id="dk-ar-hint" style="color:#2f9e44">' + (state.arMsg || '') + '</div>'
       }
+      /** 「官方踢人」里显示的目标群名字（拿不到名字就显示 openid 前缀） */
+      function apiKickGroupLabel() {
+        var gid = state.gid || state.apiKickGid || ''
+        if (!gid) return '（未选群，先在「禁言」页选一个）'
+        var hit = (state.groups || []).filter(function (g) {
+          return (g.gid || g.group_openid || '') === gid
+        })[0]
+        var nm = hit ? (hit.group_name || hit.name || '') : ''
+        return nm ? (nm + ' · ' + String(gid).slice(0, 10) + '…') : (String(gid).slice(0, 16) + '…')
+      }
+
+      /**
+       * 🥾 官方踢人（2026-11-17）
+       *
+       * **复用「禁言」页那份成员名单**（本地台账，有名字），照它的样式一行一个人，
+       * 点「踢」立刻生效 —— 不用手打 openid。
+       *
+       * 和左边「群成员信息」的分工：
+       *   · 那边走 QQ 群官网（扫码），能在**群里拉全量**、能看到 QQ 号/头衔
+       *   · 这边走机器人自己的官方接口（不用扫码），但名单只有**台账里见过的**人
+       */
+      function hammerApiKickHtml() {
+        var out = '<div class="dk-msg" style="line-height:1.6">'
+          + '走<b>机器人自己的官方接口</b>（批量移除，一次 ≤20），<b>不用扫码</b>。'
+          + '名单是<b>台账里见过的人</b>（发过言 / 入过群）；要全量名单和 QQ 号，去「群成员信息」扫码拉。'
+          + '</div>'
+        out += '<div class="dk-row" style="gap:6px;align-items:center">'
+          + '<span style="font-size:12px;color:#666">目标群:</span>'
+          + '<span style="font-size:13px;font-weight:600">' + esc(apiKickGroupLabel()) + '</span>'
+          + '<span style="flex:1"></span>'
+          + '<input class="qqs-txt" id="dk-apikick-kw" placeholder="🔍 名字或 openid（留空=全部，' + ((state.members || []).length) + ' 人）" '
+          + 'value="' + esc(state.apiKickKw || '') + '" style="width:250px">'
+          + '<button class="dk-btn" id="dk-apikick-refresh">🔄 刷新名单</button>'
+          + '</div>'
+        out += '<div class="dk-list" id="dk-apikick-list"></div>'
+        out += '<div class="dk-msg" id="dk-apikick-msg" style="flex:1;line-height:1.5;color:#2f9e44">' + esc(state.apiKickMsg || '') + '</div>'
+        out += '<details' + (state.apiKickOpen || String(state.apiKickIds || '').trim() ? ' open' : '') + ' style="margin-top:6px">'
+          + '<summary style="cursor:pointer;font-size:12px;color:#666">'
+          + '批量踢（点上面的「➕ 加入」会自动追加到这里）'
+          + (String(state.apiKickIds || '').trim() ? ' · <b style="color:#d6336c">已选 '
+            + String(state.apiKickIds || '').split(/[\s,，、]+/).filter(Boolean).length + ' 个</b>' : '')
+          + '</summary>'
+          + '<textarea class="qqs-txt" id="dk-apikick-ids" placeholder="每行一个 member_openid，或用空格/逗号分隔（最多 20 个）" '
+          + 'style="width:100%;min-height:64px;font-size:12px;margin:4px 0">' + esc(state.apiKickIds || '') + '</textarea>'
+          + '<div class="dk-row" style="gap:6px;align-items:center">'
+          + '<button class="dk-btn no" id="dk-apikick-go"' + (state.apiKickBusy ? ' disabled' : '') + '>'
+          + (state.apiKickBusy ? '⏳ 提交中…' : '🥾 批量移除') + '</button>'
+          + '<button class="dk-btn" id="dk-apikick-clear">清空</button>'
+          + '</div>'
+          + '</details>'
+        out += '<div class="dk-msg" style="color:#888;line-height:1.5">'
+          + '常见报错：<b>40103011</b> 机器人关了「移除群成员」→ 去 QQ 开放平台 WEB 管理端打开；'
+          + '<b>40103012</b> 群主关了操作权限 → 让群主在群设置里给机器人打开。'
+          + '</div>'
+        return out
+      }
+
+      /** 渲染「官方踢人」的成员列表（照 renderMemberList 的样式，一行一个人 + 一个加入按钮） */
+      function renderApiKickList() {
+        var box = panel.querySelector('#dk-apikick-list')
+        if (!box) return
+        if (state.members === null) { box.innerHTML = '<div class="dk-empty">加载中…</div>'; return }
+        if (state.members.length === 0) {
+          box.innerHTML = '<div class="dk-empty">名单是空的 —— 群友发言 / 入群后自动出现（官方成员列表未开放）</div>'
+          return
+        }
+        // 搜索过滤（2026-11-17 主人要求：像「群成员信息」那样能搜）
+        //   本地名单是前端过滤就够——数据量就几十条，没必要走后端
+        var kw = String(state.apiKickKw || '').trim().toLowerCase()
+        var list = kw
+          ? state.members.filter(function (m) {
+            return (String(m.name || '') + ' ' + String(m.mid || '')).toLowerCase().indexOf(kw) >= 0
+          })
+          : state.members
+        if (list.length === 0) {
+          box.innerHTML = '<div class="dk-empty">没有匹配「' + esc(state.apiKickKw) + '」的成员</div>'
+          return
+        }
+        box.innerHTML = list.map(function (m) {
+          var added = String(state.apiKickIds || '').indexOf(m.mid) >= 0
+          return '<div class="dk-item">'
+            + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            + esc(m.name || '(未知名)') + ' · ' + esc(String(m.mid).slice(0, 10)) + '…</span>'
+            + '<button class="dk-btn' + (added ? ' ok' : '') + '" data-addmid="' + esc(m.mid) + '" title="把 openid 追加到下面的批量框">'
+            + (added ? '✓ 已加' : '➕ 加入') + '</button>'
+            + '</div>'
+        }).join('')
+        box.querySelectorAll('button[data-addmid]').forEach(function (btn) {
+          btn.onclick = function () { addToKickBatch(btn.getAttribute('data-addmid')) }
+        })
+      }
+
+      /**
+       * 把一个人的 openid 追加到下方「批量踢」文本框（2026-11-17 主人要求）
+       *
+       * 只追加、不执行 —— 攒够了再点「批量移除」。
+       * 已经在框里的不重复加（按钮会变成 ✓ 已加）。
+       * 顺手把 <details> 展开，让人看得见自己在往哪加。
+       */
+      function addToKickBatch(mid) {
+        var id = String(mid || '').trim()
+        if (!id) return
+        var cur = String(state.apiKickIds || '')
+        var exists = cur.split(/[\s,，、]+/).filter(Boolean).indexOf(id) >= 0
+        if (!exists) {
+          state.apiKickIds = (cur && !/\n$/.test(cur) ? cur + '\n' : cur) + id
+        }
+        state.apiKickOpen = true          // 展开批量框
+        state.apiKickMsg = '已加入 1 个'; // 轻微反馈（会显示在列表下方）
+        paintBody()
+        // 展开后把光标放到文本框末尾
+        var ta = document.getElementById('dk-apikick-ids')
+        if (ta) {
+          ta.focus()
+          try { ta.setSelectionRange(ta.value.length, ta.value.length) } catch (e) { /* ignore */ }
+        }
+      }
+
       function hammerKickHtml() {
         if (state.qunLogged !== true) {
           var h = '<div class="dk-msg">踢人需要先登录 QQ 群管理（扫码一次，之后长期免扫；登录态与 AI 共享）。</div>'
@@ -5486,6 +5611,58 @@ var QQS_THEME_CSS = [
           }).catch(function () { /* ignore */ })
         }, 2500)
       }
+      /**
+       * 🥾 官方踢人的提交（2026-11-17）
+       *
+       * 和 doQunKick 的区别：这个走机器人自己的 appId+appSecret，不用扫码；
+       * 只认 openid；错误码 40103011/40103012 是"开关没开"，直接说去哪开。
+       *
+       * `directIds` 给了就直接踢这些（列表里的「踢」按钮用），
+       * 不给就读文本框（批量粘贴用）。
+       */
+      function doApiKick(directIds) {
+        var ids
+        var raw = ''
+        if (Array.isArray(directIds) && directIds.length) {
+          ids = directIds.map(function (s) { return String(s).trim() }).filter(Boolean)
+        } else {
+          var ta = document.getElementById('dk-apikick-ids')
+          raw = ta && ta.value ? ta.value : ''
+          ids = raw.split(/[\s,，、]+/).map(function (s) { return s.trim() }).filter(Boolean)
+        }
+        var gid = state.gid || state.apiKickGid || ''
+        if (raw) state.apiKickIds = raw
+        state.apiKickGid = gid
+        if (!gid) { state.apiKickMsg = '❌ 先选一个目标群'; paintBody(); return }
+        if (!ids.length) { state.apiKickMsg = '❌ 请填至少一个 member_openid'; paintBody(); return }
+        if (ids.length > 20) { state.apiKickMsg = '❌ 一次最多 20 个，你给了 ' + ids.length + ' 个'; paintBody(); return }
+        state.apiKickBusy = ids.length === 1 ? ids[0] : true
+        state.apiKickMsg = '正在提交…'
+        paintBody()
+        apiPost('qun/api-kick', { gid: gid, openids: ids }).then(function (d) {
+          state.apiKickBusy = false
+          if (d && d.ok) {
+            state.apiKickMsg = '✅ ' + ((d && d.msg) || '已提交') + '（共 ' + ids.length + ' 个）'
+            if (raw) state.apiKickIds = ''
+            // 踢掉的人从本地列表里移除，免得看着还在
+            var gone = {}
+            ids.forEach(function (x) { gone[x] = 1 })
+            if (Array.isArray(state.members)) {
+              state.members = state.members.filter(function (m) { return !gone[m.mid] })
+            }
+          } else {
+            var e = (d && d.error) || '未知错误'
+            var c = (d && d.code) ? ' [' + d.code + ']' : ''
+            state.apiKickMsg = '❌ ' + e + c
+          }
+          paintBody()
+        }).catch(function (e) {
+          state.apiKickBusy = false
+          state.apiKickMsg = '❌ 异常: ' + e.message
+          paintBody()
+        })
+      }
+
       function doQunKick(uins) {
         state.qunMsg = '正在踢…'
         paintBody()
@@ -5589,6 +5766,45 @@ var QQS_THEME_CSS = [
           state.arMsg = '保存中…'
           saveGroupAdmin()
         }
+        // 🥾 官方踢人（2026-11-17）：名单复用「禁言」页那份（本地台账，有名字）
+        //   ⚠️ 两个坑都踩过了：
+        //   ① 不能用 loadMembers() —— 那是 GroupAdminPanel 组件里的局部函数，这里拿不到
+        //      （ReferenceError 直接把 dock 球炸了）
+        //   ② 不能无脑 loadMutes() —— 它开头就 paintBody()，而 paintBody 会回到这里，
+        //      于是 paintBody→loadMutes→paintBody 无限递归（Maximum call stack size exceeded）。
+        //      用 membersLoading 标志兜住：只发起一次，加载完再重置。
+        var apiKickBtn = panel.querySelector('#dk-apikick-go')
+        if (apiKickBtn) apiKickBtn.onclick = function () { doApiKick() }
+        var apiKickRefresh = panel.querySelector('#dk-apikick-refresh')
+        if (apiKickRefresh) {
+          apiKickRefresh.onclick = function () {
+            if (state.membersLoading) return
+            state.membersLoading = true
+            loadMutes()
+          }
+        }
+        // 搜索框：实时过滤（前端过滤，名单就几十条，不用走后端）
+        var apiKickKw = panel.querySelector('#dk-apikick-kw')
+        if (apiKickKw) {
+          apiKickKw.oninput = function () {
+            state.apiKickKw = apiKickKw.value
+            renderApiKickList()   // 只重绘列表，不整页重绘（否则输入框会失焦）
+          }
+        }
+        // 清空批量框
+        var apiKickClear = panel.querySelector('#dk-apikick-clear')
+        if (apiKickClear) {
+          apiKickClear.onclick = function () { state.apiKickIds = ''; state.apiKickMsg = ''; paintBody() }
+        }
+        // 文本框里手动改动要同步进 state，否则重绘会把它冲掉
+        var apiKickTa = panel.querySelector('#dk-apikick-ids')
+        if (apiKickTa) apiKickTa.oninput = function () { state.apiKickIds = apiKickTa.value }
+        if (state.members === null && !state.membersLoading) {
+          state.membersLoading = true
+          loadMutes()
+        }
+        renderApiKickList()
+
         var qLoginBtn = panel.querySelector('#dk-qun-login')
         if (qLoginBtn) qLoginBtn.onclick = function () { doQunLogin() }
         var qStatusBtn = panel.querySelector('#dk-qun-status')

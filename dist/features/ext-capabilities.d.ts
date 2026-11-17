@@ -117,6 +117,35 @@ export interface ExtCapsDeps {
     actorName?: string;
     /** 带 token 的官方 API 调用（注入了就优先用它，否则用本模块自带的 token 管理） */
     apiCall?: (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<ExtApiResult>;
+    /**
+     * 踢人（2026-11-17 加，主人要求"踢人暴露给扩展"）
+     *
+     * 内部走 `GroupAdminClient.removeMembers`（官方 2026-11-16 起「批量移除」已正式开放）。
+     * 帮你处理好这几件麻烦事：
+     *   · **不用扫码**（用机器人自己的 appId/appSecret 换 token）
+     *   · 一次 ≤20 个，超了在这里拦下
+     *   · 失败时 `msg` 已经是人话（`40103011`/`40103012` 会直接告诉你"去哪个开关开"）
+     *
+     * ⚠️ **只认 openid，不认 QQ 号** —— 官方「拉群成员列表」还在内邀中，
+     *    所以别指望用它查名单；要名单/QQ 号请走网页版（`/api/qqbot-settings/qun/members`）。
+     *
+     * @example
+     * ```js
+     * const r = await env.kick({ openids: [someOpenid] });
+     * if (!r.ok) return `踢不动: ${r.msg}`;
+     * ```
+     */
+    kick?: (opts: {
+        /** 目标群 openid；不传 = 当前会话所在的群 */
+        gid?: string;
+        /** 要移除的成员 openid（≤20） */
+        openids: string[];
+        /** 可选，同时拉黑（⚠️ 官方文档 2026-11-16 已删该字段，服务端还认、随时可能失效） */
+        blacklist?: boolean;
+    }) => Promise<{
+        ok: boolean;
+        msg: string;
+    }>;
     /** 扩展名（store 文件名 / 日志前缀） */
     selfName?: string;
     /** 当前发言者身份（文档 §2「身份」承诺的字段） */
@@ -273,6 +302,34 @@ export interface ExtCapabilities {
     appSecret: string;
     /** ★ 2026-10-16：数据根（扩展之间共享一小份状态时用它拼固定路径；空串=拿不到，别拿它拼相对路径写盘） */
     dataRoot: string;
+    /**
+     * 踢人（2026-11-17 加，主人要求"踢人暴露给扩展"）
+     *
+     * 官方 2026-11-16 起「批量移除群成员」已正式开放，扩展可直接调。
+     *   · **不用扫码**（用机器人自己的 appId/appSecret 换 token）
+     *   · 一次 ≤20 个，超了在这里拦下
+     *   · 失败时 `msg` 已是人话（`40103011`/`40103012` 直接告诉你"去哪个开关开"）
+     *
+     * ⚠️ **只认 openid，不认 QQ 号** —— 官方「拉群成员列表」还在内邀中，
+     *    别指望用它查名单；要名单/QQ 号走网页版那条路。
+     *
+     * @example
+     * ```js
+     * const r = await env.caps.kick({ openids: [someOpenid] });
+     * if (!r.ok) return `踢不动: ${r.msg}`;
+     * ```
+     */
+    kick?: (opts: {
+        /** 目标群 openid；不传 = 当前会话所在的群 */
+        gid?: string;
+        /** 要移除的成员 openid（≤20） */
+        openids: string[];
+        /** 可选，同时拉黑（⚠️ 官方文档 2026-11-16 已删该字段，服务端还认、随时可能失效） */
+        blacklist?: boolean;
+    }) => Promise<{
+        ok: boolean;
+        msg: string;
+    }>;
     /**
      * **上一段消息的快照**（2026-11-17 主人定，给扩展作者用）。
      *

@@ -265,6 +265,28 @@ export async function handleGroupMemberAddEvent(data, opts) {
         appendGroupMember(dataDir, { ts: Date.now(), gid, mid, name: undefined });
     }
     catch { /* 台账失败不阻断 */ }
+    // ★ 2026-11-17：用官方 `GET /v2/users/{openid}/info` 补一次名字。
+    //   官方成员列表（listMembers）还在内邀中，所以以前一个人必须**在群里发过言**
+    //   才会有名字；这个新接口只要 openid 就能查 username，于是入群即可补全。
+    //   之后他若改名，**发一次言台账就会更新**（读端后者覆盖前者），不用再管。
+    try {
+        const ga = manager.groupAdmin;
+        if (ga) {
+            const r = await ga.getUserInfo(mid);
+            const nm = r && r.ok === true ? String(r.data?.username ?? '').trim() : '';
+            if (nm) {
+                appendGroupMember(joinDataDir(config), { ts: Date.now(), gid, mid, name: nm });
+                logger.debug?.(`[group-hub] member_add 补名字: ${mid} → ${nm}`);
+            }
+            else {
+                logger.debug?.(`[group-hub] member_add 查名字无结果: ${mid} :: ${JSON.stringify(r?.err ?? '').slice(0, 160)}`);
+            }
+        }
+    }
+    catch (e) {
+        // 查名字失败不影响入群流程（台账里仍有 openid）
+        logger.debug?.(`[group-hub] member_add 查名字异常: ${e instanceof Error ? e.message : String(e)}`);
+    }
     await notifyGroupHub(manager, config, logger, {
         kind: 'member_add',
         gid,

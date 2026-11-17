@@ -313,6 +313,72 @@ export function makeExtCaps(deps) {
                 return { ok: false, err: { code: 'THROW', human: err instanceof Error ? err.message : String(err) } };
             }
         },
+        /**
+         * 踢人（2026-11-17）：官方「批量移除群成员」已正式开放，扩展直接调。
+         *
+         * 只认 openid；不用扫码；错误码翻成人话。
+         * 内部复用 `deps.groupAdmin.removeMembers`（有就用），没有再自己打 API。
+         */
+        kick: async (opts) => {
+            const ids = (Array.isArray(opts?.openids) ? opts.openids : [])
+                .map((x) => String(x ?? '').trim())
+                .filter(Boolean);
+            if (!ids.length)
+                return { ok: false, msg: 'openids 为空' };
+            if (ids.length > 20)
+                return { ok: false, msg: `一次最多 20 个 openid，你给了 ${ids.length} 个` };
+            const gid = String(opts?.gid ?? '').trim() || String(deps.peerId ?? '').trim();
+            if (!gid)
+                return { ok: false, msg: '拿不到群 openid（不在群会话里，也没传 gid）' };
+            // 优先用插件已经建好的 GroupAdminClient（它有 token 缓存 + 错误码表）
+            const ga = deps.groupAdmin;
+            if (ga && typeof ga.removeMembers === 'function') {
+                try {
+                    const r = (await ga.removeMembers(gid, ids, opts?.blacklist === true));
+                    if (r?.ok === true)
+                        return { ok: true, msg: `已提交移出 ${ids.length} 人` };
+                    const code = String(r?.err?.code ?? '');
+                    const human = String(r?.err?.human ?? '') || code || '平台无返回';
+                    return { ok: false, msg: `${human}${code ? ` [code=${code}]` : ''}` };
+                }
+                catch (err) {
+                    warn('kick(groupAdmin)', err);
+                }
+            }
+            // 兜底：自己的 token 直接打
+            try {
+                const token = await fetchAccessToken(appId, appSecret);
+                if (!token)
+                    return { ok: false, msg: '未配置 appId/appSecret' };
+                const res = await fetch(`https://api.bot.qq.com/v2/groups/${encodeURIComponent(gid)}/batch_remove_members`, {
+                    method: 'POST',
+                    headers: { authorization: `QQBot ${token}`, 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        member_openids: ids,
+                        ...(opts?.blacklist === true ? { add_to_member_blacklist: true } : {}),
+                    }),
+                });
+                const text = await res.text();
+                if (!res.ok) {
+                    let human = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+                    try {
+                        const j = JSON.parse(text);
+                        const hint = j.code === 40103011
+                            ? '机器人关闭了「移除群成员」权限 → 去 QQ 开放平台 WEB 管理端打开'
+                            : j.code === 40103012
+                                ? '群主关闭了操作权限 → 让群主在群设置里给机器人打开「移除群成员」'
+                                : '';
+                        human = [hint, j.message].filter(Boolean).join(' / ') || human;
+                    }
+                    catch { /* 非 JSON */ }
+                    return { ok: false, msg: human };
+                }
+                return { ok: true, msg: `已提交移出 ${ids.length} 人` };
+            }
+            catch (err) {
+                return { ok: false, msg: err instanceof Error ? err.message : String(err) };
+            }
+        },
         // ── 持久化（落数据根，插件升级/重装不丢）─────────────────────────
         store: {
             // ★ 2026-11-14（CodeRabbit）：load/save 是动态求值，path 却被构造时固化 —— 改成 getter

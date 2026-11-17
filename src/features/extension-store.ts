@@ -449,7 +449,16 @@ export function seedExampleTools(dataRoot: string, logger: Logger): number {
       try {
         const srcDir = fileURLToPath(new URL(rel, import.meta.url));
         if (!existsSync(srcDir)) continue;
-        n += copyExampleTree(srcDir, dstDir, allow);
+        // ★ 2026-11-17（主人实测踩坑）：**命令这套要避开扩展包里已有的同名命令**。
+        //   起因：`examples/ext-commands/dshapi.mjs` 自动铺到 `.qqbot-extensions/commands/`，
+        //   而 `extension-packs/command-pack/commands/` 里也有一份 ⇒ 命令名重复
+        //   ⇒ 构建命令表时抛错 ⇒ **整个实例 apply() 失败，网关起不来**（现象：只启动了另一个实例）。
+        //   规则：扩展包里有同名文件就**不铺** —— 包里的更新更全，示例只是见面礼。
+        //   用户手动删掉包里的、再重启，示例才会补回来。
+        const skipIfPacked = dstDir === join(dataRoot, EXT_COMMANDS_SUBDIR)
+          ? collectPackFileNames(dataRoot, EXT_COMMANDS_SUBDIR)
+          : undefined;
+        n += copyExampleTree(srcDir, dstDir, allow, skipIfPacked);
       } catch { /* 单套失败继续下一套 */ }
     }
     if (n > 0) logger.info?.(`[ext-tools] 已自动铺 ${n} 个扩展示例（tools + botplay + hooks + inbound）`);
@@ -457,6 +466,34 @@ export function seedExampleTools(dataRoot: string, logger: Logger): number {
     logger.debug?.('[ext-tools] 示例铺设跳过: ' + (err instanceof Error ? err.message : String(err)));
   }
   return n;
+}
+
+/**
+ * 收集所有扩展包里某个子目录下的**文件名**（2026-11-17 加）。
+ *
+ * 用途：自动铺示例时避开"包里已经有"的文件，防止同名命令/工具跨目录重复
+ * （重复命令名会让构建命令表抛错，直接拖垮实例启动）。
+ *
+ * 扫 `{dataRoot}/extension-packs/<pack>/<sub>/` 全部包，大小写不敏感。
+ * 任何异常都返回空集合（铺示例失败不该影响启动）。
+ */
+function collectPackFileNames(dataRoot: string, sub: string): Set<string> {
+  const out = new Set<string>();
+  try {
+    const packsDir = join(dataRoot, 'extension-packs');
+    if (!existsSync(packsDir)) return out;
+    for (const pk of readdirSync(packsDir, { withFileTypes: true })) {
+      if (!pk.isDirectory()) continue;
+      const subDir = join(packsDir, pk.name, sub);
+      if (!existsSync(subDir)) continue;
+      try {
+        for (const f of readdirSync(subDir)) {
+          if (ALLOWED_EXT.has(extname(f).toLowerCase())) out.add(f.toLowerCase());
+        }
+      } catch { /* 单个包跳过 */ }
+    }
+  } catch { /* ignore */ }
+  return out;
 }
 
 /**
@@ -468,8 +505,11 @@ export function seedExampleTools(dataRoot: string, logger: Logger): number {
  * `allowFiles`（可选）：**顶层文件名白名单** —— 只搬名单里的文件，其余跳过。
  * 用于"这一套示例里只有某个是安全的"的场合（见 `seedExampleTools` 里 inbound 那条注释）。
  * 子目录（`lib/` 之类）不受白名单限制，照旧整棵搬。
+ *
+ * `skipNames`（可选，2026-11-17）：**已在别处存在**的文件名（小写）—— 命中就跳过。
+ * 主要用于"扩展包里已经有了，别再铺一份到 builtin 目录"（否则命令名重复）。
  */
-function copyExampleTree(srcDir: string, dstDir: string, allowFiles?: string[]): number {
+function copyExampleTree(srcDir: string, dstDir: string, allowFiles?: string[], skipNames?: Set<string>): number {
   let n = 0;
   try { mkdirSync(dstDir, { recursive: true }); } catch { return 0; }
   const entries = (() => {
@@ -479,11 +519,13 @@ function copyExampleTree(srcDir: string, dstDir: string, allowFiles?: string[]):
     const src = join(srcDir, ent.name);
     const dst = join(dstDir, ent.name);
     if (ent.isDirectory()) {
-      n += copyExampleTree(src, dst);          // 子目录（如 lib/）一并搬
+      n += copyExampleTree(src, dst, undefined, skipNames);   // 子目录（如 lib/）一并搬
       continue;
     }
     if (allowFiles && !allowFiles.includes(ent.name)) continue;   // ★ 顶层白名单：不在名单里就不搬
     if (!ALLOWED_EXT.has(extname(ent.name).toLowerCase())) continue;
+    // ★ 2026-11-17：扩展包里已经有同名文件 ⇒ 不铺（否则跨目录重名，命令表构建会炸）
+    if (skipNames && skipNames.has(ent.name.toLowerCase())) continue;
     if (existsSync(dst)) continue;             // ★ 不覆盖用户已有的（也就不会重复搬）
     try { copyFileSync(src, dst); n += 1; } catch { /* 单个失败继续 */ }
   }

@@ -113,6 +113,33 @@ export interface ExtCapsDeps {
   actorName?: string;
   /** 带 token 的官方 API 调用（注入了就优先用它，否则用本模块自带的 token 管理） */
   apiCall?: (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<ExtApiResult>;
+
+  /**
+   * 踢人（2026-11-17 加，主人要求"踢人暴露给扩展"）
+   *
+   * 内部走 `GroupAdminClient.removeMembers`（官方 2026-11-16 起「批量移除」已正式开放）。
+   * 帮你处理好这几件麻烦事：
+   *   · **不用扫码**（用机器人自己的 appId/appSecret 换 token）
+   *   · 一次 ≤20 个，超了在这里拦下
+   *   · 失败时 `msg` 已经是人话（`40103011`/`40103012` 会直接告诉你"去哪个开关开"）
+   *
+   * ⚠️ **只认 openid，不认 QQ 号** —— 官方「拉群成员列表」还在内邀中，
+   *    所以别指望用它查名单；要名单/QQ 号请走网页版（`/api/qqbot-settings/qun/members`）。
+   *
+   * @example
+   * ```js
+   * const r = await env.kick({ openids: [someOpenid] });
+   * if (!r.ok) return `踢不动: ${r.msg}`;
+   * ```
+   */
+  kick?: (opts: {
+    /** 目标群 openid；不传 = 当前会话所在的群 */
+    gid?: string;
+    /** 要移除的成员 openid（≤20） */
+    openids: string[];
+    /** 可选，同时拉黑（⚠️ 官方文档 2026-11-16 已删该字段，服务端还认、随时可能失效） */
+    blacklist?: boolean;
+  }) => Promise<{ ok: boolean; msg: string }>;
   /** 扩展名（store 文件名 / 日志前缀） */
   selfName?: string;
   // ── 2026-10-25：按 docs/extension-contract.md §2 承诺补齐的命名空间 ──
@@ -239,6 +266,32 @@ export interface ExtCapabilities {
   appSecret: string;
   /** ★ 2026-10-16：数据根（扩展之间共享一小份状态时用它拼固定路径；空串=拿不到，别拿它拼相对路径写盘） */
   dataRoot: string;
+
+  /**
+   * 踢人（2026-11-17 加，主人要求"踢人暴露给扩展"）
+   *
+   * 官方 2026-11-16 起「批量移除群成员」已正式开放，扩展可直接调。
+   *   · **不用扫码**（用机器人自己的 appId/appSecret 换 token）
+   *   · 一次 ≤20 个，超了在这里拦下
+   *   · 失败时 `msg` 已是人话（`40103011`/`40103012` 直接告诉你"去哪个开关开"）
+   *
+   * ⚠️ **只认 openid，不认 QQ 号** —— 官方「拉群成员列表」还在内邀中，
+   *    别指望用它查名单；要名单/QQ 号走网页版那条路。
+   *
+   * @example
+   * ```js
+   * const r = await env.caps.kick({ openids: [someOpenid] });
+   * if (!r.ok) return `踢不动: ${r.msg}`;
+   * ```
+   */
+  kick?: (opts: {
+    /** 目标群 openid；不传 = 当前会话所在的群 */
+    gid?: string;
+    /** 要移除的成员 openid（≤20） */
+    openids: string[];
+    /** 可选，同时拉黑（⚠️ 官方文档 2026-11-16 已删该字段，服务端还认、随时可能失效） */
+    blacklist?: boolean;
+  }) => Promise<{ ok: boolean; msg: string }>;
 
   /**
    * **上一段消息的快照**（2026-11-17 主人定，给扩展作者用）。
@@ -629,6 +682,72 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         return { ok: true, data };
       } catch (err) {
         return { ok: false, err: { code: 'THROW', human: err instanceof Error ? err.message : String(err) } };
+      }
+    },
+
+    /**
+     * 踢人（2026-11-17）：官方「批量移除群成员」已正式开放，扩展直接调。
+     *
+     * 只认 openid；不用扫码；错误码翻成人话。
+     * 内部复用 `deps.groupAdmin.removeMembers`（有就用），没有再自己打 API。
+     */
+    kick: async (opts) => {
+      const ids = (Array.isArray(opts?.openids) ? opts!.openids : [])
+        .map((x) => String(x ?? '').trim())
+        .filter(Boolean);
+      if (!ids.length) return { ok: false, msg: 'openids 为空' };
+      if (ids.length > 20) return { ok: false, msg: `一次最多 20 个 openid，你给了 ${ids.length} 个` };
+      const gid = String(opts?.gid ?? '').trim() || String(deps.peerId ?? '').trim();
+      if (!gid) return { ok: false, msg: '拿不到群 openid（不在群会话里，也没传 gid）' };
+
+      // 优先用插件已经建好的 GroupAdminClient（它有 token 缓存 + 错误码表）
+      const ga = (deps as { groupAdmin?: { removeMembers?: (...a: unknown[]) => Promise<unknown> } }).groupAdmin;
+      if (ga && typeof ga.removeMembers === 'function') {
+        try {
+          const r = (await ga.removeMembers(gid, ids, opts?.blacklist === true)) as {
+            ok?: boolean;
+            err?: { code?: string; human?: string };
+            data?: unknown;
+          };
+          if (r?.ok === true) return { ok: true, msg: `已提交移出 ${ids.length} 人` };
+          const code = String(r?.err?.code ?? '');
+          const human = String(r?.err?.human ?? '') || code || '平台无返回';
+          return { ok: false, msg: `${human}${code ? ` [code=${code}]` : ''}` };
+        } catch (err) {
+          warn('kick(groupAdmin)', err);
+        }
+      }
+
+      // 兜底：自己的 token 直接打
+      try {
+        const token = await fetchAccessToken(appId, appSecret);
+        if (!token) return { ok: false, msg: '未配置 appId/appSecret' };
+        const res = await fetch(`https://api.bot.qq.com/v2/groups/${encodeURIComponent(gid)}/batch_remove_members`, {
+          method: 'POST',
+          headers: { authorization: `QQBot ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            member_openids: ids,
+            ...(opts?.blacklist === true ? { add_to_member_blacklist: true } : {}),
+          }),
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          let human = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+          try {
+            const j = JSON.parse(text) as { message?: string; code?: number };
+            const hint =
+              j.code === 40103011
+                ? '机器人关闭了「移除群成员」权限 → 去 QQ 开放平台 WEB 管理端打开'
+                : j.code === 40103012
+                  ? '群主关闭了操作权限 → 让群主在群设置里给机器人打开「移除群成员」'
+                  : '';
+            human = [hint, j.message].filter(Boolean).join(' / ') || human;
+          } catch { /* 非 JSON */ }
+          return { ok: false, msg: human };
+        }
+        return { ok: true, msg: `已提交移出 ${ids.length} 人` };
+      } catch (err) {
+        return { ok: false, msg: err instanceof Error ? err.message : String(err) };
       }
     },
 
