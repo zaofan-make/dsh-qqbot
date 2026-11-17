@@ -1666,8 +1666,18 @@ const ownerNameCache = new Map<string, {
   name: string;
   /** 主人的**群昵称**，按 `groupOpenid` 分开存 —— 同一个人在不同群名片不同 */
   nicks: Map<string, string>;
-  tried: boolean;
 }>();
+
+/**
+ * 正在进行的解析（2026-11-17 CodeRabbit：修并发竞态）。
+ *
+ * 原来用 `tried: true` 空标记占位，但 `getUserInfo` 最长要等 3 秒 —— 这期间
+ * 另一个 `handleInbound` 进来会看到"试过了、名字是空"⇒ 直接返回空 ⇒ 撞名判断失效
+ * ⇒ 同名成员那条消息**不会附 openid**（正好是我们要防的场景）。
+ *
+ * 改成**缓存 Promise**：并发进来的都 `await` 同一个在途请求，谁都不会拿到空值。
+ */
+const ownerNameInflight = new Map<string, Promise<{ name: string; memberNick: string; nicks: Map<string, string> }>>();
 
 /**
  * 取主人的账号名 + 指定群的群昵称（懒加载：第一次调接口，之后读缓存）。
@@ -1684,30 +1694,40 @@ async function resolveOwnerDisplayName(
   const oid = String(ownerOpenid ?? '').trim();
   const gid = String(groupOpenid ?? '').trim();
   if (!oid) return { name: '', memberNick: '' };
+  const nickOf = (nicks?: Map<string, string>): string => (nicks && gid ? (nicks.get(gid) ?? '') : '');
+
+  // 已完成：直接用缓存
   const hit = ownerNameCache.get(oid);
-  const nickOf = (rec?: { nicks: Map<string, string> }): string =>
-    rec && gid ? (rec.nicks.get(gid) ?? '') : '';
-  if (hit && (hit.name || hit.nicks.size)) return { name: hit.name, memberNick: nickOf(hit) };
-  if (hit && hit.tried) return { name: '', memberNick: '' };
-  const rec = { name: '', nicks: new Map<string, string>(), tried: true };
-  ownerNameCache.set(oid, rec);
-  try {
-    const ga = manager?.groupAdmin;
-    if (!ga || typeof ga.getUserInfo !== 'function') return { name: '', memberNick: '' };
-    // 有界等待：名字只是锦上添花，不能让首条入站被拖住（2026-11-17 CodeRabbit）
-    const r = (await Promise.race([
-      ga.getUserInfo(oid),
-      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 3000)),
-    ])) as { ok?: boolean; data?: { username?: string } } | undefined;
-    const nm = r && r.ok === true ? String(r.data?.username ?? '').trim() : '';
-    if (nm) {
-      rec.name = nm;
-      ownerNameCache.set(oid, rec);
-    }
-    return { name: rec.name, memberNick: nickOf(rec) };
-  } catch {
-    return { name: '', memberNick: '' };
+  if (hit) return { name: hit.name, memberNick: nickOf(hit.nicks) };
+
+  // 在途：等同一个 Promise（并发安全）
+  let inflight = ownerNameInflight.get(oid);
+  if (!inflight) {
+    inflight = (async () => {
+      const nicks = new Map<string, string>();
+      try {
+        const ga = manager?.groupAdmin;
+        if (!ga || typeof ga.getUserInfo !== 'function') return { name: '', memberNick: '', nicks };
+        // 有界等待：名字只是锦上添花，不能让首条入站被拖住
+        const r = (await Promise.race([
+          ga.getUserInfo(oid),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 3000)),
+        ])) as { ok?: boolean; data?: { username?: string } } | undefined;
+        const nm = r && r.ok === true ? String(r.data?.username ?? '').trim() : '';
+        return { name: nm, memberNick: '', nicks };
+      } catch {
+        return { name: '', memberNick: '', nicks };
+      }
+    })();
+    ownerNameInflight.set(oid, inflight);
+    // 落缓存（成功失败都缓存 —— 失败就该"一次就够"，不该每轮重试）
+    void inflight.then((r) => {
+      ownerNameCache.set(oid, { name: r.name, nicks: r.nicks });
+      ownerNameInflight.delete(oid);
+    }).catch(() => { ownerNameInflight.delete(oid); });
   }
+  const r = await inflight;
+  return { name: r.name, memberNick: nickOf(r.nicks) };
 }
 
 /**

@@ -385,9 +385,15 @@ function collectPackFileNames(dataRoot, sub) {
             if (!existsSync(subDir))
                 continue;
             try {
-                for (const f of readdirSync(subDir)) {
-                    if (ALLOWED_EXT.has(extname(f).toLowerCase()))
-                        out.add(f.toLowerCase());
+                // ★ 2026-11-17 CodeRabbit：**只收普通文件**。
+                //   加载器 `scanExtFiles` 只认 `isFile()` 为真的条目；如果包里 `dshapi.mjs` 是个**目录**，
+                //   这里也会把名字加进跳过集合 ⇒ prune 会把目标目录里真正的示例文件删掉，
+                //   而那个目录又提供不了命令 ⇒ **示例命令彻底消失，还不会补回来**。
+                for (const ent of readdirSync(subDir, { withFileTypes: true })) {
+                    if (!ent.isFile())
+                        continue; // 与加载器口径一致
+                    if (ALLOWED_EXT.has(extname(ent.name).toLowerCase()))
+                        out.add(ent.name.toLowerCase());
                 }
             }
             catch { /* 单个包跳过 */ }
