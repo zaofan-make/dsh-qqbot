@@ -4598,20 +4598,27 @@ export function apply(ctx) {
    * ⚠️ 跨行消息的结尾引号在**最后一行**，所以必须在整段拼完之后剥，不能逐行处理。
    */
   function chatStripBodyWrap(raw) {
-    let x = String(raw == null ? '' : raw);
-    // ★ 2026-11-17 CodeRabbit：**必须先识别新格式，再剥**。
-    //   旧记录 `[Alice] "你好"` / `[Alice] :D` 本来就没有外壳，
-    //   无脑剥冒号引号会把用户自己打的引号、甚至 :D 里的冒号吃掉。
+    const x = String(raw == null ? '' : raw);
+    // ★ 2026-11-17 CodeRabbit（第二轮）：**按「前缀 / 正文 / 尾巴」三段切**，不要整串当正文。
     //
-    //   跳过头部的引用块占位符（\u0000Q<n>\u0000）—— chatPolishOne 会先把引用块
-    //   换成占位符再剥标签，所以正文前缀可能不是紧贴行首的。
-    const lead = /^(?:\u0000Q\d+\u0000\s*)*/.exec(x)?.[0] ?? '';
-    let rest = x.slice(lead.length).trim();
-    // 只认新格式的外壳：`: "` 开头
-    if (!rest.startsWith(': "')) return x.trim();   // 旧消息原样返回（不动一个字符）
-    rest = rest.slice(3).trimStart();                 // 剥 `: ` 三个字符（冒号+空格+引号）
-    if (rest.endsWith('"')) rest = rest.slice(0, -1); // 剥闭合引号（跨行时在最后一行末尾）
-    return (lead + rest).trim();
+    //   为什么不能只判开头：一条消息剥掉标签之后，正文前后都可能挂着别的东西 ——
+    //     · 前面：引用块占位符（\u0000Q<n>\u0000）、附件媒体元数据行（`- Image: …`）
+    //     · 后面：历史分段路径的 pendingMeta（媒体元数据排在正文之后）
+    //   只匹配「整串以 `: "` 开头」会全部漏掉；只剥开头引号又会把闭引号留在中间。
+    //
+    //   现在：第一个 `: "` 定位正文起点，**最后一个** `"` 定位终点，中间才是正文，
+    //   前后两段原样保留。
+    //
+    //   ⚠️ 找不到定界符就原样返回 —— 旧记录 `[Alice] "你好"` / `[Alice] :D`
+    //      一个字符都不动（它们本来就没有外壳）。
+    const i = x.indexOf(': "');
+    if (i < 0) return x.trim();
+    const j = x.lastIndexOf('"');
+    if (j <= i + 2) return x.trim();   // 只有开引号没闭合（被截断）→ 不动
+    const head = x.slice(0, i);        // 引用占位符 / 附件元数据
+    const body = x.slice(i + 3, j);    // ← 真正的正文
+    const tail = x.slice(j + 1);       // pendingMeta 等尾巴
+    return (head + body + tail).trim();
   }
   /** 气泡上显示的名字：有群名片且与账号名不同才追加 */
   function chatSenderLabel(info) {
