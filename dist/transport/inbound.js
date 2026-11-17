@@ -272,8 +272,10 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     })();
     // ★ 2026-11-17：主人名靠接口懒加载（只调一次），不用等主人先说话
     if (ownerOpenidOf) {
+        // 群昵称按群分开（主人在不同群名片不同），私聊没有群就用空
+        const gidForOwner = String(scope) === 'group' ? String(msg.groupOpenid ?? '') : '';
         try {
-            await resolveOwnerDisplayName(manager, ownerOpenidOf);
+            await resolveOwnerDisplayName(manager, ownerOpenidOf, gidForOwner);
         }
         catch { /* ignore */ }
     }
@@ -1140,19 +1142,21 @@ ownerOpenid) {
     let ownerNickOf = '';
     if (ownerOpenid) {
         const oid = String(ownerOpenid);
-        const rec = ownerNameCache.get(oid) ?? { name: '', memberNick: '', tried: false };
+        const rec = ownerNameCache.get(oid) ?? { name: '', nicks: new Map(), tried: false };
         if (String(msg.senderId ?? '') === oid) {
             const nm = String(msg.senderName ?? '').trim();
             const nk = String(memberNickOf(msg) ?? '').trim();
             if (nm && nm !== oid)
                 rec.name = nm;
-            if (nk)
-                rec.memberNick = nk;
+            // ★ 群昵称按群分开存（主人在 A 群叫 Boss1、B 群叫 Boss2，不能互相覆盖）
+            const g = isGroup ? String(msg.groupOpenid ?? '') : '';
+            if (nk && g)
+                rec.nicks.set(g, nk);
             ownerNameCache.set(oid, rec);
         }
         const cached = ownerNameCache.get(oid);
         ownerNameOf = cached?.name ?? '';
-        ownerNickOf = cached?.memberNick ?? '';
+        ownerNickOf = (isGroup && cached?.nicks) ? (cached.nicks.get(String(msg.groupOpenid ?? '')) ?? '') : '';
     }
     const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef, memberNickOf(msg), ownerOpenid, ownerNameOf, ownerNickOf);
     const dynamicCtx = buildDynamicCtx(msg, downloaded);
@@ -1577,21 +1581,24 @@ function memberNickOf(msg) {
  */
 const ownerNameCache = new Map();
 /**
- * 取主人的显示名（懒加载：第一次调接口，之后读缓存）。
+ * 取主人的账号名 + 指定群的群昵称（懒加载：第一次调接口，之后读缓存）。
  *
  * @param manager  用来拿 `groupAdmin` 客户端（没有就放弃，不影响主链）
  * @param ownerOpenid 白名单第一位的 openid（分键用）
+ * @param groupOpenid 哪个群（群昵称按群分开，2026-11-17 CodeRabbit）
  */
-async function resolveOwnerDisplayName(manager, ownerOpenid) {
+async function resolveOwnerDisplayName(manager, ownerOpenid, groupOpenid) {
     const oid = String(ownerOpenid ?? '').trim();
+    const gid = String(groupOpenid ?? '').trim();
     if (!oid)
         return { name: '', memberNick: '' };
     const hit = ownerNameCache.get(oid);
-    if (hit && (hit.name || hit.memberNick))
-        return { name: hit.name, memberNick: hit.memberNick };
+    const nickOf = (rec) => rec && gid ? (rec.nicks.get(gid) ?? '') : '';
+    if (hit && (hit.name || hit.nicks.size))
+        return { name: hit.name, memberNick: nickOf(hit) };
     if (hit && hit.tried)
         return { name: '', memberNick: '' };
-    const rec = { name: '', memberNick: '', tried: true };
+    const rec = { name: '', nicks: new Map(), tried: true };
     ownerNameCache.set(oid, rec);
     try {
         const ga = manager?.groupAdmin;
@@ -1607,7 +1614,7 @@ async function resolveOwnerDisplayName(manager, ownerOpenid) {
             rec.name = nm;
             ownerNameCache.set(oid, rec);
         }
-        return { name: rec.name, memberNick: rec.memberNick };
+        return { name: rec.name, memberNick: nickOf(rec) };
     }
     catch {
         return { name: '', memberNick: '' };
@@ -1703,10 +1710,21 @@ function isNamesakeOfOwner(displayName, senderId, ownerOpenid, ownerName, ownerN
     const d = String(displayName ?? '').trim();
     if (!d)
         return false;
-    // 账号名撞 / 群昵称撞 / `做早饭(群昵称:xxx)` 形态，都算
-    if (onm && (d === onm || d.startsWith(`${onm}(群昵称:`) || d.endsWith(`(群昵称:${onm})`)))
+    // 账号名撞 / 群昵称撞 / 组合形态，都算撞名
+    // ★ 2026-11-17 CodeRabbit：**组合显示名也要覆盖**。
+    //   主人账号名 `Alice`、群昵称 `Boss`；别人账号名 `Boss`、群昵称 `Other`
+    //   ⇒ withMemberNick 产出 `Boss(群昵称:Other)`，既不等于账号名、也不以 `(群昵称:Boss)` 结尾，
+    //   原来两个分支都匹配不上 ⇒ 漏判。所以 ownerNick 也要做**前缀**匹配。
+    if (onm && (d === onm
+        || d.startsWith(`${onm}(群昵称:`)
+        || d.endsWith(`(群昵称:${onm})`)
+        || d === `${onm}(群昵称:` // 防御性：截断形态
+    ))
         return true;
-    if (onk && (d === onk || d.endsWith(`(群昵称:${onk})`)))
+    if (onk && (d === onk
+        || d.startsWith(`${onk}(群昵称:`) // ★ 账号名撞了主人的群昵称
+        || d.endsWith(`(群昵称:${onk})`) // 群昵称撞了
+    ))
         return true;
     return false;
 }

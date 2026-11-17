@@ -18,7 +18,7 @@
  * 群聊前置解析 cmdMap + SDK slash 都覆盖 → /命令 重启后即用(宿主有 /bot-restart 一键重启)。
  * 热刷(不重启)留给 P4.2 dock 管理 UI。
  */
-import { readdirSync, statSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, mkdirSync, copyFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { absCwdOf } from '../util/abs-path.js';
 import { scanExtFiles } from './ext-packs.js';
 import { join, extname } from 'node:path';
@@ -342,6 +342,15 @@ export function seedExampleTools(dataRoot, logger) {
                 const skipIfPacked = dstDir === join(dataRoot, EXT_COMMANDS_SUBDIR)
                     ? collectPackFileNames(dataRoot, 'commands')
                     : undefined;
+                // ★ 2026-11-17 CodeRabbit：光"不铺新的"不够 —— **老版本铺下去的那份还在**。
+                //   升级后装含同名命令的包时，`.qqbot-extensions/commands/dshapi.mjs`（旧示例残留）
+                //   和 `extension-packs/command-pack/commands/dshapi.mjs` 会一起进命令表，
+                //   合并列表不去重 ⇒ 照样炸实例。
+                //   这里在铺之前**清掉"没被改过"的旧示例**：内容与示例源文件逐字节相同才删，
+                //   用户动过的一律保留（那是他的东西）。
+                if (skipIfPacked && skipIfPacked.size) {
+                    n += pruneUnmodifiedSeeds(srcDir, dstDir, skipIfPacked);
+                }
                 n += copyExampleTree(srcDir, dstDir, allow, skipIfPacked);
             }
             catch { /* 单套失败继续下一套 */ }
@@ -386,6 +395,46 @@ function collectPackFileNames(dataRoot, sub) {
     }
     catch { /* ignore */ }
     return out;
+}
+/**
+ * 清掉「目标目录里那些**没被改过**、但包里已经有一份」的旧示例（2026-11-17 加）。
+ *
+ * 判据：目标文件内容与示例源文件**逐字节相同** ⇒ 说明是当年自动铺下、用户没动过的，
+ *       而现在扩展包里已经有同名命令 ⇒ 删掉，否则两份一起进命令表会炸。
+ * 用户改过内容的**一律保留**（那是他的东西，宁可留着让他自己决定）。
+ *
+ * @returns 删掉的个数（计入铺设统计，便于日志观察）
+ */
+function pruneUnmodifiedSeeds(srcDir, dstDir, packedNames) {
+    let n = 0;
+    let entries = [];
+    try {
+        entries = readdirSync(dstDir, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    for (const ent of entries) {
+        if (ent.isDirectory())
+            continue;
+        const name = ent.name;
+        if (!packedNames.has(name.toLowerCase()))
+            continue; // 包里没有 ⇒ 不动
+        const srcFile = join(srcDir, name);
+        const dstFile = join(dstDir, name);
+        if (!existsSync(srcFile) || !existsSync(dstFile))
+            continue;
+        try {
+            const a = readFileSync(srcFile);
+            const b = readFileSync(dstFile);
+            if (a.length !== b.length || !a.equals(b))
+                continue; // 内容不同 = 用户改过，保留
+            unlinkSync(dstFile);
+            n += 1;
+        }
+        catch { /* 单个失败继续 */ }
+    }
+    return n;
 }
 /**
  * 递归把一个示例目录铺到目标目录，返回本次真正复制的文件数。
