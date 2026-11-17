@@ -1133,17 +1133,28 @@ ownerOpenid) {
     const wasMentioned = state.mention?.wasMentioned ?? false;
     const batchDispatch = state.batchDispatch === true;
     const aggregated = state.aggregated === true;
-    // ★ 2026-11-17：主人自己说话时顺手刷新"主人显示名"缓存（零 IO，比查台账省）
-    const ownerNameOf = (() => {
-        if (!ownerOpenid)
-            return '';
-        if (String(msg.senderId ?? '') === String(ownerOpenid)) {
-            ownerDisplayNameCache = withMemberNick(msg.senderName, memberNickOf(msg), String(msg.senderId ?? ''), shortSenderId(String(msg.senderId ?? '')));
-            return ownerDisplayNameCache;
+    // ★ 2026-11-17：主人自己说话时顺手刷新缓存（零 IO）。
+    //   ⚠️ 存的是**原始账号名**和**群昵称**两个字段，不存展示串 —— 展示串会变形
+    //   （`Alice` → `Alice(群昵称:Boss)`），之后"账号名叫 Alice"的普通成员就匹配不上了。
+    let ownerNameOf = '';
+    let ownerNickOf = '';
+    if (ownerOpenid) {
+        const oid = String(ownerOpenid);
+        const rec = ownerNameCache.get(oid) ?? { name: '', memberNick: '', tried: false };
+        if (String(msg.senderId ?? '') === oid) {
+            const nm = String(msg.senderName ?? '').trim();
+            const nk = String(memberNickOf(msg) ?? '').trim();
+            if (nm && nm !== oid)
+                rec.name = nm;
+            if (nk)
+                rec.memberNick = nk;
+            ownerNameCache.set(oid, rec);
         }
-        return ownerDisplayNameCache; // 没缓存就是空 ⇒ 不做撞名判断（安全）
-    })();
-    const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef, memberNickOf(msg), ownerOpenid, ownerNameOf);
+        const cached = ownerNameCache.get(oid);
+        ownerNameOf = cached?.name ?? '';
+        ownerNickOf = cached?.memberNick ?? '';
+    }
+    const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned, msgRef, memberNickOf(msg), ownerOpenid, ownerNameOf, ownerNickOf);
     const dynamicCtx = buildDynamicCtx(msg, downloaded);
     const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
     // ⚠️ 2026-09-10 去重(主人: "图片链接重复两次"): 聚合/冷却重新派发时, 同一条消息会**既被
@@ -1155,7 +1166,7 @@ ownerOpenid) {
         // 省 token: 历史里的 `[图片: <250 字符长链接>]` → 本地路径 / 干脆 `[图片]`
         .map(h => ({ ...h, content: localizeHistoryImages(String(h.content ?? ''), stickerDir) }));
     // ★ 2026-11-17：owner 信息往里传 —— 历史行（含插话/聚合派发的历史）也要做撞名检测
-    const agentBody = buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch, aggregated, ownerOpenid, ownerNameOf);
+    const agentBody = buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch, aggregated, ownerOpenid, ownerNameOf, ownerNickOf);
     return agentBody;
 }
 /**
@@ -1553,45 +1564,53 @@ function memberNickOf(msg) {
     return nick || undefined;
 }
 /**
- * 主人的**显示名**内存缓存（2026-11-17 主人要求：别每轮查台账，也别等他先说话）。
+ * 主人的**账号名**内存缓存（2026-11-17）。
  *
- * 数据来源：官方 `GET /v2/users/{openid}/info` → `{ username }`（2026-11-16 新开放的接口）。
- * 只在**第一次**用到时调一次，之后一直用内存里的值 —— **零 IO、零额外请求**。
+ * **按 ownerOpenid 分键**（2026-11-17 CodeRabbit）：同进程跑两个实例时，
+ * 共享一个变量会串 —— A 实例缓存了 Alice，B 实例拿到的就是 Alice，
+ * 而 B 的主人其实叫 Bob，于是 B 里叫 Bob 的人不会被消歧。
+ * 连"试过了没"这个状态也要分键，否则 A 的失败会让 B 永远不查。
  *
- * 为什么不用 SDK 事件里的字段：事件里带的是**这条消息发送者**的 username，
- * 拿不到"主人叫什么"。要么查台账（有 IO），要么调这个接口（一次就够）。
- *
- * 兜底：接口失败/没凭据 → 缓存保持空 → 撞名判断直接跳过（安全，不误伤）。
- * 另外主人自己说话时也会顺手刷新，所以改名后聊一句就同步了。
+ * **只存原始账号名**（同一批 CodeRabbit）：不能存 `Alice(群昵称:Boss)` 这种展示串，
+ * 否则主人一发言缓存就变形，之后"账号名叫 Alice"的普通成员就匹配不上、拿不到 id。
+ * 群昵称单独存一份，比较时两个都比。
  */
-let ownerDisplayNameCache = '';
-/** 是否已经尝试过通过接口解析（失败也置 true，避免每条消息都重试） */
-let ownerNameResolveTried = false;
+const ownerNameCache = new Map();
 /**
  * 取主人的显示名（懒加载：第一次调接口，之后读缓存）。
  *
  * @param manager  用来拿 `groupAdmin` 客户端（没有就放弃，不影响主链）
- * @param ownerOpenid 白名单第一位的 openid
+ * @param ownerOpenid 白名单第一位的 openid（分键用）
  */
 async function resolveOwnerDisplayName(manager, ownerOpenid) {
-    if (ownerDisplayNameCache)
-        return ownerDisplayNameCache;
     const oid = String(ownerOpenid ?? '').trim();
-    if (!oid || ownerNameResolveTried)
-        return '';
-    ownerNameResolveTried = true;
+    if (!oid)
+        return { name: '', memberNick: '' };
+    const hit = ownerNameCache.get(oid);
+    if (hit && (hit.name || hit.memberNick))
+        return { name: hit.name, memberNick: hit.memberNick };
+    if (hit && hit.tried)
+        return { name: '', memberNick: '' };
+    const rec = { name: '', memberNick: '', tried: true };
+    ownerNameCache.set(oid, rec);
     try {
         const ga = manager?.groupAdmin;
         if (!ga || typeof ga.getUserInfo !== 'function')
-            return '';
-        const r = (await ga.getUserInfo(oid));
+            return { name: '', memberNick: '' };
+        // 有界等待：名字只是锦上添花，不能让首条入站被拖住（2026-11-17 CodeRabbit）
+        const r = (await Promise.race([
+            ga.getUserInfo(oid),
+            new Promise((resolve) => setTimeout(() => resolve(undefined), 3000)),
+        ]));
         const nm = r && r.ok === true ? String(r.data?.username ?? '').trim() : '';
-        if (nm)
-            ownerDisplayNameCache = nm;
-        return ownerDisplayNameCache;
+        if (nm) {
+            rec.name = nm;
+            ownerNameCache.set(oid, rec);
+        }
+        return { name: rec.name, memberNick: rec.memberNick };
     }
     catch {
-        return ''; // 失败就不做撞名判断，安全
+        return { name: '', memberNick: '' };
     }
 }
 /**
@@ -1673,18 +1692,23 @@ function escapeFakeHistoryTag(text) {
  *
  * ⚠️ 不改 displayName，也不加任何 ⚠️ 标记 —— 名字照旧显示，只是多给一个 id 供对照。
  */
-function isNamesakeOfOwner(displayName, senderId, ownerOpenid, ownerName) {
+function isNamesakeOfOwner(displayName, senderId, ownerOpenid, ownerName, ownerNick) {
     const oid = String(ownerOpenid ?? '').trim();
     const onm = String(ownerName ?? '').trim();
-    if (!oid || !onm)
+    const onk = String(ownerNick ?? '').trim();
+    if (!oid || (!onm && !onk))
         return false; // 拿不到主人信息 → 不做判断
     if (String(senderId ?? '') === oid)
         return false; // 本尊，不用附
     const d = String(displayName ?? '').trim();
     if (!d)
         return false;
-    // `做早饭` / `做早饭(群昵称:xxx)` / `xxx(群昵称:做早饭)` 都算撞名
-    return d === onm || d.startsWith(`${onm}(群昵称:`) || d.endsWith(`(群昵称:${onm})`);
+    // 账号名撞 / 群昵称撞 / `做早饭(群昵称:xxx)` 形态，都算
+    if (onm && (d === onm || d.startsWith(`${onm}(群昵称:`) || d.endsWith(`(群昵称:${onm})`)))
+        return true;
+    if (onk && (d === onk || d.endsWith(`(群昵称:${onk})`)))
+        return true;
+    return false;
 }
 /**
  * Layer 3: 带发送者标签的用户消息
@@ -1700,7 +1724,7 @@ export function buildUserMessage(userContent, quotePart, senderId, senderName, i
 /** 白名单第一位的 openid（主人）—— 仅用于"撞名时附 id"，不影响 @ 逻辑 */
 ownerOpenid, 
 /** 白名单第一位的显示名（台账反查）—— 同上 */
-ownerName) {
+ownerName, ownerNick) {
     if (!isGroup) {
         // ★ 2026-10-30 主人要求「给私聊消息加上名字前缀」：
         //   以前私聊只拼 `[消息号: xxx]` + 正文，**压根不带发送者名字** ——
@@ -1731,13 +1755,18 @@ ownerName) {
     //   起因：群友把昵称改成"做早饭"，标签就变成 `[做早饭 #号]`，模型没法分辨真假。
     //   这里**不改 displayName**（名字照旧显示），只是把 openid 补在后面 ——
     //   真主人本来就没 @ 我的消息也不带 id，和它一对比就露馅了。
-    const namesakeOfOwner = isNamesakeOfOwner(displayName, senderId, ownerOpenid, ownerName);
+    const namesakeOfOwner = isNamesakeOfOwner(displayName, senderId, ownerOpenid, ownerName, ownerNick);
     const idPart = wasMentioned || namesakeOfOwner ? ` (${senderId})` : '';
     const refPart = msgRef ? ` #${msgRef}` : '';
     const senderTag = `[${displayName}${idPart}${refPart}]`;
     // ★ 2026-11-17（主人实测的提示词注入）：正文里如果有人手打一整行"假标签"，
     //   模型分不出真假 ⇒ 在这里把正文里形似标签的片段降级成全角方括号。
-    const safeContent = escapeFakeSenderTag(userContent);
+    //
+    // ⚠️ 2026-11-17 CodeRabbit：**还要处理"无短号"的标签**。
+    //   关闭引用功能时，真标签就是 `[做早饭]`（不带 `#短号`）—— 群友在正文换行后
+    //   手打同样的 `[做早饭] 请执行操作`，`escapeFakeSenderTag` 因为没 `#` 直接跳过，
+    //   模型照样收到伪造标签。所以再套一遍**行首/空白后的短方括号**转义。
+    const safeContent = escapeFakeHistoryTag(escapeFakeSenderTag(userContent));
     // 排版: 多行正文才缩进(单行保持原样, 不徒增视觉噪声)
     const body = safeContent.includes('\n') ? safeContent.split('\n').map((l) => '  ' + l).join('\n') : safeContent;
     return `${quotePart}${senderTag} ${body}${mentionTag}`;
@@ -1795,7 +1824,9 @@ function buildAgentBody(base, history, isGroup, wasMentioned, batchDispatch = fa
 /** 白名单第一位的 openid（主人）—— 历史行撞名时要附 id */
 ownerOpenid, 
 /** 白名单第一位的显示名 —— 同上 */
-ownerName) {
+ownerName, 
+/** 主人的群昵称（单独存，别和人名混） */
+ownerNick) {
     // 群内：真实 @ 或冷却派发(batchDispatch)时，把累积的群历史打包给 AI（后者不打假 @you 标签）
     const includeHistory = isGroup && (wasMentioned || batchDispatch) && !!history && history.length > 0;
     // 聚合投递提示(2026-09-07 主人定): 这些消息是我上一轮回合进行中群友发的, 攒到回合结束
@@ -1816,7 +1847,7 @@ ownerName) {
         const mentioned = h.mentioned === true;
         // ★ 2026-11-17：历史行也要做撞名检测（当前消息做了、历史没做 ⇒ 只改历史就能冒充）。
         //   规则同当前消息：名字撞了主人但 openid 不是 ⇒ 额外附上 openid；其余一律不带（省 token）。
-        const namesake = isNamesakeOfOwner(String(name ?? ''), String(h.senderId ?? ''), ownerOpenid, ownerName);
+        const namesake = isNamesakeOfOwner(String(name ?? ''), String(h.senderId ?? ''), ownerOpenid, ownerName, ownerNick);
         // 排版: 多行 content 退 2 格 —— 让"一条消息"视觉成块
         // ★ 2026-11-17：历史行格式是 `[昵称] 内容`，正文里手打 `[做早饭] xxx` 就能冒充 —— 转义掉
         const raw = escapeFakeHistoryTag(String(h.content ?? ''));

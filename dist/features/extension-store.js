@@ -332,11 +332,15 @@ export function seedExampleTools(dataRoot, logger) {
                 // ★ 2026-11-17（主人实测踩坑）：**命令这套要避开扩展包里已有的同名命令**。
                 //   起因：`examples/ext-commands/dshapi.mjs` 自动铺到 `.qqbot-extensions/commands/`，
                 //   而 `extension-packs/command-pack/commands/` 里也有一份 ⇒ 命令名重复
-                //   ⇒ 构建命令表时抛错 ⇒ **整个实例 apply() 失败，网关起不来**（现象：只启动了另一个实例）。
+                //   ⇒ 构建命令表时抛错 ⇒ **整个实例 apply() 失败，网关起不来**。
                 //   规则：扩展包里有同名文件就**不铺** —— 包里的更新更全，示例只是见面礼。
-                //   用户手动删掉包里的、再重启，示例才会补回来。
+                //
+                //   ⚠️ 2026-11-17 CodeRabbit 指出：第二个参数必须传**包内的子目录名**（`commands`），
+                //      不能传 `EXT_COMMANDS_SUBDIR`（那是 `.qqbot-extensions/commands`）——
+                //      否则会拼成 `extension-packs/<pack>/.qqbot-extensions/commands/`，永远扫不到，
+                //      跳过集合恒为空，等于修复没生效。
                 const skipIfPacked = dstDir === join(dataRoot, EXT_COMMANDS_SUBDIR)
-                    ? collectPackFileNames(dataRoot, EXT_COMMANDS_SUBDIR)
+                    ? collectPackFileNames(dataRoot, 'commands')
                     : undefined;
                 n += copyExampleTree(srcDir, dstDir, allow, skipIfPacked);
             }

@@ -272,13 +272,23 @@ export async function handleGroupMemberAddEvent(data, opts) {
     try {
         const ga = manager.groupAdmin;
         if (ga) {
-            const r = await ga.getUserInfo(mid);
+            // ★ 2026-11-17 CodeRabbit：加**有界等待**。
+            //   `GroupAdminClient.call` 里的 fetch 没设 signal/超时，官方接口要是迟迟不回，
+            //   这里会把入群通知一起拖住（补名字只是附加信息，不该阻塞主链）。
+            //   3 秒拿不到就当没有，通知照常发。
+            const r = await Promise.race([
+                ga.getUserInfo(mid),
+                new Promise((resolve) => setTimeout(() => resolve(undefined), 3000)),
+            ]);
+            if (r === undefined) {
+                logger.debug?.(`[group-hub] member_add 查名字超时(3s)，跳过: ${mid}`);
+            }
             const nm = r && r.ok === true ? String(r.data?.username ?? '').trim() : '';
             if (nm) {
                 appendGroupMember(joinDataDir(config), { ts: Date.now(), gid, mid, name: nm });
                 logger.debug?.(`[group-hub] member_add 补名字: ${mid} → ${nm}`);
             }
-            else {
+            else if (r !== undefined) {
                 logger.debug?.(`[group-hub] member_add 查名字无结果: ${mid} :: ${JSON.stringify(r?.err ?? '').slice(0, 160)}`);
             }
         }

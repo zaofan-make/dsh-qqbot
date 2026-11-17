@@ -5639,7 +5639,9 @@ var QQS_THEME_CSS = [
         state.apiKickBusy = ids.length === 1 ? ids[0] : true
         state.apiKickMsg = '正在提交…'
         paintBody()
-        apiPost('qun/api-kick', { gid: gid, openids: ids }).then(function (d) {
+        // ★ 必须带 ns —— 面板可能操作第二个实例的群，后端按 ns 解析实例取凭据
+        //   （不带的话会固定用第一个实例，第二个实例的群永远踢不动）
+        apiPost('qun/api-kick', { gid: gid, openids: ids, ns: state.ns || '' }).then(function (d) {
           state.apiKickBusy = false
           if (d && d.ok) {
             state.apiKickMsg = '✅ ' + ((d && d.msg) || '已提交') + '（共 ' + ids.length + ' 个）'

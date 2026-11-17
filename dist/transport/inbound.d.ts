@@ -67,5 +67,5 @@ export declare function buildUserMessage(userContent: string, quotePart: string,
 /** 白名单第一位的 openid（主人）—— 仅用于"撞名时附 id"，不影响 @ 逻辑 */
 ownerOpenid?: string, 
 /** 白名单第一位的显示名（台账反查）—— 同上 */
-ownerName?: string): string;
+ownerName?: string, ownerNick?: string): string;
 //# sourceMappingURL=inbound.d.ts.map

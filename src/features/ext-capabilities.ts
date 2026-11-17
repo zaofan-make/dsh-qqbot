@@ -697,8 +697,20 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
         .filter(Boolean);
       if (!ids.length) return { ok: false, msg: 'openids 为空' };
       if (ids.length > 20) return { ok: false, msg: `一次最多 20 个 openid，你给了 ${ids.length} 个` };
-      const gid = String(opts?.gid ?? '').trim() || String(deps.peerId ?? '').trim();
-      if (!gid) return { ok: false, msg: '拿不到群 openid（不在群会话里，也没传 gid）' };
+      // ★ 2026-11-17 CodeRabbit：只有**群会话**才拿 peerId 当默认 gid。
+      //   私聊里 deps.peerId 是那个**用户**的 openid，当群 ID 用会往 `users/{openid}` 发群请求，
+      //   非空检查拦不住 ⇒ 必须显式传 gid。
+      const scopeOfCaps = String(deps.scope ?? '').trim();
+      const gid = String(opts?.gid ?? '').trim()
+        || (scopeOfCaps === 'group' ? String(deps.peerId ?? '').trim() : '');
+      if (!gid) {
+        return {
+          ok: false,
+          msg: scopeOfCaps === 'group'
+            ? '拿不到群 openid（当前群会话没带 peerId？）'
+            : 'kick 只能在群里用，或者显式传 gid（当前不在群会话里）',
+        };
+      }
 
       // 优先用插件已经建好的 GroupAdminClient（它有 token 缓存 + 错误码表）
       const ga = (deps as { groupAdmin?: { removeMembers?: (...a: unknown[]) => Promise<unknown> } }).groupAdmin;
@@ -721,7 +733,10 @@ export function makeExtCaps(deps: ExtCapsDeps): ExtCapabilities {
       // 兜底：自己的 token 直接打
       try {
         const token = await fetchAccessToken(appId, appSecret);
-        if (!token) return { ok: false, msg: '未配置 appId/appSecret' };
+        if (!token) {
+          noteDeliver('kick', false, new Error('未配置 appId/appSecret'));
+          return { ok: false, msg: '未配置 appId/appSecret' };
+        }
         const res = await fetch(`https://api.bot.qq.com/v2/groups/${encodeURIComponent(gid)}/batch_remove_members`, {
           method: 'POST',
           headers: { authorization: `QQBot ${token}`, 'content-type': 'application/json' },
