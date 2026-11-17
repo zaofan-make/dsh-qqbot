@@ -207,9 +207,20 @@ export class BotplayController {
      * 后台探测某人昵称（不阻塞调用方）。
      *   命中 → 写进 memberNameApiCache，下次同步调用就能拿到真名。
      *   未命中/无权限/网络错 → 静默（只记一行日志，避免刷屏）。
+     *
+     * ★ 2026-11-17 修（主人：现在能靠 openid 直接换名字了）：
+     *   原来调的是 `getMemberInfo(gid, openid)` —— 那是**群内路径**
+     *   `/v2/groups/{gid}/members/{mid}`，`FEATURE_GATES.getMemberInfo: open === false`，
+     *   官方还挂在内邀中 ⇒ **永远命中不了**，这个兜底实际上一直是死的。
+     *
+     *   换成 `getUserInfo(openid)` → `GET /v2/users/{openid}/info`：
+     *   不看群、不需要对方发过言，只要给 openid 就能拿 `username`。
+     *   这是目前**唯一还开着**的"拿名字"接口。
+     *
+     *   注意它拿的是**账号名**（跨群通用），不是群名片 —— 对"这人是谁"这个用途足够。
      */
     probeMemberNameAsync(target, presser) {
-        if (target.scope !== 'group' || !presser)
+        if (!presser)
             return;
         const key = `${target.targetId}|${presser}`;
         if (this.memberNameProbing.has(key))
@@ -220,12 +231,12 @@ export class BotplayController {
         catch {
             return undefined;
         } })();
-        if (!ga || typeof ga.getMemberInfo !== 'function')
+        if (!ga || typeof ga.getUserInfo !== 'function')
             return;
         this.memberNameProbing.add(key);
         void (async () => {
             try {
-                const r = await ga.getMemberInfo(target.targetId, presser);
+                const r = await ga.getUserInfo(presser);
                 if (r && r.ok && r.data && r.data.username) {
                     const nm = String(r.data.username);
                     this.memberNameApiCache.set(key, nm);
@@ -1015,11 +1026,11 @@ export class BotplayController {
     memberName(target, presser) {
         if (!presser)
             return '';
-        // ⓪ 内存缓存（后台 API 兜底查到的；比台账更新，优先用）
+        // ★ 2026-11-17 CodeRabbit：**台账（群昵称）优先，API 缓存（账号名）降级为兜底**。
+        //   原来缓存排第一 —— 可它存的是 `getUserInfo` 返回的**账号名**，
+        //   而台账里存的是**群昵称**（他在这个群的名片）。缓存一命中就直接返回账号名，
+        //   签到列表 / 点击人标签就永远看不到群昵称了，直到缓存被淘汰或重启。
         const _ck = `${target.targetId}|${presser}`;
-        const _cc = this.memberNameApiCache.get(_ck);
-        if (_cc)
-            return _cc;
         // ① 台账(host 侧与 dock 禁言同源: dataDir=表情包目录, 同 group-members.jsonl)
         try {
             const dataDir = this.ledgerDataDirGetter();
@@ -1039,6 +1050,12 @@ export class BotplayController {
             }
         }
         catch { /* 台账读取失败, 走下一步 */ }
+        // ② 账号名缓存（`getUserInfo` 查到的，只有账号名没有群昵称）—— 台账查不到才用
+        {
+            const _cc = this.memberNameApiCache.get(_ck);
+            if (_cc)
+                return _cc;
+        }
         // ③ 会话消息壳兜底
         const record = this.manager.findByPeer(target.scope, target.targetId);
         try {

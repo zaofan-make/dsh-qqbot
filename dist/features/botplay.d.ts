@@ -20,6 +20,26 @@ type GroupAdminLike = {
             code?: string;
         };
     }>;
+    /**
+     * 拿用户基本信息（2026-11-17 官方新开放 `GET /v2/users/{openid}/info`）。
+     *
+     * ⚠️ 它给的是**账号名 username**，**不是群昵称**！群昵称（群名片）只有两条路：
+     *   · 他在群里发言时，事件里的 `author.member_nickname`
+     *   · 官方 `GET /v2/groups/{gid}/members/{mid}` —— 还在内邀中（`open: false`），走不通
+     * 所以入群/点按钮时能补的是"这人叫什么"，要群名片仍然得等他说话。
+     */
+    getUserInfo?: (userOpenid: string) => Promise<{
+        ok: boolean;
+        data?: {
+            username?: string;
+            avatar?: string;
+            allow_proactive_msg?: boolean;
+        };
+        err?: {
+            code?: string;
+            human?: string;
+        };
+    }>;
 };
 import type { ReplyTarget } from '@tencent-connect/qqbot-nodejs';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
@@ -96,6 +116,17 @@ export declare class BotplayController {
      * 后台探测某人昵称（不阻塞调用方）。
      *   命中 → 写进 memberNameApiCache，下次同步调用就能拿到真名。
      *   未命中/无权限/网络错 → 静默（只记一行日志，避免刷屏）。
+     *
+     * ★ 2026-11-17 修（主人：现在能靠 openid 直接换名字了）：
+     *   原来调的是 `getMemberInfo(gid, openid)` —— 那是**群内路径**
+     *   `/v2/groups/{gid}/members/{mid}`，`FEATURE_GATES.getMemberInfo: open === false`，
+     *   官方还挂在内邀中 ⇒ **永远命中不了**，这个兜底实际上一直是死的。
+     *
+     *   换成 `getUserInfo(openid)` → `GET /v2/users/{openid}/info`：
+     *   不看群、不需要对方发过言，只要给 openid 就能拿 `username`。
+     *   这是目前**唯一还开着**的"拿名字"接口。
+     *
+     *   注意它拿的是**账号名**（跨群通用），不是群名片 —— 对"这人是谁"这个用途足够。
      */
     private probeMemberNameAsync;
     /** 已加载模块缓存: 绝对路径 → 加载结果(按 mtime 判热重载; 不按时间戳刷 URL, 见 fileVersion 注释) */

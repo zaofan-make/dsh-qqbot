@@ -4588,6 +4588,38 @@ export function apply(ctx) {
     if (s.includes(':') || s.includes('：')) return null;
     return { name: s, nick: '' };
   }
+
+  /**
+   * 剥掉消息正文外层的「冒号 + 双引号」（2026-11-17 主人换消息格式的配套）。
+   *
+   *   新格式：`[发送者 #短号]: "正文"`
+   *   标签剥完剩 `:"正文"` —— 冒号和双引号是**程序加的定界符**，不该显示给用户。
+   *
+   * ⚠️ 跨行消息的结尾引号在**最后一行**，所以必须在整段拼完之后剥，不能逐行处理。
+   */
+  function chatStripBodyWrap(raw) {
+    const x = String(raw == null ? '' : raw);
+    // ★ 2026-11-17 CodeRabbit（第二轮）：**按「前缀 / 正文 / 尾巴」三段切**，不要整串当正文。
+    //
+    //   为什么不能只判开头：一条消息剥掉标签之后，正文前后都可能挂着别的东西 ——
+    //     · 前面：引用块占位符（\u0000Q<n>\u0000）、附件媒体元数据行（`- Image: …`）
+    //     · 后面：历史分段路径的 pendingMeta（媒体元数据排在正文之后）
+    //   只匹配「整串以 `: "` 开头」会全部漏掉；只剥开头引号又会把闭引号留在中间。
+    //
+    //   现在：第一个 `: "` 定位正文起点，**最后一个** `"` 定位终点，中间才是正文，
+    //   前后两段原样保留。
+    //
+    //   ⚠️ 找不到定界符就原样返回 —— 旧记录 `[Alice] "你好"` / `[Alice] :D`
+    //      一个字符都不动（它们本来就没有外壳）。
+    const i = x.indexOf(': "');
+    if (i < 0) return x.trim();
+    const j = x.lastIndexOf('"');
+    if (j <= i + 2) return x.trim();   // 只有开引号没闭合（被截断）→ 不动
+    const head = x.slice(0, i);        // 引用占位符 / 附件元数据
+    const body = x.slice(i + 3, j);    // ← 真正的正文
+    const tail = x.slice(j + 1);       // pendingMeta 等尾巴
+    return (head + body + tail).trim();
+  }
   /** 气泡上显示的名字：有群名片且与账号名不同才追加 */
   function chatSenderLabel(info) {
     if (!info) return '';
@@ -4606,7 +4638,7 @@ export function apply(ctx) {
     let pendingMeta = [];
     const flush = () => {
       if (cur) {
-        const t = cur.lines.join('\n').trim();
+        const t = chatStripBodyWrap(cur.lines.join('\n').trim());   // ★ 2026-11-17 剥掉 `: "正文"` 的外层
         out.push({ sender: cur.sender, text: t });
       }
       cur = null;
@@ -4683,6 +4715,7 @@ export function apply(ctx) {
       if (RE_MARKER_WORD.test(info.name)) continue;
       sender = chatSenderLabel(info);
       b = b.replace(tmm[0], '');
+      b = chatStripBodyWrap(b);   // ★ 2026-11-17 剥掉 `: "正文"` 的外层
       break;
     }
     if (quotes.length) b = b.replace(/\u0000Q(\d+)\u0000/g, (_all, i) => quotes[Number(i)] || '');
