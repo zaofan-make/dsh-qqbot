@@ -2461,7 +2461,12 @@ export async function apply(ctx, opts) {
     /** 踢人（2026-10-20 加；2026-11-17 官方把「批量移除」从内邀改成正式开放，实测可用） */
     const kickMemberTool = defineTool({
         name: 'group_kick',
-        description: '群管理(写,危险): 把成员移出群(踢人)，可批量 ≤20。需机器人是群管理员、且平台后台勾选了「移除群成员」。**仅主人明确要求时调用**。不填 gid = 当前会话所在的群。',
+        description: '群管理(写,危险): 把成员移出群(踢人)，可批量 ≤20。需机器人是群管理员、且平台后台勾选了「移除群成员」。**仅主人明确要求时调用**。不填 gid = 当前会话所在的群。'
+            + '\n\n'
+            + '⚠️ **和 `qq_group_admin`（老网页版）的分工**：\n'
+            + '· 本工具走**官方 bot 接口**：不用扫码、用机器人凭据、**只认 openid**（官方成员列表还在内邀中，所以拿不到名单）。\n'
+            + '· `qq_group_admin` 走 qun.qq.com 老 cgi：要主人 QQ 扫码，但**能看到 QQ 号（uin）**。\n'
+            + '· **主人说"踢掉 QQ 号 123"→ 那种只能走 qq_group_admin**；手里有 openid 想免扫码批量踢 → 用本工具。',
         parameters: {
             gid: { type: 'string', description: '目标群 openid(可选; 不填=当前会话所在的群)' },
             member_openids: { type: 'array', items: { type: 'string' }, description: '要移出的成员 openid(≤20 个)' },
@@ -3806,10 +3811,23 @@ var contextDropTool = defineTool({
  * QQ 群管理工具 —— 用主人自己的 QQ 号管理「我创建 / 我管理」的群。
  * 纯 HTTP（qun.qq.com 的 qun_mgr 接口），**不需要浏览器**，新用户装完插件自己扫码就能用。
  * 不受「无上下文」开关影响，永远挂在会话上。
+ *
+ * ★ 2026-11-17 主人要求：**这个工具要保留，并强调它的特殊性**。
+ *   它是**唯一能看到 QQ 号（uin）** 的群管理入口 —— 官方 API 只给 openid，
+ *   而"某个人到底是哪个 QQ"这种需求只有这条老网页版通道能满足。
+ *   所以 `group_kick`（官方 API）和它**并存**，各管一边，不要互相替代。
  */
 var qunAdminTool = defineTool({
     name: 'qq_group_admin',
-    description: '用主人自己的 QQ 号管理群（我创建/我管理的群）：登录、看群列表、查群成员、踢人。'
+    description: '【老网页版通道 · 唯一能看 QQ 号】用主人自己的 QQ 号管理群（我创建/我管理的群）：登录、看群列表、查群成员、踢人。'
+        + '\n\n'
+        + '⚠️ **和 `group_kick`（官方 API）的区别，选之前先想清楚**：\n'
+        + '· 本工具走 qun.qq.com 的老 cgi 接口 → **能看到成员的 QQ 号（uin）、群名片、加群时间**；'
+        + '但要**用主人自己的 QQ 身份**操作（扫码一次，之后长期免扫）。\n'
+        + '· `group_kick` 走官方 bot 接口 → **不需要扫码**、用机器人自己的凭据；'
+        + '但**只认 openid**，而官方「拉群成员列表」还在内邀中 ⇒ 它拿不到名单，也看不到 QQ 号。\n'
+        + '· 所以：**主人要"踢掉 QQ 号 123456"这种话，只能走本工具**；'
+        + '手里已经有 openid、想免扫码批量踢，走 `group_kick`。\n\n'
         + '登录用 action=login —— 会自动开一个隐藏的浏览器去「点头像授权」，有 QQ 登录态时**免扫码直接登**；'
         + '若这台机器上还没有 QQ 登录态，它会出一张二维码，你立刻用 send_media 发给主人扫，再调 action=status 等结果（一次最多等 20 秒，没等到再调）。'
         + '⚠️ 踢人前必须先跟主人确认「哪个群、哪个人」，确认无误后才带 confirmed=true 调用；绝不自己决定踢谁。',
