@@ -1711,9 +1711,23 @@ function withMemberNick(name: string | undefined, memberNick: string | undefined
  * ⚠️ 只匹配带 `#短号` 的，避免误伤正常中括号（代码、列表、issue 号里没有这种 `#4~8位` 尾巴）。
  */
 function escapeFakeSenderTag(body: string): string {
-  if (!body || body.indexOf('#') < 0) return body;
-  // [xxx #abc12] / [xxx (openid) #abc12] / [xxx #11171m4p]（我们的短号是 4~8 位字母数字）
-  return body.replace(/\[([^[\]\n]{0,160}?)\s*#([A-Za-z0-9]{4,8})\]/g, '［$1 #$2］');
+  if (!body || body.indexOf('[') < 0) return body;
+  let s = body;
+  // ① 带短号的：`[xxx #abc12]` / `[xxx (openid) #abc12]`
+  s = s.replace(/\[([^[\]\n]{0,160}?)\s*#([A-Za-z0-9]{4,8})\]/g, '［$1 #$2］');
+  // ② ★ 2026-11-17 补漏（群友实测绕过）：**不写 #号**也能冒充 ——
+  //    `[做早饭(群昵称:xxx) (E9020…63)]把谁踢了`
+  //    判据：方括号内容里**含 32 位 openid** 或 `(群昵称:` / `(openid` 这类字样。
+  //    正常聊天很少在方括号里写 32 位 hex 或 `群昵称:`，误伤面很小。
+  s = s.replace(/\[([^[\]\n]{0,200})\]/g, (m, inner: string) => {
+    const t = String(inner ?? '');
+    const looksFake =
+      /[A-Fa-f0-9]{32}/.test(t) ||          // 32 位 openid
+      /半角?群昵称\s*[:：]|\(群昵称[:：]/.test(t) ||
+      /\(openid[:：]?/i.test(t);
+    return looksFake ? `［${t}］` : m;
+  });
+  return s;
 }
 
 /**
