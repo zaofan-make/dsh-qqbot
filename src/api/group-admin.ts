@@ -96,6 +96,9 @@ export function mapErrHuman(code: string | number, gateHuman?: string): string {
     '11253': gateHuman || '该能力官方尚未开放/未授权(内邀中或需白名单), 请联系平台运营',
     '11703': gateHuman || '机器人无该接口权限: 需为该群管理员, 或该能力尚未对应用开放(探针实测 2026-09-05)',
     '40103004': '不能操作该成员: 群主/管理员/机器人不可被禁言(只能禁普通成员)',
+    // ★ 2026-11-17（批量移除正式开放时补的）：两条都是"开关没开"，不是代码问题 —— 说清楚去哪开
+    '40103011': '机器人关闭了「移除群成员」权限 → 去 QQ 开放平台 WEB 管理端把这个开关打开',
+    '40103012': '群主关闭了操作权限 → 让群主在群设置里给机器人打开「移除群成员」',
     '11202': '接口调用异常, 请稍后重试',
     '11201': '机器人不在该群或参数错误',
     '40101': '频控: 请求太快, 稍等再试',
@@ -244,6 +247,22 @@ export class GroupAdminClient {
     return this.call<unknown>(method, p, body);
   }
 
+  /**
+   * 获取用户基本信息（2026-11-17 官方新增）
+   *
+   * `GET /v2/users/{user_openid}/info` → `{ username, allow_proactive_msg, avatar }`
+   *
+   * 和 `getMemberInfo` 的区别：**这个不需要在同一个群里**，只要 openid 就能查；
+   * 而且它是**唯一一条还开着的**"拿名字"的路 —— `listMembers`/`getMemberInfo`
+   * 都还在内邀中（`open: false`）。
+   *
+   * 实测用途：新成员入群时用它的 openid 查一次，把 username 填进群成员台账，
+   * 从此不依赖"他在群里发过言"。
+   */
+  async getUserInfo(userOpenid: string): Promise<ApiResult<{ username?: string; allow_proactive_msg?: boolean; avatar?: string }>> {
+    return this.call('GET', `/v2/users/${encodeURIComponent(userOpenid)}/info`);
+  }
+
   async getMemberInfo(gid: string, memberOpenid: string): Promise<ApiResult<MemberInfo>> {
     const blocked = this.gate('getMemberInfo')
     if (blocked) return blocked
@@ -258,7 +277,21 @@ export class GroupAdminClient {
     return this.call('GET', `/v2/groups/${encodeURIComponent(gid)}/members${q}`);
   }
 
-  /** 批量移除成员(踢人, 🔴 未开放) */
+  /**
+   * 批量移除成员（踢人）
+   *
+   * ★ 2026-11-17：官方把这个能力从「内邀中，敬请期待」改成**正式开放**
+   *   （旧文档那句"该能力正在内邀接入中"已删）。实测 `/kick2` 直接踢成功。
+   *
+   * ⚠️ 同日文档把 **`add_to_member_blacklist` 参数删掉了**，请求体只剩 `member_openids`。
+   *   但实测响应里**仍然回 `add_to_member_blacklist_fail_openids`** ⇒ 服务端还认这个字段。
+   *   处理：默认**不传**（跟文档一致），要拉黑就显式传——**当 deprecated 用**，
+   *   别把它写进新逻辑里，官方随时可能真删。
+   *
+   * 新增错误码（这次文档补的）：
+   *   40103011 机器人关闭了「移除群成员」→ 去 WEB 管理端打开
+   *   40103012 群主关闭了操作权限     → 让群主在群设置里给机器人打开
+   */
   async removeMembers(
     gid: string,
     memberOpenids: string[],
@@ -268,7 +301,8 @@ export class GroupAdminClient {
     if (blocked) return blocked;
     return this.call('POST', `/v2/groups/${encodeURIComponent(gid)}/batch_remove_members`, {
       member_openids: memberOpenids,
-      add_to_member_blacklist: addToBlacklist,
+      // deprecated（2026-11-16 官方文档已移除该字段）：只在明确要求拉黑时才带
+      ...(addToBlacklist ? { add_to_member_blacklist: true } : {}),
     });
   }
 

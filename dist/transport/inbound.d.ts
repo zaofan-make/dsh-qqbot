@@ -63,5 +63,9 @@ export declare function buildQuotePart(quote: ResolvedQuote | undefined, sticker
  *   短号两边都留(引用标记 + id_lookup 反查 openid 的入口, 不能省)。
  * ★ 2026-11-13：标签里的名字改用"显示名"（可带群名片后缀），`#短号` 位置与格式**不变**。
  */
-export declare function buildUserMessage(userContent: string, quotePart: string, senderId: string, senderName: string | undefined, isGroup: boolean, wasMentioned: boolean, msgRef: string, memberNick?: string): string;
+export declare function buildUserMessage(userContent: string, quotePart: string, senderId: string, senderName: string | undefined, isGroup: boolean, wasMentioned: boolean, msgRef: string, memberNick?: string, 
+/** 白名单第一位的 openid（主人）—— 仅用于"撞名时附 id"，不影响 @ 逻辑 */
+ownerOpenid?: string, 
+/** 白名单第一位的显示名（台账反查）—— 同上 */
+ownerName?: string, ownerNick?: string): string;
 //# sourceMappingURL=inbound.d.ts.map

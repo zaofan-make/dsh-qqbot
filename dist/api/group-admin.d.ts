@@ -111,13 +111,44 @@ export declare class GroupAdminClient {
      *   path 也不做白名单（模块是主人自己写的代码，沙箱边界不在这一层）。
      */
     apiCall(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<ApiResult<unknown>>;
+    /**
+     * 获取用户基本信息（2026-11-17 官方新增）
+     *
+     * `GET /v2/users/{user_openid}/info` → `{ username, allow_proactive_msg, avatar }`
+     *
+     * 和 `getMemberInfo` 的区别：**这个不需要在同一个群里**，只要 openid 就能查；
+     * 而且它是**唯一一条还开着的**"拿名字"的路 —— `listMembers`/`getMemberInfo`
+     * 都还在内邀中（`open: false`）。
+     *
+     * 实测用途：新成员入群时用它的 openid 查一次，把 username 填进群成员台账，
+     * 从此不依赖"他在群里发过言"。
+     */
+    getUserInfo(userOpenid: string): Promise<ApiResult<{
+        username?: string;
+        allow_proactive_msg?: boolean;
+        avatar?: string;
+    }>>;
     getMemberInfo(gid: string, memberOpenid: string): Promise<ApiResult<MemberInfo>>;
     /** 获取群成员列表(🔴 未开放, 完整实现保留, 开放即用) */
     listMembers(gid: string, cursor?: string): Promise<ApiResult<{
         members: MemberInfo[];
         next_cursor: string;
     }>>;
-    /** 批量移除成员(踢人, 🔴 未开放) */
+    /**
+     * 批量移除成员（踢人）
+     *
+     * ★ 2026-11-17：官方把这个能力从「内邀中，敬请期待」改成**正式开放**
+     *   （旧文档那句"该能力正在内邀接入中"已删）。实测 `/kick2` 直接踢成功。
+     *
+     * ⚠️ 同日文档把 **`add_to_member_blacklist` 参数删掉了**，请求体只剩 `member_openids`。
+     *   但实测响应里**仍然回 `add_to_member_blacklist_fail_openids`** ⇒ 服务端还认这个字段。
+     *   处理：默认**不传**（跟文档一致），要拉黑就显式传——**当 deprecated 用**，
+     *   别把它写进新逻辑里，官方随时可能真删。
+     *
+     * 新增错误码（这次文档补的）：
+     *   40103011 机器人关闭了「移除群成员」→ 去 WEB 管理端打开
+     *   40103012 群主关闭了操作权限     → 让群主在群设置里给机器人打开
+     */
     removeMembers(gid: string, memberOpenids: string[], addToBlacklist?: boolean): Promise<ApiResult<{
         remove_members_result: string;
         add_to_member_blacklist_fail_openids: string[];

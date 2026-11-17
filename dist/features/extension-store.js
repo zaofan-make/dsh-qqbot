@@ -18,7 +18,7 @@
  * 群聊前置解析 cmdMap + SDK slash 都覆盖 → /命令 重启后即用(宿主有 /bot-restart 一键重启)。
  * 热刷(不重启)留给 P4.2 dock 管理 UI。
  */
-import { readdirSync, statSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, mkdirSync, copyFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { absCwdOf } from '../util/abs-path.js';
 import { scanExtFiles } from './ext-packs.js';
 import { join, extname } from 'node:path';
@@ -329,7 +329,29 @@ export function seedExampleTools(dataRoot, logger) {
                 const srcDir = fileURLToPath(new URL(rel, import.meta.url));
                 if (!existsSync(srcDir))
                     continue;
-                n += copyExampleTree(srcDir, dstDir, allow);
+                // ★ 2026-11-17（主人实测踩坑）：**命令这套要避开扩展包里已有的同名命令**。
+                //   起因：`examples/ext-commands/dshapi.mjs` 自动铺到 `.qqbot-extensions/commands/`，
+                //   而 `extension-packs/command-pack/commands/` 里也有一份 ⇒ 命令名重复
+                //   ⇒ 构建命令表时抛错 ⇒ **整个实例 apply() 失败，网关起不来**。
+                //   规则：扩展包里有同名文件就**不铺** —— 包里的更新更全，示例只是见面礼。
+                //
+                //   ⚠️ 2026-11-17 CodeRabbit 指出：第二个参数必须传**包内的子目录名**（`commands`），
+                //      不能传 `EXT_COMMANDS_SUBDIR`（那是 `.qqbot-extensions/commands`）——
+                //      否则会拼成 `extension-packs/<pack>/.qqbot-extensions/commands/`，永远扫不到，
+                //      跳过集合恒为空，等于修复没生效。
+                const skipIfPacked = dstDir === join(dataRoot, EXT_COMMANDS_SUBDIR)
+                    ? collectPackFileNames(dataRoot, 'commands')
+                    : undefined;
+                // ★ 2026-11-17 CodeRabbit：光"不铺新的"不够 —— **老版本铺下去的那份还在**。
+                //   升级后装含同名命令的包时，`.qqbot-extensions/commands/dshapi.mjs`（旧示例残留）
+                //   和 `extension-packs/command-pack/commands/dshapi.mjs` 会一起进命令表，
+                //   合并列表不去重 ⇒ 照样炸实例。
+                //   这里在铺之前**清掉"没被改过"的旧示例**：内容与示例源文件逐字节相同才删，
+                //   用户动过的一律保留（那是他的东西）。
+                if (skipIfPacked && skipIfPacked.size) {
+                    n += pruneUnmodifiedSeeds(srcDir, dstDir, skipIfPacked);
+                }
+                n += copyExampleTree(srcDir, dstDir, allow, skipIfPacked);
             }
             catch { /* 单套失败继续下一套 */ }
         }
@@ -342,6 +364,85 @@ export function seedExampleTools(dataRoot, logger) {
     return n;
 }
 /**
+ * 收集所有扩展包里某个子目录下的**文件名**（2026-11-17 加）。
+ *
+ * 用途：自动铺示例时避开"包里已经有"的文件，防止同名命令/工具跨目录重复
+ * （重复命令名会让构建命令表抛错，直接拖垮实例启动）。
+ *
+ * 扫 `{dataRoot}/extension-packs/<pack>/<sub>/` 全部包，大小写不敏感。
+ * 任何异常都返回空集合（铺示例失败不该影响启动）。
+ */
+function collectPackFileNames(dataRoot, sub) {
+    const out = new Set();
+    try {
+        const packsDir = join(dataRoot, 'extension-packs');
+        if (!existsSync(packsDir))
+            return out;
+        for (const pk of readdirSync(packsDir, { withFileTypes: true })) {
+            if (!pk.isDirectory())
+                continue;
+            const subDir = join(packsDir, pk.name, sub);
+            if (!existsSync(subDir))
+                continue;
+            try {
+                // ★ 2026-11-17 CodeRabbit：**只收普通文件**。
+                //   加载器 `scanExtFiles` 只认 `isFile()` 为真的条目；如果包里 `dshapi.mjs` 是个**目录**，
+                //   这里也会把名字加进跳过集合 ⇒ prune 会把目标目录里真正的示例文件删掉，
+                //   而那个目录又提供不了命令 ⇒ **示例命令彻底消失，还不会补回来**。
+                for (const ent of readdirSync(subDir, { withFileTypes: true })) {
+                    if (!ent.isFile())
+                        continue; // 与加载器口径一致
+                    if (ALLOWED_EXT.has(extname(ent.name).toLowerCase()))
+                        out.add(ent.name.toLowerCase());
+                }
+            }
+            catch { /* 单个包跳过 */ }
+        }
+    }
+    catch { /* ignore */ }
+    return out;
+}
+/**
+ * 清掉「目标目录里那些**没被改过**、但包里已经有一份」的旧示例（2026-11-17 加）。
+ *
+ * 判据：目标文件内容与示例源文件**逐字节相同** ⇒ 说明是当年自动铺下、用户没动过的，
+ *       而现在扩展包里已经有同名命令 ⇒ 删掉，否则两份一起进命令表会炸。
+ * 用户改过内容的**一律保留**（那是他的东西，宁可留着让他自己决定）。
+ *
+ * @returns 删掉的个数（计入铺设统计，便于日志观察）
+ */
+function pruneUnmodifiedSeeds(srcDir, dstDir, packedNames) {
+    let n = 0;
+    let entries = [];
+    try {
+        entries = readdirSync(dstDir, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    for (const ent of entries) {
+        if (ent.isDirectory())
+            continue;
+        const name = ent.name;
+        if (!packedNames.has(name.toLowerCase()))
+            continue; // 包里没有 ⇒ 不动
+        const srcFile = join(srcDir, name);
+        const dstFile = join(dstDir, name);
+        if (!existsSync(srcFile) || !existsSync(dstFile))
+            continue;
+        try {
+            const a = readFileSync(srcFile);
+            const b = readFileSync(dstFile);
+            if (a.length !== b.length || !a.equals(b))
+                continue; // 内容不同 = 用户改过，保留
+            unlinkSync(dstFile);
+            n += 1;
+        }
+        catch { /* 单个失败继续 */ }
+    }
+    return n;
+}
+/**
  * 递归把一个示例目录铺到目标目录，返回本次真正复制的文件数。
  *
  * 纪律与 `seedExampleTools` 一致：**只补不存在**（绝不覆盖用户改过/写过的同名文件）、
@@ -350,8 +451,11 @@ export function seedExampleTools(dataRoot, logger) {
  * `allowFiles`（可选）：**顶层文件名白名单** —— 只搬名单里的文件，其余跳过。
  * 用于"这一套示例里只有某个是安全的"的场合（见 `seedExampleTools` 里 inbound 那条注释）。
  * 子目录（`lib/` 之类）不受白名单限制，照旧整棵搬。
+ *
+ * `skipNames`（可选，2026-11-17）：**已在别处存在**的文件名（小写）—— 命中就跳过。
+ * 主要用于"扩展包里已经有了，别再铺一份到 builtin 目录"（否则命令名重复）。
  */
-function copyExampleTree(srcDir, dstDir, allowFiles) {
+function copyExampleTree(srcDir, dstDir, allowFiles, skipNames) {
     let n = 0;
     try {
         mkdirSync(dstDir, { recursive: true });
@@ -371,12 +475,15 @@ function copyExampleTree(srcDir, dstDir, allowFiles) {
         const src = join(srcDir, ent.name);
         const dst = join(dstDir, ent.name);
         if (ent.isDirectory()) {
-            n += copyExampleTree(src, dst); // 子目录（如 lib/）一并搬
+            n += copyExampleTree(src, dst, undefined, skipNames); // 子目录（如 lib/）一并搬
             continue;
         }
         if (allowFiles && !allowFiles.includes(ent.name))
             continue; // ★ 顶层白名单：不在名单里就不搬
         if (!ALLOWED_EXT.has(extname(ent.name).toLowerCase()))
+            continue;
+        // ★ 2026-11-17：扩展包里已经有同名文件 ⇒ 不铺（否则跨目录重名，命令表构建会炸）
+        if (skipNames && skipNames.has(ent.name.toLowerCase()))
             continue;
         if (existsSync(dst))
             continue; // ★ 不覆盖用户已有的（也就不会重复搬）

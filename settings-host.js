@@ -984,6 +984,48 @@ export function apply(ctx) {
     } catch (e) { writeJson(res, 200, { ok: false, error: qunErrHuman(String((e && e.message) || e)) }); }
   });
 
+  /**
+   * 官方 API 踢人（2026-11-17）
+   *
+   * 和老网页版 `qun/kick` 的区别：
+   *   · 这个走**机器人自己的 token**（appId + appSecret），**不需要扫码**
+   *   · 但只认 **member_openid**，不认 QQ 号
+   *   · 老网页版能看 QQ 号，这个看不到（官方 listMembers 还在内邀中）
+   *
+   * 官方 2026-11-16 把「批量移除」从内邀改成正式开放，请求体只剩 `member_openids`
+   * （`add_to_member_blacklist` 已从文档移除，这里不传）。
+   *
+   * ★ 2026-11-17 CodeRabbit 两条修正：
+   *   ① **按目标实例取凭据** —— 面板可能操作的是第二个实例的群，原来固定取「第一个启用实例」
+   *      ⇒ 第二个实例的群永远踢不动。现在用请求里的 `ns` 走 `groupClientOf(ns)`。
+   *   ② **不要直接读 `bot.cfg.appSecret`** —— 用户在面板改密码时只写自有存储、不写 patch，
+   *      直接读 patch 会拿到旧密钥 ⇒ 换 token 失败。`groupClientOf` 内部用的是合并后的真实值。
+   */
+  route(ctx, 'POST', '/api/qqbot-settings/qun/api-kick', async (req, res) => {
+    const body = await readJsonBody(req);
+    if (!body || typeof body !== 'object') return writeJson(res, 400, { ok: false, error: 'bad body' });
+    const gid = String(body.gid || '').trim();
+    const openids = (Array.isArray(body.openids) ? body.openids : []).map((x) => String(x).trim()).filter(Boolean);
+    if (!gid) return writeJson(res, 400, { ok: false, error: 'gid 必填' });
+    if (!openids.length) return writeJson(res, 400, { ok: false, error: 'openids 必填' });
+    if (openids.length > 20) return writeJson(res, 400, { ok: false, error: '一次最多 20 个 openid' });
+    try {
+      // ① 按请求的 ns 解析实例（拿不到就用当前面板上下文兜底）
+      const gc = await groupClientOf(String(body.ns || ''));
+      if (!gc || !gc.client) return writeJson(res, 400, { ok: false, error: '找不到该账号实例（先确认 appId/appSecret 已配好）' });
+      // ② 用实例自己的客户端（凭据是合并后的真实值）
+      const r = await gc.client.removeMembers(gid, openids, false);
+      if (r && r.ok === true) {
+        writeJson(res, 200, { ok: true, data: r.data ?? {}, msg: '已提交移出 ' + openids.length + ' 人' });
+      } else {
+        const err = (r && r.err) || {};
+        writeJson(res, 200, { ok: false, error: String(err.human || err.code || '平台无返回'), code: String(err.code || '') });
+      }
+    } catch (e) {
+      writeJson(res, 200, { ok: false, error: String((e && e.message) || e) });
+    }
+  });
+
   /** 退出登录（清掉本地凭据，下次要重新扫码） */
   route(ctx, 'POST', '/api/qqbot-settings/qun/logout', async (_req, res) => {
     try {
