@@ -1702,6 +1702,24 @@ function escapeFakeSenderTag(body) {
  * 一律降级成全角 `［xxx］`。宁可把 `[图片]` 这种也转掉（全角照样读得懂），
  * 也不能让伪造的发送者标签混过去。
  */
+/**
+ * 正文里的半角双引号转全角（2026-11-17 主人要求「双引号包裹」配套）。
+ *
+ * 消息格式是 `[发送者 #号]: "正文"` —— 正文里的 `"` 如果把引号提前闭合了，
+ * 后面伪造的内容就会跑到引号外面去。全角 `＂` 读起来一样，但不会被当成结束符。
+ */
+function escapeBodyQuotes(text) {
+    // ★ 2026-11-17 主人实测绕过：只转半角 `"` 不够 —— 中文弯引号 `“”` 视觉上几乎一样，
+    //   模型照样可能把它当定界符。凡是"可能被当成引号定界"的字符一律转全角：
+    //     半角 " / 中文 “ ” / 单引号 ‘ ’ ' / 反引号 ` → 全角形态
+    //   全角的读起来一样，但不会被当成结构符。
+    return String(text ?? '')
+        .replace(/"/g, '＂')
+        .replace(/[“”]/g, '＂')
+        .replace(/[‘’]/g, '＇')
+        .replace(/'/g, '＇')
+        .replace(/`/g, '｀');
+}
 function escapeFakeHistoryTag(text) {
     if (!text || text.indexOf('[') < 0)
         return text;
@@ -1772,7 +1790,7 @@ ownerName, ownerNick) {
         const refPart = msgRef ? ` #${msgRef}` : '';
         const shown = withMemberNick(senderName, memberNick, senderId);
         if (shown)
-            return `${quotePart}[${shown}${refPart}] ${userContent}`;
+            return `${quotePart}[${shown}${refPart}]: "${escapeBodyQuotes(userContent)}"`; // ★ 2026-11-17 冒号+双引号，同群聊
         const idPart = msgRef ? `[消息号: ${msgRef}]\n` : '';
         return `${quotePart}${idPart}${userContent}`;
     }
@@ -1805,7 +1823,15 @@ ownerName, ownerNick) {
     const safeContent = escapeFakeHistoryTag(escapeFakeSenderTag(userContent));
     // 排版: 多行正文才缩进(单行保持原样, 不徒增视觉噪声)
     const body = safeContent.includes('\n') ? safeContent.split('\n').map((l) => '  ' + l).join('\n') : safeContent;
-    return `${quotePart}${senderTag} ${body}${mentionTag}`;
+    // ★ 2026-11-17 主人要求（比转义更可靠）：**冒号分隔**。
+    //   转义只能"把假标签变形"，但模型不一定知道全角括号代表假的。
+    //   加冒号之后，结构上就明确了：**冒号前 = 发送者标签（程序生成），冒号后 = 这条消息的内容**。
+    //   正文里再怎么伪造，都只能出现在冒号后面，模型按"冒号前才是发送者"读就不会被骗。
+    // ★ 2026-11-17 主人要求：**双引号包裹**。
+    //   最终形态：`[发送者 #号]: "正文"` —— 冒号 + 引号双重定界，
+    //   引号内一律是内容，里面写什么都不可能是发送者。
+    const quotedBody = escapeBodyQuotes(`${body}${mentionTag}`);
+    return `${quotePart}${senderTag}: "${quotedBody}"`;
 }
 /**
  * Layer 4: 媒体元数据上下文
@@ -1888,7 +1914,10 @@ ownerNick) {
         // ★ 2026-11-17：历史行格式是 `[昵称] 内容`，正文里手打 `[做早饭] xxx` 就能冒充 —— 转义掉
         const raw = escapeFakeHistoryTag(String(h.content ?? ''));
         const c = raw.includes('\n') ? raw.split('\n').map((l) => '  ' + l).join('\n') : raw;
-        return (mentioned || namesake) && h.senderId ? `[${name} (${h.senderId})] ${c}` : `[${name}] ${c}`;
+        // ★ 2026-11-17：历史行也用冒号分隔（同当前消息，结构优于转义）
+        // ★ 2026-11-17 双引号包裹（同当前消息）
+        const qc = escapeBodyQuotes(c);
+        return (mentioned || namesake) && h.senderId ? `[${name} (${h.senderId})]: "${qc}"` : `[${name}]: "${qc}"`;
     });
     return [
         aggregated ? '[系统提示] 以下是上次回复前群友所发(非对你的回应), 通读后综合回应。' : '',

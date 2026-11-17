@@ -4588,6 +4588,22 @@ export function apply(ctx) {
     if (s.includes(':') || s.includes('：')) return null;
     return { name: s, nick: '' };
   }
+
+  /**
+   * 剥掉消息正文外层的「冒号 + 双引号」（2026-11-17 主人换消息格式的配套）。
+   *
+   *   新格式：`[发送者 #短号]: "正文"`
+   *   标签剥完剩 `:"正文"` —— 冒号和双引号是**程序加的定界符**，不该显示给用户。
+   *
+   * ⚠️ 跨行消息的结尾引号在**最后一行**，所以必须在整段拼完之后剥，不能逐行处理。
+   */
+  function chatStripBodyWrap(raw) {
+    let x = String(raw == null ? '' : raw).trim();
+    if (x.startsWith(':')) x = x.slice(1).trimStart();
+    if (x.length >= 2 && x.startsWith('"') && x.endsWith('"')) x = x.slice(1, -1).trim();
+    else if (x.startsWith('"')) x = x.slice(1).trimStart();   // 跨行/被截断没闭合
+    return x;
+  }
   /** 气泡上显示的名字：有群名片且与账号名不同才追加 */
   function chatSenderLabel(info) {
     if (!info) return '';
@@ -4606,7 +4622,7 @@ export function apply(ctx) {
     let pendingMeta = [];
     const flush = () => {
       if (cur) {
-        const t = cur.lines.join('\n').trim();
+        const t = chatStripBodyWrap(cur.lines.join('\n').trim());   // ★ 2026-11-17 剥掉 `: "正文"` 的外层
         out.push({ sender: cur.sender, text: t });
       }
       cur = null;
@@ -4683,6 +4699,7 @@ export function apply(ctx) {
       if (RE_MARKER_WORD.test(info.name)) continue;
       sender = chatSenderLabel(info);
       b = b.replace(tmm[0], '');
+      b = chatStripBodyWrap(b);   // ★ 2026-11-17 剥掉 `: "正文"` 的外层
       break;
     }
     if (quotes.length) b = b.replace(/\u0000Q(\d+)\u0000/g, (_all, i) => quotes[Number(i)] || '');

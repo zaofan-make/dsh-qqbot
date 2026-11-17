@@ -207,9 +207,20 @@ export class BotplayController {
      * 后台探测某人昵称（不阻塞调用方）。
      *   命中 → 写进 memberNameApiCache，下次同步调用就能拿到真名。
      *   未命中/无权限/网络错 → 静默（只记一行日志，避免刷屏）。
+     *
+     * ★ 2026-11-17 修（主人：现在能靠 openid 直接换名字了）：
+     *   原来调的是 `getMemberInfo(gid, openid)` —— 那是**群内路径**
+     *   `/v2/groups/{gid}/members/{mid}`，`FEATURE_GATES.getMemberInfo: open === false`，
+     *   官方还挂在内邀中 ⇒ **永远命中不了**，这个兜底实际上一直是死的。
+     *
+     *   换成 `getUserInfo(openid)` → `GET /v2/users/{openid}/info`：
+     *   不看群、不需要对方发过言，只要给 openid 就能拿 `username`。
+     *   这是目前**唯一还开着**的"拿名字"接口。
+     *
+     *   注意它拿的是**账号名**（跨群通用），不是群名片 —— 对"这人是谁"这个用途足够。
      */
     probeMemberNameAsync(target, presser) {
-        if (target.scope !== 'group' || !presser)
+        if (!presser)
             return;
         const key = `${target.targetId}|${presser}`;
         if (this.memberNameProbing.has(key))
@@ -220,12 +231,12 @@ export class BotplayController {
         catch {
             return undefined;
         } })();
-        if (!ga || typeof ga.getMemberInfo !== 'function')
+        if (!ga || typeof ga.getUserInfo !== 'function')
             return;
         this.memberNameProbing.add(key);
         void (async () => {
             try {
-                const r = await ga.getMemberInfo(target.targetId, presser);
+                const r = await ga.getUserInfo(presser);
                 if (r && r.ok && r.data && r.data.username) {
                     const nm = String(r.data.username);
                     this.memberNameApiCache.set(key, nm);
