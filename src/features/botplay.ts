@@ -1019,10 +1019,11 @@ export class BotplayController {
    */
   memberName(target: ReplyTarget, presser: string): string {
     if (!presser) return '';
-      // ⓪ 内存缓存（后台 API 兜底查到的；比台账更新，优先用）
-      const _ck = `${target.targetId}|${presser}`;
-      const _cc = this.memberNameApiCache.get(_ck);
-      if (_cc) return _cc;
+    // ★ 2026-11-17 CodeRabbit：**台账（群昵称）优先，API 缓存（账号名）降级为兜底**。
+    //   原来缓存排第一 —— 可它存的是 `getUserInfo` 返回的**账号名**，
+    //   而台账里存的是**群昵称**（他在这个群的名片）。缓存一命中就直接返回账号名，
+    //   签到列表 / 点击人标签就永远看不到群昵称了，直到缓存被淘汰或重启。
+    const _ck = `${target.targetId}|${presser}`;
     // ① 台账(host 侧与 dock 禁言同源: dataDir=表情包目录, 同 group-members.jsonl)
     try {
       const dataDir = this.ledgerDataDirGetter();
@@ -1038,6 +1039,11 @@ export class BotplayController {
         }
       }
     } catch { /* 台账读取失败, 走下一步 */ }
+    // ② 账号名缓存（`getUserInfo` 查到的，只有账号名没有群昵称）—— 台账查不到才用
+    {
+      const _cc = this.memberNameApiCache.get(_ck);
+      if (_cc) return _cc;
+    }
     // ③ 会话消息壳兜底
     const record = this.manager.findByPeer(target.scope, target.targetId);
     try {

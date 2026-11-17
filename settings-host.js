@@ -4598,11 +4598,20 @@ export function apply(ctx) {
    * ⚠️ 跨行消息的结尾引号在**最后一行**，所以必须在整段拼完之后剥，不能逐行处理。
    */
   function chatStripBodyWrap(raw) {
-    let x = String(raw == null ? '' : raw).trim();
-    if (x.startsWith(':')) x = x.slice(1).trimStart();
-    if (x.length >= 2 && x.startsWith('"') && x.endsWith('"')) x = x.slice(1, -1).trim();
-    else if (x.startsWith('"')) x = x.slice(1).trimStart();   // 跨行/被截断没闭合
-    return x;
+    let x = String(raw == null ? '' : raw);
+    // ★ 2026-11-17 CodeRabbit：**必须先识别新格式，再剥**。
+    //   旧记录 `[Alice] "你好"` / `[Alice] :D` 本来就没有外壳，
+    //   无脑剥冒号引号会把用户自己打的引号、甚至 :D 里的冒号吃掉。
+    //
+    //   跳过头部的引用块占位符（\u0000Q<n>\u0000）—— chatPolishOne 会先把引用块
+    //   换成占位符再剥标签，所以正文前缀可能不是紧贴行首的。
+    const lead = /^(?:\u0000Q\d+\u0000\s*)*/.exec(x)?.[0] ?? '';
+    let rest = x.slice(lead.length).trim();
+    // 只认新格式的外壳：`: "` 开头
+    if (!rest.startsWith(': "')) return x.trim();   // 旧消息原样返回（不动一个字符）
+    rest = rest.slice(3).trimStart();                 // 剥 `: ` 三个字符（冒号+空格+引号）
+    if (rest.endsWith('"')) rest = rest.slice(0, -1); // 剥闭合引号（跨行时在最后一行末尾）
+    return (lead + rest).trim();
   }
   /** 气泡上显示的名字：有群名片且与账号名不同才追加 */
   function chatSenderLabel(info) {
