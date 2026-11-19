@@ -22,6 +22,13 @@ function hardSplit(s, limit) {
             const code = s.charCodeAt(end - 1);
             if (code >= 0xd800 && code <= 0xdbff)
                 end -= 1; // 别切在高代理和低代理之间
+            // ★ 2026-11-19 CodeRabbit：**别把 QQ face 的双字符编码切开**。
+            //   face 是 `U+0014` + id 两个字符（彩蛋把 `【表情: 微笑】` 换成了它），
+            //   `U+0014` 是控制字符、不参与代理对判断 ⇒ 正好落在块边界时会被劈成两条消息，
+            //   QQ 侧看到两个畸形半截编码（一个空控制符 + 一个孤立字符）。
+            //   判据：**块不能以 `U+0014` 结尾**（那样 id 就被切到下一块了）。
+            if (end > i && s.charCodeAt(end - 1) === 0x14)
+                end -= 1;
             // ★★ 2026-11-14（CodeRabbit 抓到死循环）：回退后 end 可能 <= i（limit=1 时必然发生），
             //   那样 i 不推进 ⇒ hardSplit('\u{1F600}', 1) 会无限循环把进程卡死。保底前进一格。
             if (end <= i)

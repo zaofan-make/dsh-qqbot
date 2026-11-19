@@ -234,7 +234,7 @@ class OutboundRouter {
     processOutboundText(text) {
         const withFaces = this.config.stripFacePlaceholder === true
             ? text // 明确要洗 → 不转表情，交给 strip 删
-            : replaceFacePlaceholders(text, this.config.dataRoot); // 默认 → 彩蛋：换成真表情
+            : replaceFacePlaceholders(text, dataRootOf(this.config)); // 默认 → 彩蛋：换成真表情
         return stripOutboundArtifacts(withFaces, this.config);
     }
     noteGenerated(sessionKey, msgId, text) {
