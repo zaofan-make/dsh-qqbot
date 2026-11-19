@@ -44,25 +44,39 @@ const cache = new Map();
  *
  * - 没装扩展 / 文件不存在 / 坏 JSON → **直接用内置**（这是关键：保证人人可用）
  * - 装了 → 同名的以扩展为准（用户改的优先），扩展新增的也认
+ *
+ * ⚙️ 性能（2026-11-19 主人问"对性能有影响吗"）：
+ *   原来每次调用都 `statSync` 判 mtime —— 那是个**系统调用**，约 40µs。
+ *   单看微不足道，但这函数**每条出站消息都要跑**，而绝大多数消息里根本没有 `【表情`。
+ *   所以加个 **5 秒 TTL**：窗口内不再 stat，直接用缓存。
+ *   代价是"用户在扩展里改了表情表"最多 5 秒后才生效 —— 完全可以接受。
  */
+const STAT_TTL_MS = 5_000;
 function loadMap(dataRoot) {
-    const unchanged = (hit, mtime) => hit !== undefined && hit.mtime === mtime;
-    const hit = dataRoot ? cache.get(dataRoot) : undefined;
     if (!dataRoot)
         return BUILTIN;
+    const now = Date.now();
+    const hit = cache.get(dataRoot);
+    // TTL 内直接吃缓存（连 statSync 都不做）
+    if (hit && now - hit.checkedAt < STAT_TTL_MS)
+        return hit.map;
     const file = join(dataRoot, '.qqbot-extensions', 'qq-faces.json');
     let mtime = -1;
     try {
         mtime = statSync(file).mtimeMs;
     }
     catch {
-        if (unchanged(hit, -1))
+        if (hit && hit.mtime === -1) {
+            hit.checkedAt = now; // 文件还是不存在，只刷新检查时间
             return hit.map;
-        cache.set(dataRoot, { mtime: -1, map: BUILTIN });
+        }
+        cache.set(dataRoot, { mtime: -1, map: BUILTIN, checkedAt: now });
         return BUILTIN;
     }
-    if (unchanged(hit, mtime))
+    if (hit && hit.mtime === mtime) {
+        hit.checkedAt = now; // mtime 没变，只刷新检查时间
         return hit.map;
+    }
     // 从内置起步，再用扩展覆盖 —— 扩展坏了也不影响内置那 187 条
     const map = new Map(BUILTIN);
     try {
@@ -80,7 +94,7 @@ function loadMap(dataRoot) {
     catch {
         // 文件坏了 → 保留内置那 187 条，不崩
     }
-    cache.set(dataRoot, { mtime, map });
+    cache.set(dataRoot, { mtime, map, checkedAt: now });
     return map;
 }
 /**
@@ -106,5 +120,14 @@ export function replaceFacePlaceholders(text, dataRoot) {
 /** 表情表里有几个名字（给设置页/诊断用） */
 export function faceMapSize(dataRoot) {
     return loadMap(dataRoot).size;
+}
+/**
+ * 清掉文件缓存（**仅供测试**）。
+ *
+ * 生产环境不需要：mtime + 5 秒 TTL 已经能保证用户改完表很快生效。
+ * 测试里要逐个用例验证"改了文件应该读到新值"，TTL 会挡住，所以留个后门。
+ */
+export function _clearFaceCache() {
+    cache.clear();
 }
 //# sourceMappingURL=face-placeholder.js.map

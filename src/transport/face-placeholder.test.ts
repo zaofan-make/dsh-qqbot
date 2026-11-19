@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { faceMapSize, replaceFacePlaceholders } from './face-placeholder.js';
+import { _clearFaceCache, faceMapSize, replaceFacePlaceholders } from './face-placeholder.js';
 
 let root: string;
 
@@ -14,6 +14,7 @@ function seedFaces(entries: Record<string, number[]>): void {
 }
 
 beforeEach(() => {
+  _clearFaceCache();
   root = mkdtempSync(join(tmpdir(), 'face-placeholder-'));
 });
 
@@ -106,5 +107,27 @@ describe('replaceFacePlaceholders — 负数枚举（文件缺失/损坏/脏数�
   it('空输入不崩', () => {
     expect(replaceFacePlaceholders('', root)).toBe('');
     expect(replaceFacePlaceholders(null as unknown as string, root)).toBe('');
+  });
+});
+
+
+describe('缓存与 TTL（2026-11-19 性能优化配套）', () => {
+  it('改了文件 + 清缓存后能读到新值（保证用户改表能生效）', () => {
+    seedFaces({ 微笑: [1, 2] });
+    expect(replaceFacePlaceholders('【表情: 微笑】', root)).toBe(String.fromCharCode(1, 2));
+
+    seedFaces({ 微笑: [9, 9] });
+    _clearFaceCache();     // 模拟过了 TTL 窗口
+    expect(replaceFacePlaceholders('【表情: 微笑】', root)).toBe(String.fromCharCode(9, 9));
+  });
+
+  it('TTL 窗口内不重复 statSync（性能优化的核心）', () => {
+    seedFaces({ 微笑: [1, 2] });
+    faceMapSize(root);                    // 第一次：statSync + 读文件
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < 1000; i++) faceMapSize(root);   // 后续都应命中 TTL 缓存
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6 / 1000;
+    // 1000 次平均应在微秒级；真去 statSync 会是几十微秒
+    expect(ms).toBeLessThan(0.05);
   });
 });
