@@ -32,6 +32,8 @@ import { DeliverablesDeliverer } from './deliverables.js';
 import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
 import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText, normalizeMarkdownImages } from '../features/md-media-rewrite.js';
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
+import { stripOutboundArtifacts } from './strip-artifacts.js';
+import { resolveTurnErrorMessage } from './turn-error.js';
 /**
  * 「正文被平台判违规」已经告知过 AI 的回合标记（2026-11-07 主人要的功能）。
  * 键＝SessionRecord 对象，值＝该回合的 turnStartAt；同一回合只提醒一次，免得连发刷屏。
@@ -219,13 +221,19 @@ class OutboundRouter {
      *  (在这里表现为 sendMarkdown 抛错), await 就炸 → 记账中断(实测 count 停在第 4 条, 补发永不触发)。
      *  按 msgId 分组: 同一 msgId 才算同一批被动回复配额, msgId 变化(群友中途发言)即重新计数。 */
     noteGenerated(sessionKey, msgId, text) {
+        // ★ 2026-11-19 issue #72：**记账时就清洗**，因为 `st.last` 并不只用于统计 ——
+        //   `maybeResendLastBlock()` 会拿它**再发一次**（passive 模式下第 6 块之后补发最后一块），
+        //   还会交给出站扩展（`runOutboundTurnEnd(st.last, …)`）。
+        //   只在 `send()` 的正文路径清洗的话，这两条都会绕过 ⇒ 时间头照样漏出去。
+        //   在这里清洗一次，所有读 `st.last` 的地方拿到的都是干净的。
+        const cleaned = stripOutboundArtifacts(text, this.config);
         const cur = this.turnBlocks.get(sessionKey);
         if (!cur || cur.msgId !== msgId) {
-            this.turnBlocks.set(sessionKey, { msgId, count: 1, last: text });
+            this.turnBlocks.set(sessionKey, { msgId, count: 1, last: cleaned });
             return;
         }
         cur.count += 1;
-        cur.last = text;
+        cur.last = cleaned;
     }
     /**
      * passive 回合收尾(2026-09-10 主人定 **A 方案**):
@@ -447,7 +455,9 @@ class OutboundRouter {
     onChunk(sessionId, record, event) {
         let buffer = this.buffers.get(sessionId);
         if (buffer === undefined) {
-            buffer = new OutboundBuffer(record, this.bot, this.config.textChunkLimit, this.logger, this.shouldStream(record), this.config.cwd, () => this.resolveTarget(record), this.chunkTargetFn(record), undefined, this.refLookupFor(record));
+            buffer = new OutboundBuffer(record, this.bot, this.config.textChunkLimit, this.logger, this.shouldStream(record), this.config.cwd, () => this.resolveTarget(record), this.chunkTargetFn(record), undefined, this.refLookupFor(record), 
+            // ★ 2026-11-19 issue #72：缓冲路径直发 sendRichOutbound，绕过了 send() 那道清洗，必须自己洗
+            (t) => stripOutboundArtifacts(t, this.config));
             this.buffers.set(sessionId, buffer);
         }
         buffer.append(event.text);
@@ -591,7 +601,22 @@ class OutboundRouter {
         const failure = extractTurnError(event.reason);
         // 闸门静默导致的"取消"不是故障 —— 这个回合本来就不该出声（2026-09-14 主人要求）
         if (failure !== undefined && !SILENT_TURN_ERROR_CODES.has(failure.code) && !silenced) {
-            void this.trackSend(_record, this.send(_record, `⚠️ 本轮异常结束\n\`${failure.code}\`: ${failure.message}`, 'sendTurnEndError', 'turn/end'));
+            // ★ 2026-11-19 issue #73：报错文案策略化。
+            //   原来错误原文原样进群：`⚠️ 本轮异常结束 \`INVALID_REQUEST\`: 400: {...JSON...}`
+            //   —— 群友看着突兀、暴露内部错误码和上游响应结构，活跃群里还反复出现。
+            //   而且这条是 onTurnEnd 里**直接 this.send** 的，不走出站扩展链，用户侧没有拦截点。
+            //   四档见 config.turnErrorMode：notify(默认) / friendly / silent / regex。
+            const errText = resolveTurnErrorMessage(this.config, failure.code, failure.message);
+            const errMode = String(this.config.turnErrorMode ?? 'notify').trim().toLowerCase();
+            // ★ 2026-11-19 审查：**friendly 也要记原文**。
+            //   原实现只在"不发"时记日志 ⇒ friendly 分支把 code/message 丢了，
+            //   出事时开了 friendly 反而查不到是哪个 400 —— 与"细节只进日志"自相矛盾。
+            if (errText === null || errMode === 'friendly') {
+                this.logger.warn(`im-qqbot: 回合异常(turnErrorMode=${errMode}): ${failure.code}: ${failure.message}`);
+            }
+            if (errText !== null) {
+                void this.trackSend(_record, this.send(_record, errText, 'sendTurnEndError', 'turn/end'));
+            }
         }
         this.gateSilenced.delete(_record.sessionKey);
         this.deliveredFiles.delete(_record.sessionKey);
@@ -691,6 +716,24 @@ class OutboundRouter {
             if (deduped.trim() === '')
                 return; // 整段只剩"已被 present 的同一文件"→ 不再发空消息
             text = deduped;
+            // ★ 2026-11-19 issue #72：剔掉模型从入站渲染学来的痕迹（行首时间头 / 【表情: XX】）。
+            //   模型会把入站时间头当成"群消息标准格式"自己披一个，而且**意识不到**；
+            //   写群守则压不住（上下文里几十个示范一直在强化），只能在出站侧做结构级清洗。
+            // ⚠️ 2026-11-19 审查：**只洗模型正文**（source === 'assistant/message'）。
+            //    send() 是所有文本的共用漏斗 —— 工具结果、回合报错也走它，
+            //    那些里面出现的时间戳是**真实内容**（如部署日志 `[2026-11-19 09:52] 启动失败`），
+            //    不能一起削掉。issue #72 只想治"模型自己披的头"。
+            const stripped = source === 'assistant/message'
+                ? stripOutboundArtifacts(text, this.config)
+                : text;
+            if (stripped !== text) {
+                if (stripped.trim() === '') {
+                    this.logger.debug('im-qqbot: 清洗后整条为空 → 跳过发送（只剩时间头/表情占位符）');
+                    return;
+                }
+                this.logger.debug(`im-qqbot: 出站清洗 ${text.length} → ${stripped.length} 字符`);
+                text = stripped;
+            }
             // ★ 2026-10-30 主人要求：私聊出站时首行补一张**机器人自己的头像**
             //   （官方机器人在私聊里没有头像，群里才有）。开关 c2cShowBotAvatar，默认关。
             //   取不到头像 URL 就原样跳过（不塞占位、不多占 token）。

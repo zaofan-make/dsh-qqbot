@@ -386,6 +386,18 @@ export class OutboundBuffer {
     private readonly onBlockSent?: (text: string, target: ReplyTarget) => void,
     /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
     private readonly refLookup?: (index: string) => string | undefined,
+    /**
+     * 出站正文清洗（issue #72）。
+     *
+     * ⚠️ 2026-11-19 审查抓到的缺口：缓冲区**直接**调 `sendRichOutbound`，
+     *    绕过了 `OutboundRouter.send()` 里那道清洗 ⇒ 时间头照样漏出去（实测确认）。
+     *    所以这里要再来一次。
+     *
+     * 局限：**流式（StreamingWriter）那条路修不了** —— 它是增量 update，
+     * 分块到达时时间头可能被切成两半，逐块清洗会把正文切坏。
+     * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
+     */
+    private readonly stripFn?: (text: string) => string,
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({
@@ -438,10 +450,13 @@ export class OutboundBuffer {
       }
 
       // 降级：静态发送（writer 不存在 or 流式失败）→ 富媒体感知发送
+      // ★ 2026-11-19 issue #72：这条路径**不经** OutboundRouter.send()，必须自己洗一遍。
+      const outText = this.stripFn ? this.stripFn(this.buffer) : this.buffer;
+      if (!outText.trim()) return;   // 洗完全是空（只剩时间头/占位符）→ 这条不发
       await sendRichOutbound(
         this.bot,
         this.record.replyTarget,
-        this.buffer,
+        outText,
         this.limit,
         this.cwd,
         (m) => this.logger.error(m),

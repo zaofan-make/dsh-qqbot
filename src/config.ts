@@ -281,6 +281,14 @@ export interface EditableConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /** 出站清洗：行首时间头（issue #72，默认 true）。开=剔掉模型从入站时间头学来的 `[YYYY-MM-DD …HH:MM]` / `[HH:MM]` */
+  stripTimeHead?: boolean;
+  /** 出站清洗：`【表情: XX】` 占位符（issue #72，默认 true）。官方 API 发不了 face，模型会照抄这段可读文本 */
+  stripFacePlaceholder?: boolean;
+  /** 回合异常时往群里发什么（issue #73，默认 notify）：notify=原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截 */
+  turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
+  /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
+  turnErrorSilentPattern?: string;
   /**
    * 开新档时自动归档旧会话（默认开）。
    * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
@@ -684,6 +692,10 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+  stripTimeHead: Schema.boolean().default(false).description('出站洗掉行首时间头(默认开, issue #72): 入站给每回合首条盖了 [YYYY-MM-DD 周四 HH:MM], 模型会内化并在回复里自己披一个; 开=发送前剔除(正则含 HH:MM 才删, 正常引用不误伤)'),
+  stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
+  turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
+  turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imageAggregate: Schema.object({
     enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
@@ -777,6 +789,14 @@ export interface ImQQBotConfig {
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
    *  —— 模型自己就能读图时可以关它。 */
   imageHint?: boolean;
+  /** 出站清洗：行首时间头（issue #72，默认 true）。开=剔掉模型从入站时间头学来的 `[YYYY-MM-DD …HH:MM]` / `[HH:MM]` */
+  stripTimeHead?: boolean;
+  /** 出站清洗：`【表情: XX】` 占位符（issue #72，默认 true）。官方 API 发不了 face，模型会照抄这段可读文本 */
+  stripFacePlaceholder?: boolean;
+  /** 回合异常时往群里发什么（issue #73，默认 notify）：notify=原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截 */
+  turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
+  /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
+  turnErrorSilentPattern?: string;
   /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
   imageOffload?: boolean;
   /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
@@ -943,6 +963,10 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
+  stripTimeHead: Schema.boolean().default(false).description('出站洗掉行首时间头(默认开, issue #72): 入站给每回合首条盖了 [YYYY-MM-DD 周四 HH:MM], 模型会内化并在回复里自己披一个; 开=发送前剔除(正则含 HH:MM 才删, 正常引用不误伤)'),
+  stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
+  turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
+  turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imageAggregate: Schema.object({
     enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),

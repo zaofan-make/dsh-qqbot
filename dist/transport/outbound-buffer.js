@@ -294,6 +294,7 @@ export class OutboundBuffer {
     chunkTarget;
     onBlockSent;
     refLookup;
+    stripFn;
     buffer = '';
     /** 缓冲过大只告警一次（见 append 的注释） */
     warnedBig = false;
@@ -305,7 +306,19 @@ export class OutboundBuffer {
     /** 每成功发出一个正文块后回调(见 sendRichOutbound 同名参数) */
     onBlockSent, 
     /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
-    refLookup) {
+    refLookup, 
+    /**
+     * 出站正文清洗（issue #72）。
+     *
+     * ⚠️ 2026-11-19 审查抓到的缺口：缓冲区**直接**调 `sendRichOutbound`，
+     *    绕过了 `OutboundRouter.send()` 里那道清洗 ⇒ 时间头照样漏出去（实测确认）。
+     *    所以这里要再来一次。
+     *
+     * 局限：**流式（StreamingWriter）那条路修不了** —— 它是增量 update，
+     * 分块到达时时间头可能被切成两半，逐块清洗会把正文切坏。
+     * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
+     */
+    stripFn) {
         this.record = record;
         this.bot = bot;
         this.limit = limit;
@@ -315,6 +328,7 @@ export class OutboundBuffer {
         this.chunkTarget = chunkTarget;
         this.onBlockSent = onBlockSent;
         this.refLookup = refLookup;
+        this.stripFn = stripFn;
         this.writer = streamingEnabled
             ? new StreamingWriter({
                 bot,
@@ -364,7 +378,11 @@ export class OutboundBuffer {
                     return;
             }
             // 降级：静态发送（writer 不存在 or 流式失败）→ 富媒体感知发送
-            await sendRichOutbound(this.bot, this.record.replyTarget, this.buffer, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup, undefined, { source: 'assistant/message' });
+            // ★ 2026-11-19 issue #72：这条路径**不经** OutboundRouter.send()，必须自己洗一遍。
+            const outText = this.stripFn ? this.stripFn(this.buffer) : this.buffer;
+            if (!outText.trim())
+                return; // 洗完全是空（只剩时间头/占位符）→ 这条不发
+            await sendRichOutbound(this.bot, this.record.replyTarget, outText, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup, undefined, { source: 'assistant/message' });
         }
         catch (err) {
             this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

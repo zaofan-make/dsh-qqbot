@@ -373,6 +373,15 @@ window.__ModuleLoader__.load({
             }
           },
           { k: 'imageHint', kw: '图片 看图 提示 识图 注入', t: 'bool', label: '图片消息自动提示 AI 看图(内置兜底; 不勾=不再注入「请把URL传给识图工具」那条)', def: true },
+          { k: 'stripTimeHead', kw: '时间 时间头 时间戳 清洗 行首 时间标记 出站', t: 'bool', label: '出站洗掉行首时间头(默认关，勾上才生效): 模型会把入站给的时间头 [2026-11-19 周四 09:52] 当成「群消息标准格式」，回复时自己披一个(它意识不到)；开=发送前剔掉。不勾=原样发', def: false },
+          { k: 'stripFacePlaceholder', kw: '表情 face 占位符 【表情】 清洗 出站', t: 'bool', label: '出站洗掉「【表情: XX】」(默认关，勾上才生效): 官方 API 发不了 face 表情，入站只能转写成可读文本，模型会跟着照抄成裸文字；开=发送前剔掉', def: false },
+          { k: 'turnErrorMode', kw: '报错 异常 错误 回合 turn error 提示 静默 拦截', t: 'radio', label: '回合异常时发什么(issue #73):', def: 'notify', options: [
+            { v: 'notify', label: '照常发原文(默认)' },
+            { v: 'friendly', label: '发一句人话(细节只进日志)' },
+            { v: 'silent', label: '完全不发' },
+            { v: 'regex', label: '按下面的正则拦截' },
+          ] },
+          { k: 'turnErrorSilentPattern', kw: '报错 正则 拦截 过滤 静默 错误码', t: 'str', wide: true, label: '上面的「正则」模式用: 匹配 错误码+错误信息(不区分大小写, 命中就静默、其余照常发)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截', def: '' },
           { k: 'imageAggregate.enabled', kw: '图片 聚合 拼接 多图 长图 缩略', t: 'bool', label: '图片聚合(默认关): 连续收到的几张图竖向拼成一张长图, 随那条唤醒的消息一起进上下文(只对能读图的模型生效)', def: false },
           { k: 'imageAggregate.max', kw: '图片 聚合 数量 上限 几张', t: 'num', label: '聚合数量上限(1~8): 环形缓冲, 最新的排最下面、最旧的排最上面; 已经聚合过的图不再重复聚合', def: 4 },
           { k: 'messageReference', kw: '引用 消息号 原文 rf 回复某条', t: 'bool', label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', def: true },
@@ -1897,6 +1906,15 @@ window.__ModuleLoader__.load({
           },
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
+          // ★ 2026-11-19 issue #72/#73：出站清洗 + 回合异常策略。
+          //   ⚠️ 必须在这里收集，否则面板改了也存不下去（老坑：questionsMode 就是这么漏的）。
+          stripTimeHead: typeof v.stripTimeHead === 'boolean' ? v.stripTimeHead : undefined,
+          stripFacePlaceholder: typeof v.stripFacePlaceholder === 'boolean' ? v.stripFacePlaceholder : undefined,
+          turnErrorMode: (function () {
+            var m = String(v.turnErrorMode || '');
+            return ['notify', 'friendly', 'silent', 'regex'].indexOf(m) >= 0 ? m : 'notify';
+          })(),
+          turnErrorSilentPattern: String(v.turnErrorSilentPattern || ''),
           imageAggregate: {
             enabled: !!(v.imageAggregate && v.imageAggregate.enabled),
             max: (v.imageAggregate && typeof v.imageAggregate.max === 'number') ? v.imageAggregate.max : 4,
