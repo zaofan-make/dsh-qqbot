@@ -33,6 +33,7 @@ import { feedReasoning, endReasoningTurn } from '../features/reasoning-bus.js';
 import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMarkdownImagesForPlainText, normalizeMarkdownImages } from '../features/md-media-rewrite.js';
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
 import { stripOutboundArtifacts } from './strip-artifacts.js';
+import { replaceFacePlaceholders } from './face-placeholder.js';
 import { resolveTurnErrorMessage } from './turn-error.js';
 /**
  * 「正文被平台判违规」已经告知过 AI 的回合标记（2026-11-07 主人要的功能）。
@@ -220,13 +221,29 @@ class OutboundRouter {
      *  ⚠️ 原实现挂在「发送成功之后」(sendRichOutbound 的 onBlockSent), 一旦 QQ 吞消息
      *  (在这里表现为 sendMarkdown 抛错), await 就炸 → 记账中断(实测 count 停在第 4 条, 补发永不触发)。
      *  按 msgId 分组: 同一 msgId 才算同一批被动回复配额, msgId 变化(群友中途发言)即重新计数。 */
+    /**
+     * 出站正文统一处理（2026-11-19）：**先彩蛋，再清洗**。
+     *
+     * 顺序不能反：
+     *   1. 先 `replaceFacePlaceholders` —— 不洗表情时，把 `【表情: 狂笑】` 换成**真的 QQ 表情**（彩蛋）；
+     *   2. 再 `stripOutboundArtifacts` —— 换完之后 `【表情:XX】` 已经不存在了，
+     *      它那个 strip 分支自然不匹配 ⇒ **不需要加新配置、也不会互相打架**。
+     *
+     * 三处出站（send / noteGenerated / OutboundBuffer）都走它，避免口径分叉。
+     */
+    processOutboundText(text) {
+        const withFaces = this.config.stripFacePlaceholder === true
+            ? text // 明确要洗 → 不转表情，交给 strip 删
+            : replaceFacePlaceholders(text, this.config.dataRoot); // 默认 → 彩蛋：换成真表情
+        return stripOutboundArtifacts(withFaces, this.config);
+    }
     noteGenerated(sessionKey, msgId, text) {
         // ★ 2026-11-19 issue #72：**记账时就清洗**，因为 `st.last` 并不只用于统计 ——
         //   `maybeResendLastBlock()` 会拿它**再发一次**（passive 模式下第 6 块之后补发最后一块），
         //   还会交给出站扩展（`runOutboundTurnEnd(st.last, …)`）。
         //   只在 `send()` 的正文路径清洗的话，这两条都会绕过 ⇒ 时间头照样漏出去。
         //   在这里清洗一次，所有读 `st.last` 的地方拿到的都是干净的。
-        const cleaned = stripOutboundArtifacts(text, this.config);
+        const cleaned = this.processOutboundText(text);
         // ★ 2026-11-19 审查：**洗成空串的块不参与记账**。
         //   否则一轮里夹一个"纯时间头"块，count 照样 +1 ⇒ passive 收尾误判"超过 5 块"重复补发；
         //   如果空块在末尾，还会覆盖 last ⇒ 此前真正的正文就再也补发不了了。
@@ -462,7 +479,7 @@ class OutboundRouter {
         if (buffer === undefined) {
             buffer = new OutboundBuffer(record, this.bot, this.config.textChunkLimit, this.logger, this.shouldStream(record), this.config.cwd, () => this.resolveTarget(record), this.chunkTargetFn(record), undefined, this.refLookupFor(record), 
             // ★ 2026-11-19 issue #72：缓冲路径直发 sendRichOutbound，绕过了 send() 那道清洗，必须自己洗
-            (t) => stripOutboundArtifacts(t, this.config));
+            (t) => this.processOutboundText(t));
             this.buffers.set(sessionId, buffer);
         }
         buffer.append(event.text);
@@ -729,7 +746,7 @@ class OutboundRouter {
             //    那些里面出现的时间戳是**真实内容**（如部署日志 `[2026-11-19 09:52] 启动失败`），
             //    不能一起削掉。issue #72 只想治"模型自己披的头"。
             const stripped = source === 'assistant/message'
-                ? stripOutboundArtifacts(text, this.config)
+                ? this.processOutboundText(text)
                 : text;
             if (stripped !== text) {
                 if (stripped.trim() === '') {
