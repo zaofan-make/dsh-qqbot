@@ -281,6 +281,10 @@ class OutboundRouter {
     //   只在 `send()` 的正文路径清洗的话，这两条都会绕过 ⇒ 时间头照样漏出去。
     //   在这里清洗一次，所有读 `st.last` 的地方拿到的都是干净的。
     const cleaned = stripOutboundArtifacts(text, this.config);
+    // ★ 2026-11-19 审查：**洗成空串的块不参与记账**。
+    //   否则一轮里夹一个"纯时间头"块，count 照样 +1 ⇒ passive 收尾误判"超过 5 块"重复补发；
+    //   如果空块在末尾，还会覆盖 last ⇒ 此前真正的正文就再也补发不了了。
+    if (!cleaned.trim()) return;
     const cur = this.turnBlocks.get(sessionKey);
     if (!cur || cur.msgId !== msgId) {
       this.turnBlocks.set(sessionKey, { msgId, count: 1, last: cleaned });

@@ -498,8 +498,14 @@ window.__ModuleLoader__.load({
     function renderControl(f, val, ctx) {
       var onNum = function (e) { ctx.set(f.k, Number(e.target.value) * (f.sec || 1)) }
       if (f.t === 'bool') {
+        // ★ 2026-11-19（主人截图：勾选框右边一大片空白）——
+        //   原来这里套的是 `inputStyle`，而它是给**文本框**用的，带 `width: 110`。
+        //   checkbox 被撑成 110px 宽 ⇒ 文字被推到 110px 之外，中间留一大片空白。
+        //   复选框不该有固定宽度：让它自然尺寸、不缩放、不参与 flex 伸展。
         return h('input', {
-          className: 'qqs-inp', type: 'checkbox', style: inputStyle, checked: !!val,
+          className: 'qqs-inp', type: 'checkbox',
+          style: { margin: 0, padding: 0, width: 'auto', flex: 'none', cursor: 'pointer' },
+          checked: !!val,
           onChange: function (e) { ctx.set(f.k, e.target.checked) },
         })
       }
