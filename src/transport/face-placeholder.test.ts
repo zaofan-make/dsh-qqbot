@@ -64,36 +64,41 @@ describe('replaceFacePlaceholders — 彩蛋：抄来的表情标记换成真表
 });
 
 describe('replaceFacePlaceholders — 负数枚举（文件缺失/损坏/脏数据）', () => {
-  it('没装扩展（文件不存在）→ 原样返回，不崩', () => {
-    const s = '你好【表情: 微笑】';
-    expect(replaceFacePlaceholders(s, root)).toBe(s);
-    expect(faceMapSize(root)).toBe(0);
+  it('**没装扩展也能用**（内置表兜底）—— 主人 2026-11-19 纠正的关键点', () => {
+    // 空 dataRoot = 相当于别的用户没装 /face 扩展
+    expect(faceMapSize(root)).toBeGreaterThan(100);
+    const out = replaceFacePlaceholders('你好【表情: 微笑】', root);
+    expect(out).not.toContain('【表情');
+    expect(out).toContain('你好');
   });
 
-  it('dataRoot 缺省 → 原样返回', () => {
-    const s = '【表情: 微笑】';
-    expect(replaceFacePlaceholders(s, undefined)).toBe(s);
+  it('dataRoot 缺省 → 也走内置表', () => {
+    const out = replaceFacePlaceholders('【表情: 微笑】', undefined);
+    expect(out).not.toContain('【表情');
   });
 
-  it('文件是坏 JSON → 原样返回，不崩', () => {
+  it('文件是坏 JSON → **仍走内置表**（不崩、也不退回原样）', () => {
     const dir = join(root, '.qqbot-extensions');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'qq-faces.json'), '{ 这不是 json');
-    const s = '【表情: 微笑】';
-    expect(replaceFacePlaceholders(s, root)).toBe(s);
+    expect(faceMapSize(root)).toBeGreaterThan(100);
+    const out = replaceFacePlaceholders('【表情: 微笑】', root);
+    expect(out).not.toContain('【表情');
   });
 
-  it('跳过 _ 开头的元数据键', () => {
+  it('跳过 _ 开头的元数据键（总数仍是内置那批）', () => {
     seedFaces({ _comment: [1, 2], 微笑: [3, 4] });
-    expect(faceMapSize(root)).toBe(1);
+    expect(faceMapSize(root)).toBeGreaterThan(100);       // 内置 187
     expect(replaceFacePlaceholders('【表情: _comment】', root)).toBe('【表情: _comment】');
+    // 扩展条目的值覆盖内置（同名以扩展为准）
+    expect(replaceFacePlaceholders('【表情: 微笑】', root)).toBe(String.fromCharCode(3, 4));
   });
 
-  it('值是脏数据（不是数字数组）→ 跳过该条', () => {
+  it('值是脏数据（不是数字数组）→ 跳过该条，内置不受影响', () => {
     const dir = join(root, '.qqbot-extensions');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'qq-faces.json'), JSON.stringify({ 坏: 'nope', 空: [], 好: [5, 6] }));
-    expect(faceMapSize(root)).toBe(1);
+    expect(faceMapSize(root)).toBeGreaterThan(100);
     expect(replaceFacePlaceholders('【表情: 坏】', root)).toBe('【表情: 坏】');
     expect(replaceFacePlaceholders('【表情: 好】', root)).toBe(String.fromCharCode(5, 6));
   });

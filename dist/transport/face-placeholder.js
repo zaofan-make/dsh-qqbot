@@ -13,35 +13,58 @@
  *
  * ## 数据源
  *
- * 复用扩展那套 ``{dataRoot}/.qqbot-extensions/qq-faces.json``（187 个，格式 ``{名字: [charCode, …]}``）——
- * 那是 QQ 私有协议的控制字符（``0x14`` + face id），``String.fromCharCode(...)`` 拼出来就是真表情。
+ * **内置一份**（`face-table.ts`，187 个）—— 因为 `/face` 扩展是**可选的**，
+ * 别的用户没装 ⇒ 读扩展文件会拿到空表 ⇒ 彩蛋对所有人失效（2026-11-19 主人指出我第一版就是这么错的）。
  *
- * **不内置副本**：一是 5.6KB 没必要抄一遍，二是用户在扩展里改了名字/加了表情，这里能跟着生效。
- * 文件不存在（没装那扩展）→ 整个彩蛋静默跳过，不影响任何正文。
+ * 用户若装了那个扩展并改了表，运行时**覆盖/追加**到内置之上：
+ * 同名以扩展为准（用户改的优先），扩展里新增的也认得。
+ *
+ * 格式：`名字 → [charCode, …]`，QQ 私有协议的控制字符（`0x14` + face id），
+ * `String.fromCharCode(...)` 拼出来就是真表情。
  */
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { BUILTIN_FACE_TABLE } from './face-table.js';
 /** `【表情: 狂笑】` / `【表情：狂笑】` */
 const PLACEHOLDER_RE = /【表情[:：]\s*([^】]{1,24}?)】/g;
+/** 内置表（模块级建一次，不可变） */
+const BUILTIN = (() => {
+    const m = new Map();
+    for (const [name, codes] of Object.entries(BUILTIN_FACE_TABLE)) {
+        if (!Array.isArray(codes) || codes.length === 0)
+            continue;
+        m.set(name, String.fromCharCode(...codes));
+    }
+    return m;
+})();
 /** dataRoot → 缓存。一个进程里通常只有一个 dataRoot，多实例时也能分开。 */
 const cache = new Map();
+/**
+ * 读用户扩展那份并**叠加**到内置之上。
+ *
+ * - 没装扩展 / 文件不存在 / 坏 JSON → **直接用内置**（这是关键：保证人人可用）
+ * - 装了 → 同名的以扩展为准（用户改的优先），扩展新增的也认
+ */
 function loadMap(dataRoot) {
+    const unchanged = (hit, mtime) => hit !== undefined && hit.mtime === mtime;
+    const hit = dataRoot ? cache.get(dataRoot) : undefined;
     if (!dataRoot)
-        return new Map();
+        return BUILTIN;
     const file = join(dataRoot, '.qqbot-extensions', 'qq-faces.json');
-    let mtime = 0;
+    let mtime = -1;
     try {
         mtime = statSync(file).mtimeMs;
     }
     catch {
-        // 没这个文件（没装 /face 扩展）→ 空表，彩蛋不生效
-        cache.set(dataRoot, { mtime: -1, map: new Map() });
-        return new Map();
+        if (unchanged(hit, -1))
+            return hit.map;
+        cache.set(dataRoot, { mtime: -1, map: BUILTIN });
+        return BUILTIN;
     }
-    const hit = cache.get(dataRoot);
-    if (hit && hit.mtime === mtime)
+    if (unchanged(hit, mtime))
         return hit.map;
-    const map = new Map();
+    // 从内置起步，再用扩展覆盖 —— 扩展坏了也不影响内置那 187 条
+    const map = new Map(BUILTIN);
     try {
         const raw = JSON.parse(readFileSync(file, 'utf8'));
         for (const [name, codes] of Object.entries(raw)) {
@@ -55,7 +78,7 @@ function loadMap(dataRoot) {
         }
     }
     catch {
-        // 文件坏了 → 当空表，不影响正文
+        // 文件坏了 → 保留内置那 187 条，不崩
     }
     cache.set(dataRoot, { mtime, map });
     return map;
