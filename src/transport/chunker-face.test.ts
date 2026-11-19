@@ -7,10 +7,11 @@
 import { describe, expect, it } from 'vitest';
 import { chunkMarkdownText } from './chunker.js';
 
-const LEAD = String.fromCharCode(20);   // U+0014，face 的前导字节
+const LEAD = String.fromCharCode(20);         // U+0014，face 的前导字节
+const FACE = String.fromCharCode(20, 23);     // 【表情: 微笑】
+const SHY = String.fromCharCode(20, 20);      // 【表情: 害羞】—— 两个 0x14，第二个是 id
 
 describe('hardSplit / chunkMarkdownText — 不切断 QQ face 双字符编码', () => {
-  const FACE = String.fromCharCode(20, 23);   // 【表情: 微笑】
 
   it('正文末尾紧跟表情时，没有块以 U+0014 结尾', () => {
     const s = 'a'.repeat(4499) + FACE;
@@ -45,6 +46,48 @@ describe('hardSplit / chunkMarkdownText — 不切断 QQ face 双字符编码', 
     // 表情 + 单字符限制：回退保护必须保底前进，否则会卡死进程
     const s = FACE + 'x';
     const parts = chunkMarkdownText(s, 1);
+    expect(parts.join('')).toBe(s);
+  });
+});
+
+describe('按编码边界识别前导符（2026-11-19 审查第二轮）', () => {
+  // ⚠️ 内置「害羞」的编码是 [20, 20] —— **第二个 0x14 是 id，不是另一个前导符**。
+  //    只判"块尾字符是不是 0x14"会把"切在完整表情之后"误判成"切在中间"，反而拆散它。
+
+  /** 每个块里 0x14 都必须成对（前导符 + id），不能以孤立前导符结尾 */
+  const noBrokenFace = (parts: string[]): boolean =>
+    parts.every((p) => {
+      let k = 0;
+      while (k < p.length) {
+        if (p.charCodeAt(k) === 20) {
+          if (k + 1 >= p.length) return false;
+          k += 2;
+        } else k++;
+      }
+      return true;
+    });
+
+  it('害羞 [20,20]：切点正好在完整表情之后时 **不能**误回退', () => {
+    // 4498 a + 害羞 + x，limit=4500 ⇒ 原切点 4500 刚好把整个表情包含在内，是正确的
+    const s = 'a'.repeat(4498) + SHY + 'x';
+    const parts = chunkMarkdownText(s, 4500);
+    expect(noBrokenFace(parts)).toBe(true);
+    expect(parts.join('')).toBe(s);
+  });
+
+  it('害羞 [20,20]：卡在 4499 / 4500 也都不拆散', () => {
+    for (const n of [4499, 4500]) {
+      const s = 'a'.repeat(n) + SHY + 'x';
+      const parts = chunkMarkdownText(s, 4500);
+      expect(noBrokenFace(parts)).toBe(true);
+      expect(parts.join('')).toBe(s);
+    }
+  });
+
+  it('害羞与微笑混排时都不拆散', () => {
+    const s = 'b'.repeat(4490) + SHY + FACE + SHY + FACE;
+    const parts = chunkMarkdownText(s, 4500);
+    expect(noBrokenFace(parts)).toBe(true);
     expect(parts.join('')).toBe(s);
   });
 });
