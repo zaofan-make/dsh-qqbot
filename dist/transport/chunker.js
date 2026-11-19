@@ -12,6 +12,32 @@
  *   典型输入：模型吐一行 6000 字的 base64 / 长 URL 列表（中途没有换行）。
  *   切分点回退一格避开代理对，防止把 emoji 劈成半个。
  */
+/**
+ * 从 `start` 扫到 `end`，看 `end` 是不是**落在一个 face 编码中间**。
+ *
+ * ⚠️ 不能只看 `s.charCodeAt(end - 1) === 0x14` —— 内置「害羞」的编码是 `[20, 20]`，
+ * **第二个 0x14 是 id 不是前导符**。只看值会把"切在完整表情之后"误判成"切在中间"，
+ * 反而把好好的表情拆散（2026-11-19 审查抓到的第二圈问题）。
+ *
+ * 正确做法：**按编码边界走** —— 遇到 0x14 就认它是前导符、连同下一个字符一起跳过；
+ * 走完之后如果停在前导符上（`i + 1 === end`），说明 id 被切到了下一块。
+ *
+ * 复杂度 O(块长)，每块只扫一次，总 O(n)。
+ */
+function endsInsideFace(s, start, end) {
+    let k = start;
+    while (k < end) {
+        if (s.charCodeAt(k) === 0x14) {
+            if (k + 1 === end)
+                return true; // 前导符是块内最后一个字符 → id 被切走了
+            k += 2; // 前导符 + id 一起跳过
+        }
+        else {
+            k += 1;
+        }
+    }
+    return false;
+}
 function hardSplit(s, limit) {
     const out = [];
     const step = Math.max(1, limit);
@@ -22,6 +48,11 @@ function hardSplit(s, limit) {
             const code = s.charCodeAt(end - 1);
             if (code >= 0xd800 && code <= 0xdbff)
                 end -= 1; // 别切在高代理和低代理之间
+            // ★ 2026-11-19 CodeRabbit：**别把 QQ face 的双字符编码切开**。
+            //   face 是 `U+0014` + id（彩蛋把 `【表情: 微笑】` 换成了它）。按编码边界判，
+            //   不能只看块尾字符值 —— 「害羞」是 [20,20]，第二个 0x14 是 id。
+            if (endsInsideFace(s, i, end))
+                end -= 1;
             // ★★ 2026-11-14（CodeRabbit 抓到死循环）：回退后 end 可能 <= i（limit=1 时必然发生），
             //   那样 i 不推进 ⇒ hardSplit('\u{1F600}', 1) 会无限循环把进程卡死。保底前进一格。
             if (end <= i)

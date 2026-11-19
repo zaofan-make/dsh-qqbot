@@ -118,6 +118,18 @@ export declare class OutboundBuffer {
     private readonly onBlockSent?;
     /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
     private readonly refLookup?;
+    /**
+     * 出站正文清洗（issue #72）。
+     *
+     * ⚠️ 2026-11-19 审查抓到的缺口：缓冲区**直接**调 `sendRichOutbound`，
+     *    绕过了 `OutboundRouter.send()` 里那道清洗 ⇒ 时间头照样漏出去（实测确认）。
+     *    所以这里要再来一次。
+     *
+     * 局限：**流式（StreamingWriter）那条路修不了** —— 它是增量 update，
+     * 分块到达时时间头可能被切成两半，逐块清洗会把正文切坏。
+     * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
+     */
+    private readonly stripFn?;
     private buffer;
     /** 缓冲过大只告警一次（见 append 的注释） */
     private warnedBig;
@@ -129,7 +141,19 @@ export declare class OutboundBuffer {
     /** 每成功发出一个正文块后回调(见 sendRichOutbound 同名参数) */
     onBlockSent?: ((text: string, target: ReplyTarget) => void) | undefined, 
     /** 引用短号查表(见 sendRichOutbound 同名参数; 2026-09-13 主人定) */
-    refLookup?: ((index: string) => string | undefined) | undefined);
+    refLookup?: ((index: string) => string | undefined) | undefined, 
+    /**
+     * 出站正文清洗（issue #72）。
+     *
+     * ⚠️ 2026-11-19 审查抓到的缺口：缓冲区**直接**调 `sendRichOutbound`，
+     *    绕过了 `OutboundRouter.send()` 里那道清洗 ⇒ 时间头照样漏出去（实测确认）。
+     *    所以这里要再来一次。
+     *
+     * 局限：**流式（StreamingWriter）那条路修不了** —— 它是增量 update，
+     * 分块到达时时间头可能被切成两半，逐块清洗会把正文切坏。
+     * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
+     */
+    stripFn?: ((text: string) => string) | undefined);
     /**
      * 追加文本增量。
      *

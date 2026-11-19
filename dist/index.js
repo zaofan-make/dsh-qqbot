@@ -626,6 +626,11 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
         approvalTimeoutMs: live.approvalTimeoutMs,
         outboundMode: live.outboundMode,
         archiveOnNewSession: live.archiveOnNewSession,
+        // ★ 2026-11-19 审查：issue #72/#73 的四个字段，panel 要能看到当前值
+        stripTimeHead: live.stripTimeHead,
+        stripFacePlaceholder: live.stripFacePlaceholder,
+        turnErrorMode: live.turnErrorMode,
+        turnErrorSilentPattern: live.turnErrorSilentPattern,
         botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
     };
     let source = () => entry;
@@ -660,6 +665,18 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             // ★ 2026-11-15：开新档自动归档（面板可改，必须同步，否则要重启才生效 —— 手册 §1 第 2 条）
             if (typeof next.archiveOnNewSession === 'boolean')
                 live.archiveOnNewSession = next.archiveOnNewSession;
+            // ★ 2026-11-19 审查：issue #72/#73 的四个字段**面板能改但 sync 忘了复制** ——
+            //   保存后仍用启动时的旧值，必须重启才生效（跟 2026-11-14 那次同一个坑）。
+            if (typeof next.stripTimeHead === 'boolean')
+                live.stripTimeHead = next.stripTimeHead;
+            if (typeof next.stripFacePlaceholder === 'boolean')
+                live.stripFacePlaceholder = next.stripFacePlaceholder;
+            if (next.turnErrorMode === 'notify' || next.turnErrorMode === 'friendly'
+                || next.turnErrorMode === 'silent' || next.turnErrorMode === 'regex') {
+                live.turnErrorMode = next.turnErrorMode;
+            }
+            if (typeof next.turnErrorSilentPattern === 'string')
+                live.turnErrorSilentPattern = next.turnErrorSilentPattern;
             if (next.localModel && typeof next.localModel === 'object')
                 live.localModel = next.localModel;
             setLexicalFallback((live.localModel?.lexicalFallback) === true); // 兜底开关热生效(settings 服务路径)

@@ -1,0 +1,1 @@
+{"version":3,"file":"strip-artifacts.d.ts","sourceRoot":"","sources":["../../src/transport/strip-artifacts.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;GAsBG;AAgBH,MAAM,WAAW,oBAAoB;IACnC,aAAa,CAAC,EAAE,OAAO,CAAC;IACxB,oBAAoB,CAAC,EAAE,OAAO,CAAC;CAChC;AAED;;;;;;;;GAQG;AACH,wBAAgB,sBAAsB,CAAC,IAAI,EAAE,MAAM,EAAE,GAAG,EAAE,oBAAoB,GAAG,SAAS,GAAG,MAAM,CAwBlG"}
