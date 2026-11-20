@@ -589,6 +589,8 @@ export async function bootstrapGateway(
         //     msgId 一旦失效（过期 / 被动回复配额用尽 / 崩溃重启残留的陈旧 id），
         //     原来这里**直接 throw** ⇒ outbound 只记一行日志 ⇒ 消息静默丢失 ⇒ 整个会话像哑了。
         //     转主动只多花一点主动额度，远好过彻底发不出去；成败都落盘，便于事后溯源。
+        // 后续纯文本降级要用的目标：被动回复失败后一律去掉 msgId（陈旧 msgId 会被平台再拒一次）
+        let plainTarget: typeof target = target;
         if (target.msgId) {
           try {
             const act = { scope: target.scope, targetId: target.targetId } as typeof target;
@@ -601,7 +603,11 @@ export async function bootstrapGateway(
             const secondErr = errA instanceof Error ? errA.message : String(errA);
             logger.error(`被动回复被拒且转主动也失败: 被动轮=${firstErr} / 主动轮=${secondErr}`);
             diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] 转主动仍失败 target=${String(target.targetId ?? '').slice(0, 12)}… err=${secondErr}`);
-            throw errA;
+            // ★ 2026-11-20（CodeRabbit #76 三轮 Major）：这里**不再直接抛**。
+            //   公式正文现在走 markdown 通道（以前是直接 sendText），若被动 md 与主动 md 都被拒，
+            //   直接 throw 会让整条回复彻底丢失、纯文本兜底链根本跑不到。
+            //   改为落到 ②：用去掉 msgId 的目标继续 markdown→纯文本→is_wakeup 的降级链。
+            plainTarget = { scope: target.scope, targetId: target.targetId } as typeof target;
           }
         }
 
@@ -615,7 +621,8 @@ export async function bootstrapGateway(
           //   原来的写法会把公式改写成残缺。先把成对公式整体换成占位符，清洗后原样还原。
           const formulas: string[] = [];
           const plain = String(content || '')
-            .replace(/(\$\$[\s\S]{1,4000}?\$\$|\$[^$\n]{1,2000}\$)/g, (mm) => {
+            // 行内公式的内容允许出现转义序列（`\\.`），这样 `$x_1 + \$y_2$` 不会在 `\$` 处提前截断
+            .replace(/(\$\$[\s\S]{1,4000}?\$\$|\$(?:[^$\\\r\n]|\\.){1,2000}\$)/g, (mm) => {
               formulas.push(mm);
               return `\u0001LF${formulas.length - 1}\u0001`;
             })
@@ -629,15 +636,15 @@ export async function bootstrapGateway(
             .trim();
           if (plain) {
             try {
-              const r2 = (await bot.sendText(target, plain)) as { id?: string } | undefined;
-              pushSent(target, r2?.id);
+              const r2 = (await bot.sendText(plainTarget, plain)) as { id?: string } | undefined;
+              pushSent(plainTarget, r2?.id);
               logger.warn(`主动推送 markdown 被拒, 已降级纯文本发送: ${firstErr}`);
               return r2;
             } catch (err2) {
-              if (target.scope === 'c2c') {
+              if (plainTarget.scope === 'c2c') {
                 try {
-                  const r3 = (await bot.sendWakeup(target, plain)) as { id?: string } | undefined;
-                  pushSent(target, r3?.id);
+                  const r3 = (await bot.sendWakeup(plainTarget, plain)) as { id?: string } | undefined;
+                  pushSent(plainTarget, r3?.id);
                   logger.warn(`主动纯文本被拒, 已降级 is_wakeup 召回通道: ${err2 instanceof Error ? err2.message : String(err2)}`);
                   return r3;
                 } catch (err3) {
