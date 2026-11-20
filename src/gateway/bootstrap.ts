@@ -464,6 +464,20 @@ export async function bootstrapGateway(
       return false;
     }
   };
+  /**
+   * 正文里是否有成对的 LaTeX 公式（行内 `$…$` 或独占行 `$$…$$`）。
+   *
+   * ★ 2026-11-20 主人实测纠错：**只有 msg_type=2（markdown 通道）才渲染 LaTeX**；
+   *   纯文本通道（msg_type=0）会原样显示成源码。所以成对 `$` 必须算作"有 markdown 语法"。
+   * 判据故意收紧：
+   *   · 先剥掉转义写法 `\$`（价格、代码里的字面美元符）
+   *   · 必须成对（起止都是 `$`），中间至少一个非空白字符
+   *   · 行内公式不跨行、上限 2000 字符；块级 `$$…$$` 允许跨行、上限 4000
+   */
+  const hasLatexPair = (text: string): boolean => {
+    const t = String(text || '').replace(/\\\$/g, '');
+    return /\$\$[\s\S]{1,4000}?\$\$/.test(t) || /\$[^$\n]{1,2000}\$/.test(t);
+  };
   // 出站富媒体降级判定: 内容无 markdown 语法(且无 @提及/qqbot 标签)→ 走纯文本通道(msg_type:0),
   // 避开 QQ 对 markdown 富媒体的严格频控(实测连发 5 条 markdown 后静默被拦)。
   const hasMarkdownSyntax = (text: string): boolean => {
@@ -474,6 +488,11 @@ export async function bootstrapGateway(
       //   原来靠下面那条 `\[([^\]\n]+)\]\(https?:…\)` 顺带命中，但 alt 里只要有半角 `]`
       //   （机器人名 `[lv1魅魔]…` 就是），整条就判不出来 ⇒ 走纯文本通道 ⇒ 语法露在聊天里。
       t.includes('![') || t.includes('qqbot-media://') ||
+      // ★ 2026-11-20（主人实测，纠正旧认知）：**LaTeX 公式只走 markdown 通道(msg_type=2)才渲染**。
+      //   纯文本通道(msg_type=0)会把 `$\textcolor{…}{\text{…}}$` 原样显示成源码。
+      //   dock 卡片编辑器能渲染 latex，正是因为它没经过这里、直接发了 msg_type=2。
+      //   ⇒ 正文里只要出现成对的 `$…$` / `$$…$$` 就必须判成 markdown，不许降级成纯文本。
+      hasLatexPair(t) ||
       /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<emoji:|<#/.test(t) ||
       t.includes('```') || t.includes('`') ||
       /(^|\n)\s*(#{1,6}\s|>\s?|[-*+]\s|\d+\.\s)/.test(t) ||

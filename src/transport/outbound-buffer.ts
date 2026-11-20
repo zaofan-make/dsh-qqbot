@@ -35,11 +35,12 @@ export interface QQBotSender {
   /**
    * 纯文本消息（`msg_type=0`）。
    *
-   * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道渲染**。
-   *   `$$\textcolor{#E74C3C}{\text{红}}$$` 走纯文本 → 正常显示红色；
-   *   走 markdown（`msg_type=2`）→ 显示成源码。
+   * ★ 2026-11-20 主人实测（本条注释曾是错的，已纠正）：
+   *   **LaTeX 只有走 markdown 通道（msg_type=2）才渲染**；
+   *   走纯文本（`msg_type=0`）时 `$$\textcolor{#E74C3C}{\text{红}}$$` 会原样显示成源码。
    *
-   *   所以正文里出现 `$$…$$` 时要降级走这条（见 `sendRichOutbound` 的 latex 分支）。
+   *   ⇒ 正文含成对 `$…$` 时**不许**被降级到这条；
+   *     出站降级判定见 `gateway/bootstrap.ts` 的 `hasMarkdownSyntax`（内含 `hasLatexPair`）。
    *
    * 可选：老宿主/SDK 未必暴露，没有就继续用 markdown。
    */
@@ -88,10 +89,13 @@ const outboundSends = new WeakMap<QQBotSender, Map<string, Promise<void>>>();
  * 注意: [RECALL] 撤回动作不消耗计数, 固定用传入 target。
  */
 /**
- * 这一段里有没有 LaTeX 公式（`$…$`）。
+ * 这一段里有没有 LaTeX 公式（`$…$` / `$$…$$`）。
  *
- * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道（msg_type=0）渲染**。
- *   走 markdown（msg_type=2）的话，`$\textcolor{#E74C3C}{\text{红}}$` 会原样显示成源码。
+ * ★ 2026-11-20 主人实测（本条注释曾写反，已纠正）：
+ *   **只有走 markdown 通道（msg_type=2）才渲染 LaTeX**；
+ *   纯文本通道（msg_type=0）会把它原样显示成源码。
+ *   ⇒ 这个函数现在的用途是"**必须保住 markdown 通道**"的判据，
+ *     真正兜底在 `gateway/bootstrap.ts` 的 `hasMarkdownSyntax`（含 hasLatexPair）。
  *
  * 判据故意收得比较紧：
  *   · 必须成对出现 `$` … `$`（允许跨行）
