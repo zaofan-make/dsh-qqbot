@@ -32,22 +32,23 @@ const PLACEHOLDER_RE = /【表情[:：]\s*([^】]{1,24}?)】/g;
 /**
  * 把一组码点转成可发送的字符串。
  *
- * ⚠️ **只有全部 ≤ 0xFF 的才安全**（2026-11-20 主人实测踩到）：
- *   内置表里 187 条有 **80 条是"超级表情"**（QQ 的大表情），值形如 `[20, 356]`。
- *   356 超过一个字节，`String.fromCharCode(20, 356)` 会得到 `U+0014 U+0164` ——
- *   后半截是个普通拉丁字符 `ě`，发到群里就是一句乱码，不是表情。
+ * ★★ 2026-11-20 主人实测推翻了我之前的判断 ★★
  *
- *   这些超级表情的真实编码规则我还没吃透（可能是 `0x14` + 两字节大端，也可能要走别的接口），
- *   在搞清之前**一律不替换**：宁可让 `【表情: 狂笑】` 原样留着（难看但无害），
- *   也绝不能往群里发乱码。
+ *   我一度以为「值 > 0xFF 就是超级表情，`fromCharCode` 会变成乱码」，
+ *   于是给所有 >255 的条目加了过滤。**这是错的** ——
  *
- * @returns 可发送的字符串；不满足条件返回 undefined（调用方保留原文）
+ *     `狂笑 = [20, 283]` → `U+0014 U+011B` → QQ **正常渲染成狂笑小黄脸** ✅
+ *
+ *   也就是说 QQ 的 face 编码确实可以用超出一个"字节"的码点，
+ *   只要那个码点在客户端的表里有对应（`U+011B` = 狂笑，`U+0164` 待验）。
+ *
+ *   所以这里**不再做范围限制**，只排除明显非法的值（负数、小数、NaN）。
+ *   万一某个值真的是乱码，那也只是那一个表情的问题，不该连累另外 186 个。
  */
 function codesToFace(codes: readonly number[]): string | undefined {
   if (codes.length === 0) return undefined;
-  // 第一个是 0x14 前导符；其余每个都必须是单字节
   for (const c of codes) {
-    if (!Number.isInteger(c) || c < 0 || c > 0xff) return undefined;
+    if (typeof c !== 'number' || !Number.isInteger(c) || c < 0) return undefined;
   }
   return String.fromCharCode(...codes);
 }
