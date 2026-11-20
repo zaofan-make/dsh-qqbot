@@ -29,12 +29,40 @@ import { BUILTIN_FACE_TABLE } from './face-table.js';
 /** `【表情: 狂笑】` / `【表情：狂笑】` */
 const PLACEHOLDER_RE = /【表情[:：]\s*([^】]{1,24}?)】/g;
 
-/** 内置表（模块级建一次，不可变） */
+/**
+ * 把一组码点转成可发送的字符串。
+ *
+ * ⚠️ **只有全部 ≤ 0xFF 的才安全**（2026-11-20 主人实测踩到）：
+ *   内置表里 187 条有 **80 条是"超级表情"**（QQ 的大表情），值形如 `[20, 356]`。
+ *   356 超过一个字节，`String.fromCharCode(20, 356)` 会得到 `U+0014 U+0164` ——
+ *   后半截是个普通拉丁字符 `ě`，发到群里就是一句乱码，不是表情。
+ *
+ *   这些超级表情的真实编码规则我还没吃透（可能是 `0x14` + 两字节大端，也可能要走别的接口），
+ *   在搞清之前**一律不替换**：宁可让 `【表情: 狂笑】` 原样留着（难看但无害），
+ *   也绝不能往群里发乱码。
+ *
+ * @returns 可发送的字符串；不满足条件返回 undefined（调用方保留原文）
+ */
+function codesToFace(codes: readonly number[]): string | undefined {
+  if (codes.length === 0) return undefined;
+  // 第一个是 0x14 前导符；其余每个都必须是单字节
+  for (const c of codes) {
+    if (!Number.isInteger(c) || c < 0 || c > 0xff) return undefined;
+  }
+  return String.fromCharCode(...codes);
+}
+
+/**
+ * 内置表（模块级建一次，不可变）。
+ *
+ * **只装能安全编码的那些** —— 超级表情（值 > 0xFF 的 80 条）暂时排除，
+ * 见 `codesToFace` 的注释（发出去会变乱码）。
+ */
 const BUILTIN: Map<string, string> = (() => {
   const m = new Map<string, string>();
   for (const [name, codes] of Object.entries(BUILTIN_FACE_TABLE)) {
-    if (!Array.isArray(codes) || codes.length === 0) continue;
-    m.set(name, String.fromCharCode(...(codes as readonly number[])));
+    const face = codesToFace(codes as readonly number[]);
+    if (face !== undefined) m.set(name, face);
   }
   return m;
 })();
@@ -90,7 +118,7 @@ function loadMap(dataRoot: string | undefined): Map<string, string> {
     return hit.map;
   }
 
-  // 从内置起步，再用扩展覆盖 —— 扩展坏了也不影响内置那 187 条
+  // 从内置起步，再用扩展覆盖 —— 扩展坏了也不影响内置那 107 条
   const map = new Map(BUILTIN);
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
@@ -98,10 +126,14 @@ function loadMap(dataRoot: string | undefined): Map<string, string> {
       if (name.startsWith('_')) continue;                       // _comment 之类的元数据
       if (!Array.isArray(codes) || codes.length === 0) continue;
       if (!codes.every((c) => typeof c === 'number')) continue;
-      map.set(name, String.fromCharCode(...(codes as number[])));
+      // ⚠️ 扩展条目**也要过同一道过滤** —— 否则用户表里那些超范围的"超级表情"
+      //    会绕过检查直接变成乱码（2026-11-20 主人实测：狂笑显示成 "ě"）。
+      const face = codesToFace(codes as readonly number[]);
+      if (face === undefined) continue;
+      map.set(name, face);
     }
   } catch {
-    // 文件坏了 → 保留内置那 187 条，不崩
+    // 文件坏了 → 保留内置那 107 条，不崩
   }
   cache.set(dataRoot, { mtime, map, checkedAt: now });
   return map;
