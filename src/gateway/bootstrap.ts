@@ -469,14 +469,39 @@ export async function bootstrapGateway(
    *
    * ★ 2026-11-20 主人实测纠错：**只有 msg_type=2（markdown 通道）才渲染 LaTeX**；
    *   纯文本通道（msg_type=0）会原样显示成源码。所以成对 `$` 必须算作"有 markdown 语法"。
-   * 判据故意收紧：
-   *   · 先剥掉转义写法 `\$`（价格、代码里的字面美元符）
-   *   · 必须成对（起止都是 `$`），中间至少一个非空白字符
-   *   · 行内公式不跨行、上限 2000 字符；块级 `$$…$$` 允许跨行、上限 4000
+   * 判据（按 CodeRabbit #76 两条意见收紧）：
+   *   · `$` 前连续反斜杠为**奇数个**才算被转义 —— `\\$x$` 里那个 `$` 仍是公式起始，
+   *     `$\$$` 里的 `\$` 属于公式内容；被转义的 `$` 只换成占位符，公式内容原样保留
+   *   · 公式内容必须含**非空白字符**（`$ $` / `$$ $$` 不算，别白耗 markdown 频控额度）
+   *   · 行内公式不跨行、内容 ≤2000 字符；块级 `$$…$$` 允许跨行、≤4000 字符
    */
   const hasLatexPair = (text: string): boolean => {
-    const t = String(text || '').replace(/\\\$/g, '');
-    return /\$\$[\s\S]{1,4000}?\$\$/.test(t) || /\$[^$\n]{1,2000}\$/.test(t);
+    const src = String(text || '');
+    // 被转义的 `$` 换成占位符 \u0001（长度不变，索引不错位），其余字符原样保留
+    const t = src.replace(/(\\*)\$/g, (m: string, bs: string) =>
+      bs.length % 2 === 1 ? '\\'.repeat(bs.length - 1) + '\u0001' : m,
+    );
+    const marks: number[] = [];
+    for (let i = 0; i < t.length; i += 1) if (t.charAt(i) === '$') marks.push(i);
+    for (let k = 0; k < marks.length - 1; k += 1) {
+      const start = marks[k]!;
+      const next = marks[k + 1]!;
+      // ① 块级 `$$…$$`：开头的两个 `$` 必须相邻，闭合处同理
+      if (next === start + 1) {
+        for (let m = k + 2; m < marks.length - 1; m += 1) {
+          const end = marks[m]!;
+          if (marks[m + 1] !== end + 1) continue;
+          if (end - start - 2 > 4000) break;
+          if (/\S/.test(t.slice(start + 2, end))) return true;
+        }
+        continue;
+      }
+      // ② 行内 `$…$`：与**下一个**未转义 `$` 配对，内容非空白、不跨行、≤2000 字符
+      const body = t.slice(start + 1, next);
+      if (body.length > 2000 || /[\r\n]/.test(body)) continue;
+      if (/\S/.test(body)) return true;
+    }
+    return false;
   };
   // 出站富媒体降级判定: 内容无 markdown 语法(且无 @提及/qqbot 标签)→ 走纯文本通道(msg_type:0),
   // 避开 QQ 对 markdown 富媒体的严格频控(实测连发 5 条 markdown 后静默被拦)。
