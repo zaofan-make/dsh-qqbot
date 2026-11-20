@@ -631,6 +631,7 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
         stripFacePlaceholder: live.stripFacePlaceholder,
         turnErrorMode: live.turnErrorMode,
         turnErrorSilentPattern: live.turnErrorSilentPattern,
+        latexHint: live.latexHint,
         botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
     };
     let source = () => entry;
@@ -677,6 +678,8 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             }
             if (typeof next.turnErrorSilentPattern === 'string')
                 live.turnErrorSilentPattern = next.turnErrorSilentPattern;
+            if (typeof next.latexHint === 'boolean')
+                live.latexHint = next.latexHint;
             if (next.localModel && typeof next.localModel === 'object')
                 live.localModel = next.localModel;
             setLexicalFallback((live.localModel?.lexicalFallback) === true); // 兜底开关热生效(settings 服务路径)

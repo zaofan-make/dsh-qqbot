@@ -610,6 +610,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     stripFacePlaceholder: live.stripFacePlaceholder,
     turnErrorMode: live.turnErrorMode,
     turnErrorSilentPattern: live.turnErrorSilentPattern,
+    latexHint: live.latexHint,
     botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
   };
   let source: () => EditableConfig = () => entry;
@@ -641,6 +642,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
         live.turnErrorMode = next.turnErrorMode;
       }
       if (typeof next.turnErrorSilentPattern === 'string') live.turnErrorSilentPattern = next.turnErrorSilentPattern;
+      if (typeof next.latexHint === 'boolean') live.latexHint = next.latexHint;
       if (next.localModel && typeof next.localModel === 'object') live.localModel = next.localModel;
       setLexicalFallback(((live as { localModel?: { lexicalFallback?: boolean } }).localModel?.lexicalFallback) === true);   // 兜底开关热生效(settings 服务路径)
       if (typeof next.groupPrompt === 'string') live.groupPrompt = next.groupPrompt;

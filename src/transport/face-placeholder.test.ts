@@ -131,3 +131,37 @@ describe('缓存与 TTL（2026-11-19 性能优化配套）', () => {
     expect(ms).toBeLessThan(0.05);
   });
 });
+
+
+describe('超范围码点也能用（2026-11-20 主人实测纠正）', () => {
+  // ★ 我一度以为「值 > 0xFF 就是乱码」，给它们加了过滤。**这是错的**：
+  //   `狂笑 = [20, 283]` → `U+0014 U+011B` → QQ **正常渲染成狂笑小黄脸**。
+  //   所以现在不做范围限制，只排除非法值（负数/小数/NaN）。
+
+  it('超范围的码点照常替换（狂笑 [20,283]）', () => {
+    _clearFaceCache();
+    seedFaces({ 狂笑: [20, 283] });
+    expect(replaceFacePlaceholders('【表情: 狂笑】', root)).toBe(String.fromCharCode(20, 283));
+  });
+
+  it('更大的值也照常替换（666 [20,356]）', () => {
+    _clearFaceCache();
+    seedFaces({ 666: [20, 356] });
+    expect(replaceFacePlaceholders('【表情: 666】', root)).toBe(String.fromCharCode(20, 356));
+  });
+
+  it('负数 / 小数 / 非整数仍然拒绝（这些是真非法）', () => {
+    _clearFaceCache();
+    seedFaces({ 坏1: [20, -1], 坏2: [20, 1.5] });
+    for (const n of ['坏1', '坏2']) {
+      const s = `【表情: ${n}】`;
+      expect(replaceFacePlaceholders(s, root)).toBe(s);
+    }
+  });
+
+  it('扩展表里的超范围条目能覆盖内置', () => {
+    _clearFaceCache();
+    seedFaces({ 微笑: [20, 283] });
+    expect(replaceFacePlaceholders('【表情: 微笑】', root)).toBe(String.fromCharCode(20, 283));
+  });
+});

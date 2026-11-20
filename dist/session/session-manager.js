@@ -18,6 +18,7 @@ import { absCwdOf } from '../util/abs-path.js';
 import { describeExtCommandReload, describeExtInboundReload, describeExtOutboundReload, reloadExtCommands, reloadExtInbound, reloadExtOutbound } from '../features/ext-reload.js';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
+import { LATEX_HINT_BLOCK } from '../config.js';
 import { takePendingMemo, recallLines } from '../features/people-memo.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
@@ -2049,6 +2050,39 @@ export class SessionManager {
                         source: { kind: 'qqbot:people-memo', form: 'instructions', ns },
                     });
                     this.logger?.info?.(`[小传] 注入 ${memoLine.length} 字 (session=${recMemo?.sessionKey ?? '?'})`);
+                }
+                // ★ 2026-11-20：**数学公式提示独立成块**（维护手册 §11.39 铁律：自己的 kind + 自己的判重）。
+                //   不拼进群守则 body —— 那样开关切换时指纹判断容易漏，而且和群守则耦合。
+                //   内容固定（182 字符），用"查有没有就不注"的去重（见下面的两步判断）。
+                // ⚠️ 2026-11-20 主人实测：**每轮都在重复注入**。
+                //   我一开始只查 dec.messages（本批），漏了 surface 历史 ⇒ 判断永远 false。
+                //   **照抄群守则的两步去重**（L1932-1955 同款）：
+                //     ① 本批 dec.messages 里有没有
+                //     ② session surface 历史里有没有（agent.session.eventAt 遍历）
+                const _hintInBatch = dec.messages.some((m) => m?.source?.kind === 'qqbot:latex-hint');
+                let _hintInSurface = false;
+                if (!_hintInBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+                    for (const seq of agent.session.surface.nodes) {
+                        const ev = agent.session.eventAt(seq);
+                        if (ev?.type === 'user/message' && ev.data?.source?.kind === 'qqbot:latex-hint') {
+                            _hintInSurface = true;
+                            break;
+                        }
+                    }
+                }
+                // ⚠️ 2026-11-20 审查（第二轮）：**归属校验只能管这一段，不能提前 return 整个回调**。
+                //   findByAgent 只查 this.sessions，而 resumeHostAgent 不写这个表 ——
+                //   重启/回收后从 Web 打开的 QQ 会话在它眼里是 undefined。
+                //   要是放在函数开头提前 return，小传注入 / peopleMemoInWeb / contextlessMode 全都不执行了。
+                const _ownedByMe = !!this.findByAgent(agent);
+                if (this.config.latexHint === true && _ownedByMe && !_hintInBatch && !_hintInSurface) {
+                    extraAll.push({
+                        role: 'user',
+                        id: randomUUID(),
+                        content: [{ type: 'text', text: `<system-reminder>` + String.fromCharCode(10) + LATEX_HINT_BLOCK + String.fromCharCode(10) + `</system-reminder>` }],
+                        source: { kind: 'qqbot:latex-hint', form: 'instructions', ns },
+                    });
+                    this.logger?.debug?.('[latexHint] 注入数学公式提示');
                 }
                 const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
                 return { ...dec, messages: entered };

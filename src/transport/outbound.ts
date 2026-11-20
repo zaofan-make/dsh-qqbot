@@ -874,6 +874,7 @@ class OutboundRouter {
       //   ⇒ 先规范化成单行合法语法，再上传/发送。
       const normalized = normalizeMarkdownImages(text);
       const outText = await rewriteLocalMarkdownImages(normalized, mdTarget as never);
+
       // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
       if (outText.indexOf('qqbot-media://') >= 0) {
         try {

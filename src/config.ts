@@ -290,6 +290,15 @@ export interface EditableConfig {
   /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
   turnErrorSilentPattern?: string;
   /**
+   * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
+   *
+   * 勾上后往系统提示词里注入一段提醒：QQ 支持 LaTeX，可以输出 `$…$`（行内）或 `$$…$$`（独占行居中），
+   * 用 `\textcolor{#hex}{…}` 上色。
+   *
+   * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
+   */
+  latexHint?: boolean;
+  /**
    * 开新档时自动归档旧会话（默认开）。
    * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
    * 旧档仍可被 QQ 消息拉回可见（unarchiveSession 那条腿不动）。
@@ -395,6 +404,21 @@ export const FIXED_CHANNEL_CONTEXT = [
   //   出站又不清洗，编出来的 `[小明] xxx` 会原样发进群，看起来像群里真有人说话。
   '【输出契约】你只写**自己这一条**要说的话：不要扮演群友、不要替别人写台词、不要输出 `[昵称] …` 形式的对话行、不要续写聊天记录。群消息是别人说过的话（记录），不是等你去接着演的剧本。调完 reply_gate 放行之后尤其如此 —— 只回答当前那条，别把后面的对话一起编出来。',
   '  这些标记本身不会显示给群友（发出去的只有媒体本身）。',
+].join('\n');
+
+/**
+ * 数学公式 / 彩色字提示（2026-11-20 主人要，配置项 `latexHint` 控制，默认关）。
+ *
+ * **内容固定**，所以跟群守则同频、共用同一套去重（拼进 rules，指纹自然跟着变）。
+ * 只有清空上下文 / 开关切换时才重注 —— 不是小传那种"每轮都可能变"的东西。
+ */
+export const LATEX_HINT_BLOCK = [
+  '【LaTeX】QQ 支持 LaTeX 渲染，需要的时候可以这样写：',
+  '- 行内公式：$E=mc^2$（跟正文排在一起，不另起一行）',
+  '- 独占行居中：$$\\frac{a}{b}$$',
+  '- 彩色字：$\\textcolor{#E74C3C}{\\text{重点}}$',
+  '只在写公式、列关键数据、需要视觉强调时用；日常闲聊别用。',
+  '有些客户端（旧版 QQ）不渲染，会把它显示成源码。',
 ].join('\n');
 
 /**
@@ -695,6 +719,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   stripTimeHead: Schema.boolean().default(false).description('出站洗掉行首时间头(默认开, issue #72): 入站给每回合首条盖了 [YYYY-MM-DD 周四 HH:MM], 模型会内化并在回复里自己披一个; 开=发送前剔除(正则含 HH:MM 才删, 正常引用不误伤)'),
   stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
   turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
+  latexHint: Schema.boolean().default(false).description('数学公式提示(默认关, 2026-11-20): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX, 可以输出 $…$ 行内公式或 $…$ 居中公式, 也能用 \\textcolor{#hex}{…} 上色」。⚠️ 只在支持 LaTeX 的客户端生效, 旧版 QQ 会显示成源码'),
   turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imageAggregate: Schema.object({
@@ -797,6 +822,15 @@ export interface ImQQBotConfig {
   turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
   /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
   turnErrorSilentPattern?: string;
+  /**
+   * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
+   *
+   * 勾上后往系统提示词里注入一段提醒：QQ 支持 LaTeX，可以输出 `$…$`（行内）或 `$$…$$`（独占行居中），
+   * 用 `\textcolor{#hex}{…}` 上色。
+   *
+   * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
+   */
+  latexHint?: boolean;
   /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
   imageOffload?: boolean;
   /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
@@ -966,6 +1000,7 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   stripTimeHead: Schema.boolean().default(false).description('出站洗掉行首时间头(默认开, issue #72): 入站给每回合首条盖了 [YYYY-MM-DD 周四 HH:MM], 模型会内化并在回复里自己披一个; 开=发送前剔除(正则含 HH:MM 才删, 正常引用不误伤)'),
   stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
   turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
+  latexHint: Schema.boolean().default(false).description('数学公式提示(默认关, 2026-11-20): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX」, 可输出 $…$ 行内公式 / $$…$$ 居中公式 / \\textcolor{#hex}{…} 彩色字。⚠️ 只在支持 LaTeX 的客户端生效, 旧版 QQ 会显示成源码'),
   turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imageAggregate: Schema.object({

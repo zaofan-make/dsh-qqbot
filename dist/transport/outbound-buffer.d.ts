@@ -15,6 +15,18 @@ export interface StreamSessionLike {
 /** QQ Bot 发送接口 */
 export interface QQBotSender {
     sendMarkdown(target: ReplyTarget, content: string): Promise<unknown>;
+    /**
+     * 纯文本消息（`msg_type=0`）。
+     *
+     * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道渲染**。
+     *   `$$\textcolor{#E74C3C}{\text{红}}$$` 走纯文本 → 正常显示红色；
+     *   走 markdown（`msg_type=2`）→ 显示成源码。
+     *
+     *   所以正文里出现 `$$…$$` 时要降级走这条（见 `sendRichOutbound` 的 latex 分支）。
+     *
+     * 可选：老宿主/SDK 未必暴露，没有就继续用 markdown。
+     */
+    sendText?(target: ReplyTarget, content: string): Promise<unknown>;
     /** 发送带内联按钮(keyboard)的 markdown 消息 —— 审批卡片/提问卡片用 */
     sendMarkdownWithKeyboard(target: ReplyTarget, content: string, keyboard: unknown): Promise<unknown>;
     /**
@@ -46,16 +58,7 @@ export interface QQBotSender {
     /** c2c 主动召回消息(官方 is_wakeup:true, 30天窗; 群聊目标应走 sendMarkdown)。2026-09-10 修跨会话 c2c 发送 */
     sendC2cWakeup(target: ReplyTarget, content: string): Promise<unknown>;
 }
-/**
- * 富媒体感知发送一段完整文本：
- *  1) 若整段为 [RECALL] 指令(去掉指令后无实质内容) → 触发 bot.recallLast
- *  2) 否则解析 [MEDIA:kind|src]，媒体段逐个 bot.sendMedia，文本段照常分块 sendMarkdown
- *  富媒体指令与 [RECALL] 从展示文本中剔除；任一失败不抛(逐项记录由调用方/logger)。
- *
- * resolveTarget(可选): 每次实际发送(每条媒体/每个文本分块)前调用一次, 返回该条的目标。
- * 用于「适配主动」出站: 同一条入站消息的连续回复数到限后自动切主动(去掉 msg_id)。
- * 注意: [RECALL] 撤回动作不消耗计数, 固定用传入 target。
- */
+export declare function hasLatexFormula(text: string): boolean;
 export declare function sendRichOutbound(bot: QQBotSender, target: ReplyTarget, text: string, limit: number, cwd: string | undefined, logError?: (msg: string) => void, resolveTarget?: () => ReplyTarget, 
 /** 逐文本块目标(2026-09-10 主人定 passive 收尾): 传 (块序号i, 总块数total)=>ReplyTarget,
  *  用于「正文块>5 时第 6 块起转主动发送」; undefined=所有块用 resolveTarget/固定 target */

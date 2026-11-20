@@ -40,6 +40,20 @@ export const FIXED_CHANNEL_CONTEXT = [
     '  这些标记本身不会显示给群友（发出去的只有媒体本身）。',
 ].join('\n');
 /**
+ * 数学公式 / 彩色字提示（2026-11-20 主人要，配置项 `latexHint` 控制，默认关）。
+ *
+ * **内容固定**，所以跟群守则同频、共用同一套去重（拼进 rules，指纹自然跟着变）。
+ * 只有清空上下文 / 开关切换时才重注 —— 不是小传那种"每轮都可能变"的东西。
+ */
+export const LATEX_HINT_BLOCK = [
+    '【LaTeX】QQ 支持 LaTeX 渲染，需要的时候可以这样写：',
+    '- 行内公式：$E=mc^2$（跟正文排在一起，不另起一行）',
+    '- 独占行居中：$$\\frac{a}{b}$$',
+    '- 彩色字：$\\textcolor{#E74C3C}{\\text{重点}}$',
+    '只在写公式、列关键数据、需要视觉强调时用；日常闲聊别用。',
+    '有些客户端（旧版 QQ）不渲染，会把它显示成源码。',
+].join('\n');
+/**
  * 引用消息能力说明(2026-09-13 主人定; 短消息号版): 开启 messageReference 时随群守则一起注入。
  * 教 AI ①入站消息带短"消息号"(如 #0913a) ②出站用 [rf:消息号] 引用对方。
  */
@@ -320,6 +334,7 @@ export const EditableConfigSchema = Schema.object({
     stripTimeHead: Schema.boolean().default(false).description('出站洗掉行首时间头(默认开, issue #72): 入站给每回合首条盖了 [YYYY-MM-DD 周四 HH:MM], 模型会内化并在回复里自己披一个; 开=发送前剔除(正则含 HH:MM 才删, 正常引用不误伤)'),
     stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
     turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
+    latexHint: Schema.boolean().default(false).description('数学公式提示(默认关, 2026-11-20): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX, 可以输出 $…$ 行内公式或 $…$ 居中公式, 也能用 \\textcolor{#hex}{…} 上色」。⚠️ 只在支持 LaTeX 的客户端生效, 旧版 QQ 会显示成源码'),
     turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
     imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
     imageAggregate: Schema.object({
@@ -405,6 +420,7 @@ const ConfigSchemaRaw = Schema.object({
     stripTimeHead: Schema.boolean().default(false).description('出站洗掉行首时间头(默认开, issue #72): 入站给每回合首条盖了 [YYYY-MM-DD 周四 HH:MM], 模型会内化并在回复里自己披一个; 开=发送前剔除(正则含 HH:MM 才删, 正常引用不误伤)'),
     stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
     turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
+    latexHint: Schema.boolean().default(false).description('数学公式提示(默认关, 2026-11-20): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX」, 可输出 $…$ 行内公式 / $$…$$ 居中公式 / \\textcolor{#hex}{…} 彩色字。⚠️ 只在支持 LaTeX 的客户端生效, 旧版 QQ 会显示成源码'),
     turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
     imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
     imageAggregate: Schema.object({
