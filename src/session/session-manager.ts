@@ -1526,6 +1526,10 @@ export class SessionManager {
         const cwd = String(agent?.session?.header?.cwd ?? '');
         const ns = this.nsForCwd(cwd);
         if (!ns) return decision; // 非本 bot agent, 不注入
+        // ★ 2026-11-20 审查第 8 条：**两个实例配同一 cwd 时 nsForCwd 都返回同一 ns**，
+        //   ⇒ 两个根 pre-step 监听器都会给同一会话注入（重复）。cwd 不足以定归属。
+        //   再加一道：这个 agent 必须是**我管理的那个**（与本文件其它注入点同款判据）。
+        if (!this.findByAgent(agent as never)) return decision;
         const dec = decision as { kind?: string; messages?: unknown[] };
         // ★ 2026-10-10：本步若是 aborted/interrupted（点"停止生成" / 闸门 self-cancel / 崩溃恢复），
         //   给该会话打个"刚被中止"点 ⇒ 之后插进来的消息不再被误标成 "[插话]…" 前缀（见 debounce.ts）
