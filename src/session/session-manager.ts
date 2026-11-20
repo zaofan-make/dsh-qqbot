@@ -2037,7 +2037,15 @@ export class SessionManager {
         // ★ 2026-11-20：**数学公式提示独立成块**（维护手册 §11.39 铁律：自己的 kind + 自己的判重）。
         //   不拼进群守则 body —— 那样开关切换时指纹判断容易漏，而且和群守则耦合。
         //   内容固定（182 字符），用"剔旧再插"的替换式去重就够（见上面的 _stripOldLatexHint）。
-        if (this.config.latexHint === true) {
+        // ⚠️ 2026-11-20 主人实测：**每轮都在重复注入**（上下文里越堆越多）。
+        //   根因：注入块进了 surface 历史，而 _stripOldLatexHint 只剔 dec.messages ⇒ 剔不掉。
+        //   修：跟群守则学 —— **按内容判断"上下文里有没有"**，有就跳过。
+        const LATEX_MARK = '【LaTeX】QQ 支持 LaTeX 渲染';
+        const _hasLatexInCtx = (dec.messages as unknown[]).some((m) => {
+          const c = (m as { content?: Array<{ text?: string }> } | undefined)?.content;
+          return Array.isArray(c) && c.some((b) => String(b?.text ?? '').includes(LATEX_MARK));
+        });
+        if (this.config.latexHint === true && !_hasLatexInCtx) {
           extraAll.push({
             role: 'user',
             id: randomUUID(),
