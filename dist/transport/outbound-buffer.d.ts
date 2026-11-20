@@ -18,11 +18,12 @@ export interface QQBotSender {
     /**
      * 纯文本消息（`msg_type=0`）。
      *
-     * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道渲染**。
-     *   `$$\textcolor{#E74C3C}{\text{红}}$$` 走纯文本 → 正常显示红色；
-     *   走 markdown（`msg_type=2`）→ 显示成源码。
+     * ★ 2026-11-20 主人实测（本条注释曾是错的，已纠正）：
+     *   **LaTeX 只有走 markdown 通道（msg_type=2）才渲染**；
+     *   走纯文本（`msg_type=0`）时 `$$\textcolor{#E74C3C}{\text{红}}$$` 会原样显示成源码。
      *
-     *   所以正文里出现 `$$…$$` 时要降级走这条（见 `sendRichOutbound` 的 latex 分支）。
+     *   ⇒ 正文含成对 `$…$` 时**不许**被降级到这条；
+     *     出站降级判定见 `gateway/bootstrap.ts` 的 `hasMarkdownSyntax`（内含 `hasLatexPair`）。
      *
      * 可选：老宿主/SDK 未必暴露，没有就继续用 markdown。
      */

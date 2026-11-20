@@ -444,6 +444,97 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             return false;
         }
     };
+    /**
+     * 扫出正文里所有**成对**的 LaTeX 公式区间（返回原文本上的 `[start, end)` 偏移）。
+     *
+     * ★ 2026-11-20 主人实测纠错：**只有 msg_type=2（markdown 通道）才渲染 LaTeX**；
+     *   纯文本通道（msg_type=0）会原样显示成源码。所以成对 `$` 必须算作"有 markdown 语法"，
+     *   纯文本兜底清洗时也必须把这些区间整体保护起来（否则 `_` `*` `>` 会被剥坏）。
+     *
+     * 判据（按 CodeRabbit #76 五轮意见收敛）：
+     *   · `$` 前连续反斜杠为**奇数个**才算被转义；被转义的 `$` 一律不能当起止分隔符
+     *     （`\$19.9，公式 $x_1$` 只认后一个公式，前面那个是价格）
+     *   · 内容必须含非空白字符（`$ $` / `$$ $$` 不算，别白耗 markdown 频控额度）
+     *   · 行内不跨行、≤2000 字符；块级 `$$…$$` 可跨行、≤4000 字符
+     *   · 归一化把转义 `$` 换成占位符，但**长度不变**（否则长度上限被放宽、偏移也错位）
+     */
+    const scanLatexRanges = (text) => {
+        const src = String(text || '');
+        const t = src.replace(/(\\*)\$/g, (m, bs) => bs.length % 2 === 1 ? bs + '\u0001' : m);
+        const marks = [];
+        for (let i = 0; i < t.length; i += 1)
+            if (t.charAt(i) === '$')
+                marks.push(i);
+        const ranges = [];
+        let k = 0;
+        while (k < marks.length - 1) {
+            const start = marks[k];
+            const next = marks[k + 1];
+            // ① 块级 `$$…$$`：开头的两个 `$` 必须相邻，闭合处同理
+            if (next === start + 1) {
+                let done = false;
+                for (let m = k + 2; m < marks.length - 1; m += 1) {
+                    const end = marks[m];
+                    if (marks[m + 1] !== end + 1)
+                        continue;
+                    if (end - start - 2 > 4000)
+                        break;
+                    if (/\S/.test(t.slice(start + 2, end))) {
+                        ranges.push([start, end + 2]);
+                        k = m + 2;
+                        done = true;
+                        break;
+                    }
+                }
+                if (done)
+                    continue;
+                k += 1;
+                continue;
+            }
+            // ② 行内 `$…$`：与**下一个**未转义 `$` 配对，内容非空白、不跨行、≤2000 字符
+            const body = t.slice(start + 1, next);
+            if (body.length <= 2000 && !/[\r\n]/.test(body) && /\S/.test(body)) {
+                ranges.push([start, next + 1]);
+                k += 2;
+                continue;
+            }
+            k += 1;
+        }
+        return ranges;
+    };
+    /** 正文里是否有成对的 LaTeX 公式（复用 scanLatexRanges —— 判定与保护必须同一套规则） */
+    const hasLatexPair = (text) => scanLatexRanges(text).length > 0;
+    /**
+     * 把 markdown 正文压成"纯文本通道(msg_type=0)"能原样显示的形态：
+     *   · LaTeX 公式、at 标签先整体暂存 —— 清洗会剥掉 `_` `*` `>` 与标签尖括号
+     *   · 去掉 md 标记字符，`[文字](url)` 只留文字
+     *   · 最后原样还原暂存内容
+     *
+     * 2026-11-20（CodeRabbit #76 六轮）：抽成函数给两处复用 ——
+     *   ① markdown 双通道被拒后的"被动纯文本"兜底、② 主动降级链里的纯文本发送。
+     */
+    const toPlainText = (content) => {
+        const src = String(content ?? '');
+        const keep = [];
+        const hold = (s) => {
+            keep.push(s);
+            return `\u0001K${keep.length - 1}\u0001`;
+        };
+        let text = '';
+        let cursor = 0;
+        for (const [s, e] of scanLatexRanges(src)) {
+            text += src.slice(cursor, s) + hold(src.slice(s, e));
+            cursor = e;
+        }
+        text += src.slice(cursor);
+        return text
+            .replace(/<qqbot-at-user\s+id="[A-Za-z0-9]+"\s*\/>/g, (m) => hold(m))
+            .replace(/<@[A-Za-z0-9]+>/g, (m) => hold(m))
+            .replace(/[#*`_~>]/g, '')
+            .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+            .replace(/\u0001K(\d+)\u0001/g, (_mm, idx) => keep[Number(idx)] ?? '')
+            .trim();
+    };
     // 出站富媒体降级判定: 内容无 markdown 语法(且无 @提及/qqbot 标签)→ 走纯文本通道(msg_type:0),
     // 避开 QQ 对 markdown 富媒体的严格频控(实测连发 5 条 markdown 后静默被拦)。
     const hasMarkdownSyntax = (text) => {
@@ -454,6 +545,11 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         //   原来靠下面那条 `\[([^\]\n]+)\]\(https?:…\)` 顺带命中，但 alt 里只要有半角 `]`
         //   （机器人名 `[lv1魅魔]…` 就是），整条就判不出来 ⇒ 走纯文本通道 ⇒ 语法露在聊天里。
         t.includes('![') || t.includes('qqbot-media://') ||
+            // ★ 2026-11-20（主人实测，纠正旧认知）：**LaTeX 公式只走 markdown 通道(msg_type=2)才渲染**。
+            //   纯文本通道(msg_type=0)会把 `$\textcolor{…}{\text{…}}$` 原样显示成源码。
+            //   dock 卡片编辑器能渲染 latex，正是因为它没经过这里、直接发了 msg_type=2。
+            //   ⇒ 正文里只要出现成对的 `$…$` / `$$…$$` 就必须判成 markdown，不许降级成纯文本。
+            hasLatexPair(t) ||
             /<@[A-Za-z0-9]+>|<qqbot-at-user|<qqbot-at-everyone|<emoji:|<#/.test(t) ||
             t.includes('```') || t.includes('`') ||
             /(^|\n)\s*(#{1,6}\s|>\s?|[-*+]\s|\d+\.\s)/.test(t) ||
@@ -522,6 +618,8 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                 //     msgId 一旦失效（过期 / 被动回复配额用尽 / 崩溃重启残留的陈旧 id），
                 //     原来这里**直接 throw** ⇒ outbound 只记一行日志 ⇒ 消息静默丢失 ⇒ 整个会话像哑了。
                 //     转主动只多花一点主动额度，远好过彻底发不出去；成败都落盘，便于事后溯源。
+                // 后续纯文本降级要用的目标：被动回复失败后一律去掉 msgId（陈旧 msgId 会被平台再拒一次）
+                let plainTarget = target;
                 if (target.msgId) {
                     try {
                         const act = { scope: target.scope, targetId: target.targetId };
@@ -535,34 +633,43 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                         const secondErr = errA instanceof Error ? errA.message : String(errA);
                         logger.error(`被动回复被拒且转主动也失败: 被动轮=${firstErr} / 主动轮=${secondErr}`);
                         diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] 转主动仍失败 target=${String(target.targetId ?? '').slice(0, 12)}… err=${secondErr}`);
-                        throw errA;
+                        // ★ 2026-11-20（CodeRabbit #76 六轮 Major）：**先用原 msgId 试一次被动纯文本**。
+                        //   公式正文现在走 markdown 通道，而"无 md 语法的正文"以前本就是带有效 msgId
+                        //   直接发纯文本的。官方已弱化主动推送（用户关掉主动消息后主动发送必失败），
+                        //   所以被动纯文本很可能仍然可用 —— 别绕过它直接去走主动通道。
+                        try {
+                            const passivePlain = toPlainText(content);
+                            if (passivePlain) {
+                                const rp = (await bot.sendText(target, passivePlain));
+                                pushSent(target, rp?.id);
+                                logger.warn(`markdown 双通道被拒 → 已用被动纯文本发送成功: ${firstErr}`);
+                                diagWrite('qqbot-send-diag', `[${new Date().toISOString()}] 被动纯文本兜底成功 target=${String(target.targetId ?? '').slice(0, 12)}…`);
+                                return rp;
+                            }
+                        }
+                        catch (errP) {
+                            logger.warn(`被动纯文本也失败, 继续主动降级链: ${errP instanceof Error ? errP.message : String(errP)}`);
+                        }
+                        // 被动 md / 主动 md / 被动纯文本都失败 → 落到 ②，用去掉 msgId 的目标继续降级。
+                        plainTarget = { scope: target.scope, targetId: target.targetId };
                     }
                 }
                 // ── ② 纯主动(无 msgId) → 原有降级链: markdown → 纯文本 → c2c is_wakeup ──
                 {
-                    // ⚠️ 清洗仅针对 markdown 语法字符; QQ at 标签必须原样保留——
-                    // 实测(2026-09-06): 高亮 @ 用 `<@openid>`(无斜杠)或 `<qqbot-at-user id="openid" />`;
-                    // 剥掉 '>' 会把标签弄残 → QQ 不渲染。这里先把两类 at 标签暂存, 清洗完再恢复。
-                    const plain = String(content || '')
-                        .replace(/<qqbot-at-user\s+id="([A-Za-z0-9]+)"\s*\/>/g, '\u0001ATQ:$1\u0001')
-                        .replace(/<@([A-Za-z0-9]+)>/g, '\u0001ATA:$1\u0001')
-                        .replace(/[#*`_~>]/g, '')
-                        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-                        .replace(/\u0001ATQ:([A-Za-z0-9]+)\u0001/g, '<qqbot-at-user id="$1" />')
-                        .replace(/\u0001ATA:([A-Za-z0-9]+)\u0001/g, '<@$1>')
-                        .trim();
+                    // 纯文本形态统一由 toPlainText 产出（公式/at 标签整体保护，见其注释）
+                    const plain = toPlainText(content);
                     if (plain) {
                         try {
-                            const r2 = (await bot.sendText(target, plain));
-                            pushSent(target, r2?.id);
+                            const r2 = (await bot.sendText(plainTarget, plain));
+                            pushSent(plainTarget, r2?.id);
                             logger.warn(`主动推送 markdown 被拒, 已降级纯文本发送: ${firstErr}`);
                             return r2;
                         }
                         catch (err2) {
-                            if (target.scope === 'c2c') {
+                            if (plainTarget.scope === 'c2c') {
                                 try {
-                                    const r3 = (await bot.sendWakeup(target, plain));
-                                    pushSent(target, r3?.id);
+                                    const r3 = (await bot.sendWakeup(plainTarget, plain));
+                                    pushSent(plainTarget, r3?.id);
                                     logger.warn(`主动纯文本被拒, 已降级 is_wakeup 召回通道: ${err2 instanceof Error ? err2.message : String(err2)}`);
                                     return r3;
                                 }
