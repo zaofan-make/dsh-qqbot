@@ -265,8 +265,6 @@ async function sendRichOutboundNow(bot, target, text, limit, cwd, logError, reso
                         await bot.sendMarkdown(tgt, chunk);
                         sentStat.ok += 1;
                         onBlockSent?.(chunk, tgt);
-                        sentStat.ok += 1;
-                        onBlockSent?.(chunk, tgt);
                     }
                     catch (err) {
                         sentStat.failed += 1;

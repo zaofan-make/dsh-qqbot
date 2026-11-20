@@ -2030,9 +2030,7 @@ export class SessionManager {
                     catch { /* 改写失败不影响主链 */ }
                 }
                 // 先剔掉本批里已有的同类块（注入块会进事件、逐轮累积 ⇒ 用替换而不是追加）
-                // ★ 2026-11-20：latex-hint 块也要先剔旧（替换式，避免逐轮累积）
-                const _stripOldLatexHint = (arr) => arr.filter((m) => m?.source?.kind !== 'qqbot:latex-hint');
-                const _baseMsgs = _stripOldLatexHint(_stripOldCtxSmart(dec.messages));
+                const _baseMsgs = _stripOldCtxSmart(dec.messages);
                 // at 是按原数组算的：剔除后重新定位插入点（紧跟 claimed 之后）
                 const _claimedSet = new Set(Array.isArray(p.messages) ? p.messages : []);
                 let _at2 = 0;
@@ -2056,15 +2054,23 @@ export class SessionManager {
                 // ★ 2026-11-20：**数学公式提示独立成块**（维护手册 §11.39 铁律：自己的 kind + 自己的判重）。
                 //   不拼进群守则 body —— 那样开关切换时指纹判断容易漏，而且和群守则耦合。
                 //   内容固定（182 字符），用"剔旧再插"的替换式去重就够（见上面的 _stripOldLatexHint）。
-                // ⚠️ 2026-11-20 主人实测：**每轮都在重复注入**（上下文里越堆越多）。
-                //   根因：注入块进了 surface 历史，而 _stripOldLatexHint 只剔 dec.messages ⇒ 剔不掉。
-                //   修：跟群守则学 —— **按内容判断"上下文里有没有"**，有就跳过。
-                const LATEX_MARK = '【LaTeX】QQ 支持 LaTeX 渲染';
-                const _hasLatexInCtx = dec.messages.some((m) => {
-                    const c = m?.content;
-                    return Array.isArray(c) && c.some((b) => String(b?.text ?? '').includes(LATEX_MARK));
-                });
-                if (this.config.latexHint === true && !_hasLatexInCtx) {
+                // ⚠️ 2026-11-20 主人实测：**每轮都在重复注入**。
+                //   我一开始只查 dec.messages（本批），漏了 surface 历史 ⇒ 判断永远 false。
+                //   **照抄群守则的两步去重**（L1932-1955 同款）：
+                //     ① 本批 dec.messages 里有没有
+                //     ② session surface 历史里有没有（agent.session.eventAt 遍历）
+                const _hintInBatch = dec.messages.some((m) => m?.source?.kind === 'qqbot:latex-hint');
+                let _hintInSurface = false;
+                if (!_hintInBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+                    for (const seq of agent.session.surface.nodes) {
+                        const ev = agent.session.eventAt(seq);
+                        if (ev?.type === 'user/message' && ev.data?.source?.kind === 'qqbot:latex-hint') {
+                            _hintInSurface = true;
+                            break;
+                        }
+                    }
+                }
+                if (this.config.latexHint === true && !_hintInBatch && !_hintInSurface) {
                     extraAll.push({
                         role: 'user',
                         id: randomUUID(),

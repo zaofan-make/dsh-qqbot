@@ -360,8 +360,6 @@ async function sendRichOutboundNow(
             await bot.sendMarkdown(tgt, chunk);
             sentStat.ok += 1;
             onBlockSent?.(chunk, tgt);
-            sentStat.ok += 1;
-            onBlockSent?.(chunk, tgt);
           } catch (err) {
             sentStat.failed += 1;
             sentStat.lastError = err instanceof Error ? err.message : String(err);
