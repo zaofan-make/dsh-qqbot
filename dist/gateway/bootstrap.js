@@ -457,8 +457,9 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
      */
     const hasLatexPair = (text) => {
         const src = String(text || '');
-        // 被转义的 `$` 换成占位符 \u0001（长度不变，索引不错位），其余字符原样保留
-        const t = src.replace(/(\\*)\$/g, (m, bs) => bs.length % 2 === 1 ? '\\'.repeat(bs.length - 1) + '\u0001' : m);
+        // 被转义的 `$` 换成占位符 \u0001，**连反斜杠一起保留**（CodeRabbit #76 复审：
+        // 少留反斜杠会让字符串变短，行内 2000 / 块级 4000 的长度检查就被放宽了）
+        const t = src.replace(/(\\*)\$/g, (m, bs) => bs.length % 2 === 1 ? bs + '\u0001' : m);
         const marks = [];
         for (let i = 0; i < t.length; i += 1)
             if (t.charAt(i) === '$')
@@ -592,13 +593,22 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                     // ⚠️ 清洗仅针对 markdown 语法字符; QQ at 标签必须原样保留——
                     // 实测(2026-09-06): 高亮 @ 用 `<@openid>`(无斜杠)或 `<qqbot-at-user id="openid" />`;
                     // 剥掉 '>' 会把标签弄残 → QQ 不渲染。这里先把两类 at 标签暂存, 清洗完再恢复。
+                    // ★ 2026-11-20（CodeRabbit #76 复审）：LaTeX 公式同样要暂存 ——
+                    //   清洗会剥掉 `_` `*` `>` 等字符，而它们是公式的一部分（`x_1`、`a > b`），
+                    //   原来的写法会把公式改写成残缺。先把成对公式整体换成占位符，清洗后原样还原。
+                    const formulas = [];
                     const plain = String(content || '')
+                        .replace(/(\$\$[\s\S]{1,4000}?\$\$|\$[^$\n]{1,2000}\$)/g, (mm) => {
+                        formulas.push(mm);
+                        return `\u0001LF${formulas.length - 1}\u0001`;
+                    })
                         .replace(/<qqbot-at-user\s+id="([A-Za-z0-9]+)"\s*\/>/g, '\u0001ATQ:$1\u0001')
                         .replace(/<@([A-Za-z0-9]+)>/g, '\u0001ATA:$1\u0001')
                         .replace(/[#*`_~>]/g, '')
                         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
                         .replace(/\u0001ATQ:([A-Za-z0-9]+)\u0001/g, '<qqbot-at-user id="$1" />')
                         .replace(/\u0001ATA:([A-Za-z0-9]+)\u0001/g, '<@$1>')
+                        .replace(/\u0001LF(\d+)\u0001/g, (_mm, idx) => formulas[Number(idx)] ?? '')
                         .trim();
                     if (plain) {
                         try {
