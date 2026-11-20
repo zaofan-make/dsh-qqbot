@@ -32,6 +32,18 @@ export interface StreamSessionLike {
 /** QQ Bot 发送接口 */
 export interface QQBotSender {
   sendMarkdown(target: ReplyTarget, content: string): Promise<unknown>;
+  /**
+   * 纯文本消息（`msg_type=0`）。
+   *
+   * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道渲染**。
+   *   `$$\textcolor{#E74C3C}{\text{红}}$$` 走纯文本 → 正常显示红色；
+   *   走 markdown（`msg_type=2`）→ 显示成源码。
+   *
+   *   所以正文里出现 `$$…$$` 时要降级走这条（见 `sendRichOutbound` 的 latex 分支）。
+   *
+   * 可选：老宿主/SDK 未必暴露，没有就继续用 markdown。
+   */
+  sendText?(target: ReplyTarget, content: string): Promise<unknown>;
   /** 发送带内联按钮(keyboard)的 markdown 消息 —— 审批卡片/提问卡片用 */
   sendMarkdownWithKeyboard(
     target: ReplyTarget,
@@ -75,6 +87,23 @@ const outboundSends = new WeakMap<QQBotSender, Map<string, Promise<void>>>();
  * 用于「适配主动」出站: 同一条入站消息的连续回复数到限后自动切主动(去掉 msg_id)。
  * 注意: [RECALL] 撤回动作不消耗计数, 固定用传入 target。
  */
+/**
+ * 这一段里有没有 LaTeX 公式（`$…$`）。
+ *
+ * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道（msg_type=0）渲染**。
+ *   走 markdown（msg_type=2）的话，`$\textcolor{#E74C3C}{\text{红}}$` 会原样显示成源码。
+ *
+ * 判据故意收得比较紧：
+ *   · 必须成对出现 `$` … `$`（允许跨行）
+ *   · 中间至少有一个非空白字符
+ *   · 上限 4000 字符，防止把"$ 在开头、$ 在结尾"的超长正文误判
+ */
+const LATEX_RE = /\$\$[\s\S]{1,4000}?\$\$/;
+
+export function hasLatexFormula(text: string): boolean {
+  return LATEX_RE.test(text);
+}
+
 export async function sendRichOutbound(
   bot: QQBotSender,
   target: ReplyTarget,
@@ -329,6 +358,8 @@ async function sendRichOutboundNow(
           try { if (tgt.scope === 'group') rememberBotReply(tgt.targetId, chunk); } catch { /* ignore */ }
           try {
             await bot.sendMarkdown(tgt, chunk);
+            sentStat.ok += 1;
+            onBlockSent?.(chunk, tgt);
             sentStat.ok += 1;
             onBlockSent?.(chunk, tgt);
           } catch (err) {

@@ -17,6 +17,21 @@ const outboundSends = new WeakMap();
  * 用于「适配主动」出站: 同一条入站消息的连续回复数到限后自动切主动(去掉 msg_id)。
  * 注意: [RECALL] 撤回动作不消耗计数, 固定用传入 target。
  */
+/**
+ * 这一段里有没有 LaTeX 公式（`$…$`）。
+ *
+ * ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道（msg_type=0）渲染**。
+ *   走 markdown（msg_type=2）的话，`$\textcolor{#E74C3C}{\text{红}}$` 会原样显示成源码。
+ *
+ * 判据故意收得比较紧：
+ *   · 必须成对出现 `$` … `$`（允许跨行）
+ *   · 中间至少有一个非空白字符
+ *   · 上限 4000 字符，防止把"$ 在开头、$ 在结尾"的超长正文误判
+ */
+const LATEX_RE = /\$\$[\s\S]{1,4000}?\$\$/;
+export function hasLatexFormula(text) {
+    return LATEX_RE.test(text);
+}
 export async function sendRichOutbound(bot, target, text, limit, cwd, logError, resolveTarget, 
 /** 逐文本块目标(2026-09-10 主人定 passive 收尾): 传 (块序号i, 总块数total)=>ReplyTarget,
  *  用于「正文块>5 时第 6 块起转主动发送」; undefined=所有块用 resolveTarget/固定 target */
@@ -248,6 +263,8 @@ async function sendRichOutboundNow(bot, target, text, limit, cwd, logError, reso
                     catch { /* ignore */ }
                     try {
                         await bot.sendMarkdown(tgt, chunk);
+                        sentStat.ok += 1;
+                        onBlockSent?.(chunk, tgt);
                         sentStat.ok += 1;
                         onBlockSent?.(chunk, tgt);
                     }

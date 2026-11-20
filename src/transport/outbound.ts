@@ -8,7 +8,7 @@ import type { SessionManager, SessionRecord } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
-import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
+import { OutboundBuffer, sendRichOutbound, type QQBotSender, hasLatexFormula } from './outbound-buffer.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -874,6 +874,28 @@ class OutboundRouter {
       //   ⇒ 先规范化成单行合法语法，再上传/发送。
       const normalized = normalizeMarkdownImages(text);
       const outText = await rewriteLocalMarkdownImages(normalized, mdTarget as never);
+
+      // ★ 2026-11-20 主人实测：**LaTeX 只在纯文本通道（msg_type=0）渲染**。
+      //   `$$\textcolor{#E74C3C}{\text{红}}$$` 走 markdown（msg_type=2）会原样显示成源码。
+      //   ⇒ 跟下面「含 qqbot-media 必须走 markdown」同一层做反向判断。
+      //
+      //   优先级：**图优先**。既含图又含公式时，图必须走 markdown（纯文本不渲染图），
+      //   公式那边只能牺牲（会显示源码）—— 图文混排本来就不是 LaTeX 的主场。
+      const hasMedia = outText.indexOf('qqbot-media://') >= 0;
+      if (!hasMedia && hasLatexFormula(outText) && typeof this.bot.sendText === 'function') {
+        try {
+          await this.bot.sendText(this.activeTarget(_record), outText);
+          this.logger.debug('im-qqbot: 含 LaTeX 公式 → 降级走纯文本通道');
+          return;
+        } catch (err) {
+          this.logger.warn(
+            'im-qqbot: LaTeX 降级纯文本失败，回落 markdown: '
+            + (err instanceof Error ? err.message : String(err)),
+          );
+          // 失败不 return，让它继续往下走原来的 markdown 路径
+        }
+      }
+
       // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
       if (outText.indexOf('qqbot-media://') >= 0) {
         try {
