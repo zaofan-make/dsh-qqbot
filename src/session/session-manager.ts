@@ -1526,10 +1526,6 @@ export class SessionManager {
         const cwd = String(agent?.session?.header?.cwd ?? '');
         const ns = this.nsForCwd(cwd);
         if (!ns) return decision; // 非本 bot agent, 不注入
-        // ★ 2026-11-20 审查第 8 条：**两个实例配同一 cwd 时 nsForCwd 都返回同一 ns**，
-        //   ⇒ 两个根 pre-step 监听器都会给同一会话注入（重复）。cwd 不足以定归属。
-        //   再加一道：这个 agent 必须是**我管理的那个**（与本文件其它注入点同款判据）。
-        if (!this.findByAgent(agent as never)) return decision;
         const dec = decision as { kind?: string; messages?: unknown[] };
         // ★ 2026-10-10：本步若是 aborted/interrupted（点"停止生成" / 闸门 self-cancel / 崩溃恢复），
         //   给该会话打个"刚被中止"点 ⇒ 之后插进来的消息不再被误标成 "[插话]…" 前缀（见 debounce.ts）
@@ -2059,7 +2055,12 @@ export class SessionManager {
             }
           }
         }
-        if (this.config.latexHint === true && !_hintInBatch && !_hintInSurface) {
+        // ⚠️ 2026-11-20 审查（第二轮）：**归属校验只能管这一段，不能提前 return 整个回调**。
+        //   findByAgent 只查 this.sessions，而 resumeHostAgent 不写这个表 ——
+        //   重启/回收后从 Web 打开的 QQ 会话在它眼里是 undefined。
+        //   要是放在函数开头提前 return，小传注入 / peopleMemoInWeb / contextlessMode 全都不执行了。
+        const _ownedByMe = !!this.findByAgent(agent as never);
+        if (this.config.latexHint === true && _ownedByMe && !_hintInBatch && !_hintInSurface) {
           extraAll.push({
             role: 'user',
             id: randomUUID(),
