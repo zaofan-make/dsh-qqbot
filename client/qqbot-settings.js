@@ -382,6 +382,7 @@ window.__ModuleLoader__.load({
             { v: 'regex', label: '按下面的正则拦截' },
           ] },
           { k: 'turnErrorSilentPattern', kw: '报错 正则 拦截 过滤 静默 错误码', t: 'str', wide: true, label: '上面的「正则」模式用: 匹配 错误码+错误信息(不区分大小写, 命中就静默、其余照常发)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截', def: '' },
+          { k: 'latexHint', kw: 'latex 数学 公式 彩色 颜色 上色 富文本 math', t: 'bool', label: '数学公式提示(默认关): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX」，可以输出行内公式 $E=mc^2$、居中公式 $$…$$、彩色字 $\\textcolor{#E74C3C}{\\text{重点}}$。⚠️ 只在支持 LaTeX 的客户端生效，旧版 QQ 会显示成源码', def: false },
           { k: 'imageAggregate.enabled', kw: '图片 聚合 拼接 多图 长图 缩略', t: 'bool', label: '图片聚合(默认关): 连续收到的几张图竖向拼成一张长图, 随那条唤醒的消息一起进上下文(只对能读图的模型生效)', def: false },
           { k: 'imageAggregate.max', kw: '图片 聚合 数量 上限 几张', t: 'num', label: '聚合数量上限(1~8): 环形缓冲, 最新的排最下面、最旧的排最上面; 已经聚合过的图不再重复聚合', def: 4 },
           { k: 'messageReference', kw: '引用 消息号 原文 rf 回复某条', t: 'bool', label: '引用消息(默认开): 入站消息带短消息号(本地台账索引,省token) + 引用消息附原文; AI 用 [rf:短号] 引用对方消息', def: true },
@@ -1921,6 +1922,7 @@ window.__ModuleLoader__.load({
             return ['notify', 'friendly', 'silent', 'regex'].indexOf(m) >= 0 ? m : 'notify';
           })(),
           turnErrorSilentPattern: String(v.turnErrorSilentPattern || ''),
+          latexHint: typeof v.latexHint === 'boolean' ? v.latexHint : undefined,
           imageAggregate: {
             enabled: !!(v.imageAggregate && v.imageAggregate.enabled),
             max: (v.imageAggregate && typeof v.imageAggregate.max === 'number') ? v.imageAggregate.max : 4,
