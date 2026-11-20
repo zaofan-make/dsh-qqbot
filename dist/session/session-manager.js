@@ -1911,11 +1911,7 @@ export class SessionManager {
                 //   ⇒ 每个 pre-step 都重注整段群守则(~1910 字符)，副本作为 user/message 留在 surface
                 //   里被长期重放，每步都在白烧 token。
                 //   改用**群守则内容指纹**判重：内容没变就不再注；群守则改了会自动重注一次。
-                // ★ 2026-11-20：latexHint 开关也拼进 rules —— 开关一拨 rulesFp 跟着变，会自动重注一次。
-                //   否则用户勾了开关却看不到变化，得等下次上下文清空才生效。
-                const rulesWithHint = [rules.trim(), this.config.latexHint === true ? LATEX_HINT_BLOCK : '']
-                    .filter(Boolean).join('\n\n');
-                const rulesFp = (rulesWithHint.trim() || FIXED_CHANNEL_CONTEXT.trim()).slice(0, 60);
+                const rulesFp = (rules.trim() || FIXED_CHANNEL_CONTEXT.trim()).slice(0, 60);
                 let skipGroupRules = false; // 群守则已在上下文里 → 只跳过它，不影响智能提示注入
                 // ★ 2026-10-01 正解：把「话题判断 + 备忘」拼进群守则这条 body —— 与它**共用同一套去重**
                 //   （下面的 inBatch + surface 历史比对）。人家先前的独立注入靠 step/turn/时间窗判重，
@@ -1924,7 +1920,7 @@ export class SessionManager {
                 //   备忘会逐轮变化，所以下面的去重只比对固定部分（CTX_SMART_REMINDER），不受备忘影响。
                 // ⚠️ 2026-11-10 修：memoLine **不能拼进 body** —— body 会被"群守则已在上下文里"的去重整体跳过
                 //   （skipGroupRules），于是小传从此再也注不进去。小传单独成块，自己判自己的重。
-                const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rulesWithHint, ctxSmartText].filter(Boolean).join('\n\n');
+                const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), ctxSmartText].filter(Boolean).join('\n\n');
                 if (!body)
                     return decision;
                 const text = `<system-reminder>\n${body}\n</system-reminder>`;
@@ -2034,7 +2030,9 @@ export class SessionManager {
                     catch { /* 改写失败不影响主链 */ }
                 }
                 // 先剔掉本批里已有的同类块（注入块会进事件、逐轮累积 ⇒ 用替换而不是追加）
-                const _baseMsgs = _stripOldCtxSmart(dec.messages);
+                // ★ 2026-11-20：latex-hint 块也要先剔旧（替换式，避免逐轮累积）
+                const _stripOldLatexHint = (arr) => arr.filter((m) => m?.source?.kind !== 'qqbot:latex-hint');
+                const _baseMsgs = _stripOldLatexHint(_stripOldCtxSmart(dec.messages));
                 // at 是按原数组算的：剔除后重新定位插入点（紧跟 claimed 之后）
                 const _claimedSet = new Set(Array.isArray(p.messages) ? p.messages : []);
                 let _at2 = 0;
@@ -2054,6 +2052,18 @@ export class SessionManager {
                         source: { kind: 'qqbot:people-memo', form: 'instructions', ns },
                     });
                     this.logger?.info?.(`[小传] 注入 ${memoLine.length} 字 (session=${recMemo?.sessionKey ?? '?'})`);
+                }
+                // ★ 2026-11-20：**数学公式提示独立成块**（维护手册 §11.39 铁律：自己的 kind + 自己的判重）。
+                //   不拼进群守则 body —— 那样开关切换时指纹判断容易漏，而且和群守则耦合。
+                //   内容固定（182 字符），用"剔旧再插"的替换式去重就够（见上面的 _stripOldLatexHint）。
+                if (this.config.latexHint === true) {
+                    extraAll.push({
+                        role: 'user',
+                        id: randomUUID(),
+                        content: [{ type: 'text', text: `<system-reminder>` + String.fromCharCode(10) + LATEX_HINT_BLOCK + String.fromCharCode(10) + `</system-reminder>` }],
+                        source: { kind: 'qqbot:latex-hint', form: 'instructions', ns },
+                    });
+                    this.logger?.debug?.('[latexHint] 注入数学公式提示');
                 }
                 const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
                 return { ...dec, messages: entered };
