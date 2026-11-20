@@ -465,45 +465,62 @@ export async function bootstrapGateway(
     }
   };
   /**
-   * 正文里是否有成对的 LaTeX 公式（行内 `$…$` 或独占行 `$$…$$`）。
+   * 扫出正文里所有**成对**的 LaTeX 公式区间（返回原文本上的 `[start, end)` 偏移）。
    *
    * ★ 2026-11-20 主人实测纠错：**只有 msg_type=2（markdown 通道）才渲染 LaTeX**；
-   *   纯文本通道（msg_type=0）会原样显示成源码。所以成对 `$` 必须算作"有 markdown 语法"。
-   * 判据（按 CodeRabbit #76 两条意见收紧）：
-   *   · `$` 前连续反斜杠为**奇数个**才算被转义 —— `\\$x$` 里那个 `$` 仍是公式起始，
-   *     `$\$$` 里的 `\$` 属于公式内容；被转义的 `$` 只换成占位符，公式内容原样保留
-   *   · 公式内容必须含**非空白字符**（`$ $` / `$$ $$` 不算，别白耗 markdown 频控额度）
-   *   · 行内公式不跨行、内容 ≤2000 字符；块级 `$$…$$` 允许跨行、≤4000 字符
+   *   纯文本通道（msg_type=0）会原样显示成源码。所以成对 `$` 必须算作"有 markdown 语法"，
+   *   纯文本兜底清洗时也必须把这些区间整体保护起来（否则 `_` `*` `>` 会被剥坏）。
+   *
+   * 判据（按 CodeRabbit #76 五轮意见收敛）：
+   *   · `$` 前连续反斜杠为**奇数个**才算被转义；被转义的 `$` 一律不能当起止分隔符
+   *     （`\$19.9，公式 $x_1$` 只认后一个公式，前面那个是价格）
+   *   · 内容必须含非空白字符（`$ $` / `$$ $$` 不算，别白耗 markdown 频控额度）
+   *   · 行内不跨行、≤2000 字符；块级 `$$…$$` 可跨行、≤4000 字符
+   *   · 归一化把转义 `$` 换成占位符，但**长度不变**（否则长度上限被放宽、偏移也错位）
    */
-  const hasLatexPair = (text: string): boolean => {
+  const scanLatexRanges = (text: string): Array<[number, number]> => {
     const src = String(text || '');
-    // 被转义的 `$` 换成占位符 \u0001，**连反斜杠一起保留**（CodeRabbit #76 复审：
-    // 少留反斜杠会让字符串变短，行内 2000 / 块级 4000 的长度检查就被放宽了）
     const t = src.replace(/(\\*)\$/g, (m: string, bs: string) =>
       bs.length % 2 === 1 ? bs + '\u0001' : m,
     );
     const marks: number[] = [];
     for (let i = 0; i < t.length; i += 1) if (t.charAt(i) === '$') marks.push(i);
-    for (let k = 0; k < marks.length - 1; k += 1) {
+    const ranges: Array<[number, number]> = [];
+    let k = 0;
+    while (k < marks.length - 1) {
       const start = marks[k]!;
       const next = marks[k + 1]!;
       // ① 块级 `$$…$$`：开头的两个 `$` 必须相邻，闭合处同理
       if (next === start + 1) {
+        let done = false;
         for (let m = k + 2; m < marks.length - 1; m += 1) {
           const end = marks[m]!;
           if (marks[m + 1] !== end + 1) continue;
           if (end - start - 2 > 4000) break;
-          if (/\S/.test(t.slice(start + 2, end))) return true;
+          if (/\S/.test(t.slice(start + 2, end))) {
+            ranges.push([start, end + 2]);
+            k = m + 2;
+            done = true;
+            break;
+          }
         }
+        if (done) continue;
+        k += 1;
         continue;
       }
       // ② 行内 `$…$`：与**下一个**未转义 `$` 配对，内容非空白、不跨行、≤2000 字符
       const body = t.slice(start + 1, next);
-      if (body.length > 2000 || /[\r\n]/.test(body)) continue;
-      if (/\S/.test(body)) return true;
+      if (body.length <= 2000 && !/[\r\n]/.test(body) && /\S/.test(body)) {
+        ranges.push([start, next + 1]);
+        k += 2;
+        continue;
+      }
+      k += 1;
     }
-    return false;
+    return ranges;
   };
+  /** 正文里是否有成对的 LaTeX 公式（复用 scanLatexRanges —— 判定与保护必须同一套规则） */
+  const hasLatexPair = (text: string): boolean => scanLatexRanges(text).length > 0;
   // 出站富媒体降级判定: 内容无 markdown 语法(且无 @提及/qqbot 标签)→ 走纯文本通道(msg_type:0),
   // 避开 QQ 对 markdown 富媒体的严格频控(实测连发 5 条 markdown 后静默被拦)。
   const hasMarkdownSyntax = (text: string): boolean => {
@@ -616,18 +633,22 @@ export async function bootstrapGateway(
           // ⚠️ 清洗仅针对 markdown 语法字符; QQ at 标签必须原样保留——
           // 实测(2026-09-06): 高亮 @ 用 `<@openid>`(无斜杠)或 `<qqbot-at-user id="openid" />`;
           // 剥掉 '>' 会把标签弄残 → QQ 不渲染。这里先把两类 at 标签暂存, 清洗完再恢复。
-          // ★ 2026-11-20（CodeRabbit #76 复审）：LaTeX 公式同样要暂存 ——
-          //   清洗会剥掉 `_` `*` `>` 等字符，而它们是公式的一部分（`x_1`、`a > b`），
-          //   原来的写法会把公式改写成残缺。先把成对公式整体换成占位符，清洗后原样还原。
+          // ★ 2026-11-20（CodeRabbit #76 多轮）：LaTeX 公式同样要暂存 ——
+          //   清洗会剥掉 `_` `*` `>` 等字符，而它们是公式的一部分（`x_1`、`a > b`）。
+          //   区间由 scanLatexRanges 给出（与 hasLatexPair 同一套转义/配对规则），
+          //   不再用正则另写一份 —— 否则起始 `$` 的转义判断、`\$$` 截断这类问题会反复漏。
           const formulas: string[] = [];
-          const plain = String(content || '')
-            // · 行内允许转义序列（`\\.`），`$x_1 + \$y_2$` 不会在 `\$` 处提前截断
-            // · 块级内容同样要认转义：`$$ … \$$ … $$` 里的 `\$$` 不能当成结束标记
-            //   （CodeRabbit #76 四轮：原来会在 `\$$` 处提前结束，剩余部分被清洗剥掉 `_`）
-            .replace(/(\$\$(?:[^\\$]|\\[\s\S]|\$(?!\$)){1,4000}?\$\$|\$(?:[^$\\\r\n]|\\.){1,2000}\$)/g, (mm) => {
-              formulas.push(mm);
-              return `\u0001LF${formulas.length - 1}\u0001`;
-            })
+          const contentStr = String(content || '');
+          let protectedText = '';
+          let cursor = 0;
+          for (const [s, e] of scanLatexRanges(contentStr)) {
+            protectedText += contentStr.slice(cursor, s);
+            formulas.push(contentStr.slice(s, e));
+            protectedText += `\u0001LF${formulas.length - 1}\u0001`;
+            cursor = e;
+          }
+          protectedText += contentStr.slice(cursor);
+          const plain = protectedText
             .replace(/<qqbot-at-user\s+id="([A-Za-z0-9]+)"\s*\/>/g, '\u0001ATQ:$1\u0001')
             .replace(/<@([A-Za-z0-9]+)>/g, '\u0001ATA:$1\u0001')
             .replace(/[#*`_~>]/g, '')
