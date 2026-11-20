@@ -21,6 +21,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
+import { LATEX_HINT_BLOCK } from '../config.js';
 import { takePendingMemo, recallLines } from '../features/people-memo.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
@@ -1895,7 +1896,11 @@ export class SessionManager {
         //   ⇒ 每个 pre-step 都重注整段群守则(~1910 字符)，副本作为 user/message 留在 surface
         //   里被长期重放，每步都在白烧 token。
         //   改用**群守则内容指纹**判重：内容没变就不再注；群守则改了会自动重注一次。
-        const rulesFp = (rules.trim() || FIXED_CHANNEL_CONTEXT.trim()).slice(0, 60);
+        // ★ 2026-11-20：latexHint 开关也拼进 rules —— 开关一拨 rulesFp 跟着变，会自动重注一次。
+        //   否则用户勾了开关却看不到变化，得等下次上下文清空才生效。
+        const rulesWithHint = [rules.trim(), this.config.latexHint === true ? LATEX_HINT_BLOCK : '']
+          .filter(Boolean).join('\n\n');
+        const rulesFp = (rulesWithHint.trim() || FIXED_CHANNEL_CONTEXT.trim()).slice(0, 60);
         let skipGroupRules = false;   // 群守则已在上下文里 → 只跳过它，不影响智能提示注入
         // ★ 2026-10-01 正解：把「话题判断 + 备忘」拼进群守则这条 body —— 与它**共用同一套去重**
         //   （下面的 inBatch + surface 历史比对）。人家先前的独立注入靠 step/turn/时间窗判重，
@@ -1904,7 +1909,7 @@ export class SessionManager {
         //   备忘会逐轮变化，所以下面的去重只比对固定部分（CTX_SMART_REMINDER），不受备忘影响。
         // ⚠️ 2026-11-10 修：memoLine **不能拼进 body** —— body 会被"群守则已在上下文里"的去重整体跳过
         //   （skipGroupRules），于是小传从此再也注不进去。小传单独成块，自己判自己的重。
-        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), ctxSmartText].filter(Boolean).join('\n\n');
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rulesWithHint, ctxSmartText].filter(Boolean).join('\n\n');
         if (!body) return decision;
         const text = `<system-reminder>\n${body}\n</system-reminder>`;
         const desired = {

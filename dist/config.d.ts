@@ -272,6 +272,15 @@ export interface EditableConfig {
     /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
     turnErrorSilentPattern?: string;
     /**
+     * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
+     *
+     * 勾上后往系统提示词里注入一段提醒：QQ 支持 LaTeX，可以输出 `$…$`（行内）或 `$$…$$`（独占行居中），
+     * 用 `\textcolor{#hex}{…}` 上色。
+     *
+     * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
+     */
+    latexHint?: boolean;
+    /**
      * 开新档时自动归档旧会话（默认开）。
      * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
      * 旧档仍可被 QQ 消息拉回可见（unarchiveSession 那条腿不动）。
@@ -358,6 +367,13 @@ export declare const DEFAULT_GROUP_PROMPT: string;
  * 保证任何 AI/任何预设都会收到 QQ 通道的基础使用规则(即使群守则被清空/覆盖)。
  */
 export declare const FIXED_CHANNEL_CONTEXT: string;
+/**
+ * 数学公式 / 彩色字提示（2026-11-20 主人要，配置项 `latexHint` 控制，默认关）。
+ *
+ * **内容固定**，所以跟群守则同频、共用同一套去重（拼进 rules，指纹自然跟着变）。
+ * 只有清空上下文 / 开关切换时才重注 —— 不是小传那种"每轮都可能变"的东西。
+ */
+export declare const LATEX_HINT_BLOCK: string;
 /**
  * 引用消息能力说明(2026-09-13 主人定; 短消息号版): 开启 messageReference 时随群守则一起注入。
  * 教 AI ①入站消息带短"消息号"(如 #0913a) ②出站用 [rf:消息号] 引用对方。
@@ -446,6 +462,15 @@ export interface ImQQBotConfig {
     turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
     /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
     turnErrorSilentPattern?: string;
+    /**
+     * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
+     *
+     * 勾上后往系统提示词里注入一段提醒：QQ 支持 LaTeX，可以输出 `$…$`（行内）或 `$$…$$`（独占行居中），
+     * 用 `\textcolor{#hex}{…}` 上色。
+     *
+     * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
+     */
+    latexHint?: boolean;
     /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
     imageOffload?: boolean;
     /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
