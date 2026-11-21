@@ -15,7 +15,7 @@ import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { parseStreamFrame } from '../transport/events.js';
 import { setMaterialTargetFactory, rewriteLocalMarkdownImages, lastMediaRewrite } from '../features/md-media-rewrite.js';
 import { resolveAutoRecall } from '../features/auto-recall.js';
-import { registerOutboundOwner } from '../features/ext-outbound.js';
+import { registerOutboundOwner, setOutboundLastCtxFallback } from '../features/ext-outbound.js';
 import type { ToolsRegistryLike } from '../transport/tool-presenter.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import { buildUserAgent } from '../shared/index.js';
@@ -29,6 +29,7 @@ import { setImageAggregateHooks, initAggregateRegistry, noteOurAttachment } from
 import { configureStickerStore } from '../features/sticker-store.js';
 import { initStickerGate, bindStickerGates, flushStickerGate, getStickerGate, StickerGateDenied } from '../features/sticker-gate.js';
 import { startScheduler } from '../features/scheduler.js';
+import { rememberUserName, prefetchUserName, prefetchGroupName } from '../features/session-kind.js';
 import { startJoinRequestPolling } from '../features/poll-join-requests.js';
 import { configureScheduleStore, getScheduleStore } from '../features/schedule-store.js';
 import { initContextlessStore, traceContextless, describeStorePath } from '../features/contextless-store.js';
@@ -321,6 +322,24 @@ export async function bootstrapGateway(
         text: inText,
         kind: inKind,
       });
+      // ★ 2026-11-21（issue #79）：会话类型标注要用的名字 —— 入站时顺手记下 + 后台预取（不阻塞）
+      //   群聊：GET /v2/groups/{openid}/info → group_name（30 QPM，失败/无权限就留空）
+      //   私聊：先把消息自带 senderName 记下，再用 GET /v2/users/{openid}/info 补
+      try {
+        const nm = String((msg as { senderName?: string }).senderName ?? '').trim();
+        // ★ 2026-11-21：#79 的名字只走官方 API，**与「群管理功能开不开」无关**。
+        //   `groupAdmin.enabled=false` 时那个 getter 恒为 undefined ⇒ 群名永远取不到；
+        //   `mediaApi` 是用 appId/appSecret 现建的轻量客户端（见 SessionManager.mediaApi 注释），永远可用。
+        const ga = manager.groupAdmin ?? manager.mediaApi;
+        const pid = String(rPeer ?? '');
+        const botId = String((config as { appId?: string }).appId ?? '');
+        if (rScope === 'c2c') {
+          if (nm) rememberUserName(botId, pid, nm);
+          prefetchUserName(ga, botId, pid);
+        } else {
+          prefetchGroupName(ga, botId, pid);
+        }
+      } catch { /* 名字只是锦上添花，失败不影响入站 */ }
     } catch { /* 缓冲失败不影响主流程 */ }
 
     // 自动撤回（2026-10-20 主人定）: 命中关键词/附件类型 → **立刻撤回**（不等 AI）。
@@ -1176,6 +1195,9 @@ export async function bootstrapGateway(
   //   middleware-setup 里登记的是 SDK 的 bot，但 createOutboundHandler 传的是上面这个 sender
   //   —— 两个对象不同 ⇒ WeakMap 永远 miss ⇒ 多实例下所有出站都会跳过扩展。这里补登记 sender。
   try { registerOutboundOwner(dataRootOf(config), sender); } catch { /* 登记失败不影响发送 */ }
+  // ★ 2026-11-21（issue #78）：扩展 `send()` 无 target 时默认**拒发**（fail-closed），
+  //   避免回落"最近活跃会话"造成跨会话串台。要旧行为就把 outboundLastCtxFallback 打开。
+  try { setOutboundLastCtxFallback(sender, config.outboundLastCtxFallback === true); } catch { /* ignore */ }
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);
   (ctx as unknown as { on(event: string, handler: (...args: unknown[]) => void): void })
     .on('session/event', outboundHandler as (...args: unknown[]) => void);

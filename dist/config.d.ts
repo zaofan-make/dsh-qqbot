@@ -271,6 +271,27 @@ export interface EditableConfig {
     turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
     /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
     turnErrorSilentPattern?: string;
+    /** 按渠道覆盖回合异常策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+    turnErrorModeByScope?: {
+        group?: string;
+        c2c?: string;
+    };
+    /** 工具报错策略（issue #77，默认 notify）：notify=原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截 */
+    toolErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
+    /** `toolErrorMode: 'regex'` 的匹配式（不区分大小写，匹配渲染后的 ❌ 文本）。留空=不拦截 */
+    toolErrorSilentPattern?: string;
+    /** 按渠道覆盖工具报错策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+    toolErrorModeByScope?: {
+        group?: string;
+        c2c?: string;
+    };
+    /**
+     * 扩展调 `send()` **没给 target** 时，是否回落到"最近一次出站的会话"（issue #78，默认 **false**）。
+     *
+     * 旧行为是回落 ⇒ 多会话并发下会串台（实测：私聊任务的思考草稿发进了无关的群）。
+     * 业界（Slack/Telegram/Discord）都是"没有 channel 就拒发"。要兼容旧扩展再打开。
+     */
+    outboundLastCtxFallback?: boolean;
     /**
      * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
      *
@@ -280,6 +301,16 @@ export interface EditableConfig {
      * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
      */
     latexHint?: boolean;
+    /**
+     * 会话类型标注（issue #79，默认 **true**）。
+     *
+     * 私聊与群聊的注入格式几乎同构，模型会靠猜（实测把私聊判成群聊）。
+     * 开启后，每个会话**第一次**给模型注入一条独立的事件（`source.kind = 'qqbot:session-kind'`）：
+     *   `[当前会话] 渠道=QQ 群聊 · 群名「xxx」` / `渠道=QQ 私聊 · 对方「xxx」`
+     * 群名走官方 `GET /v2/groups/{openid}/info`、昵称走 `GET /v2/users/{openid}/info`（都带缓存）；
+     * 取不到就只写渠道，不编名字。
+     */
+    sessionKindHint?: boolean;
     /**
      * 开新档时自动归档旧会话（默认开）。
      * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
@@ -462,6 +493,27 @@ export interface ImQQBotConfig {
     turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
     /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
     turnErrorSilentPattern?: string;
+    /** 按渠道覆盖回合异常策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+    turnErrorModeByScope?: {
+        group?: string;
+        c2c?: string;
+    };
+    /** 工具报错策略（issue #77，默认 notify）：notify=原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截 */
+    toolErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
+    /** `toolErrorMode: 'regex'` 的匹配式（不区分大小写，匹配渲染后的 ❌ 文本）。留空=不拦截 */
+    toolErrorSilentPattern?: string;
+    /** 按渠道覆盖工具报错策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+    toolErrorModeByScope?: {
+        group?: string;
+        c2c?: string;
+    };
+    /**
+     * 扩展调 `send()` **没给 target** 时，是否回落到"最近一次出站的会话"（issue #78，默认 **false**）。
+     *
+     * 旧行为是回落 ⇒ 多会话并发下会串台（实测：私聊任务的思考草稿发进了无关的群）。
+     * 业界（Slack/Telegram/Discord）都是"没有 channel 就拒发"。要兼容旧扩展再打开。
+     */
+    outboundLastCtxFallback?: boolean;
     /**
      * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
      *
@@ -471,6 +523,16 @@ export interface ImQQBotConfig {
      * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
      */
     latexHint?: boolean;
+    /**
+     * 会话类型标注（issue #79，默认 **true**）。
+     *
+     * 私聊与群聊的注入格式几乎同构，模型会靠猜（实测把私聊判成群聊）。
+     * 开启后，每个会话**第一次**给模型注入一条独立的事件（`source.kind = 'qqbot:session-kind'`）：
+     *   `[当前会话] 渠道=QQ 群聊 · 群名「xxx」` / `渠道=QQ 私聊 · 对方「xxx」`
+     * 群名走官方 `GET /v2/groups/{openid}/info`、昵称走 `GET /v2/users/{openid}/info`（都带缓存）；
+     * 取不到就只写渠道，不编名字。
+     */
+    sessionKindHint?: boolean;
     /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
     imageOffload?: boolean;
     /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */

@@ -1,3 +1,6 @@
+/** reasoning-bus —— 思考流广播（issue #78 / CodeRabbit #80） */
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 /**
  * reasoning-bus.ts — 把「思考(reasoning)流」喂给扩展（2026-10-20）
  *
@@ -26,25 +29,53 @@ export interface ReasoningTarget {
 export type ReasoningDeltaFn = (agentId: string, text: string, target?: ReasoningTarget) => void;
 export type ReasoningTurnFn = (agentId: string, info: { hasReply: boolean }) => void;
 
-const deltaFns = new Set<ReasoningDeltaFn>();
-const turnFns = new Set<ReasoningTurnFn>();
+/**
+ * 回调 → 归属实例（dataRoot）。
+ *
+ * ★ CodeRabbit #80：清理必须与"重载哪个实例"对齐 —— 全局 Set 一清就把**别的实例**的
+ *   回调也删了，而那些实例不会重新加载扩展 ⇒ 它们的思考转发从此静默停摆。
+ *   所以按归属记，`clearReasoningHandlers(owner)` 只删这个实例的。
+ */
+const deltaFns = new Map<ReasoningDeltaFn, string>();
+const turnFns = new Map<ReasoningTurnFn, string>();
+
+/**
+ * 当前正在装载哪个实例的扩展。
+ *
+ * ★ CodeRabbit #80（第 2 轮）：不能用一个普通全局变量 —— 装载是 `await import()`，
+ *   两个实例并发装载时后一个会把前一个的 owner 覆盖掉，回调就被记到别人名下。
+ *   用 AsyncLocalStorage：归属跟着这次异步调用走，天然不受并发影响。
+ */
+const ownerStore = new AsyncLocalStorage<string>();
+
+/** 在"这批回调属于 owner"的上下文里执行装载（ext-outbound 用） */
+export function runWithReasoningOwner<T>(owner: string, fn: () => T): T {
+  return ownerStore.run(String(owner || ''), fn);
+}
+
+const currentOwner = (): string => ownerStore.getStore() ?? '';
+
+/** 兼容旧调用（同步设置 owners 已不适用，保留空实现避免外部报错） */
+export function setReasoningOwner(owner: string): void {
+  void owner;
+}
 
 /** 注册思考增量回调（返回取消函数） */
 export function onReasoningDelta(fn: ReasoningDeltaFn): () => void {
-  deltaFns.add(fn);
+  deltaFns.set(fn, currentOwner());
   return () => deltaFns.delete(fn);
 }
 
 /** 注册回合结束回调（返回取消函数） */
 export function onReasoningTurnEnd(fn: ReasoningTurnFn): () => void {
-  turnFns.add(fn);
+  turnFns.set(fn, currentOwner());
   return () => turnFns.delete(fn);
 }
 
 /** 内核调用：来了一段思考增量 */
 export function feedReasoning(agentId: string, text: string, target?: ReasoningTarget): void {
   if (!agentId || !text) return;
-  for (const fn of deltaFns) {
+  for (const fn of deltaFns.keys()) {
     try {
       fn(agentId, text, target);
     } catch { /* 扩展自己抛错不能影响消息流 */ }
@@ -54,13 +85,107 @@ export function feedReasoning(agentId: string, text: string, target?: ReasoningT
 /** 内核调用：本回合结束（hasReply = 该回合是否真的产出过正文增量） */
 export function endReasoningTurn(agentId: string, hasReply: boolean): void {
   if (!agentId) return;
-  for (const fn of turnFns) {
+  for (const fn of turnFns.keys()) {
     try {
       fn(agentId, { hasReply });
     } catch { /* 同上 */ }
   }
 }
 
+/**
+ * 清空**所有**思考回调（2026-11-21，issue #78）。
+ *
+ * 为什么需要它：扩展注册回调时拿到的是取消函数，但**调用方经常漏存**；
+ * 出站扩展热重载（`/tools_reload`）后旧闭包仍在 Set 里继续跑 ——
+ * 于是"已经注释掉的扩展"还在往外发消息（实测）。
+ *
+ * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
+ */
+/** 归属前缀匹配：`owner` 本身，或它下面按文件细分的 `owner#file` */
+const underOwner = (v: string, o: string): boolean => v === o || v.startsWith(o + '#');
+
+/** 该实例（含其下各文件）当前注册了多少回调 */
+export function countReasoningHandlers(owner: string): number {
+  const o = String(owner || '');
+  let n = 0;
+  for (const v of deltaFns.values()) if (underOwner(v, o)) n += 1;
+  for (const v of turnFns.values()) if (underOwner(v, o)) n += 1;
+  return n;
+}
+
+/** 一条待恢复的回调（带它自己的归属，恢复时按模块筛） */
+export interface ReasoningSnapshotItem {
+  fn: ReasoningDeltaFn | ReasoningTurnFn;
+  owner: string;
+  kind: 'delta' | 'turn';
+}
+
+export interface ReasoningSnapshot {
+  items: ReasoningSnapshotItem[];
+}
+
+/** 取该实例（含其下各文件）的回调快照（清理前保存） */
+export function snapshotReasoningHandlers(owner: string): ReasoningSnapshot {
+  const o = String(owner || '');
+  const items: ReasoningSnapshotItem[] = [];
+  for (const [fn, v] of deltaFns) if (underOwner(v, o)) items.push({ fn, owner: v, kind: 'delta' });
+  for (const [fn, v] of turnFns) if (underOwner(v, o)) items.push({ fn, owner: v, kind: 'turn' });
+  return { items };
+}
+
+/**
+ * 恢复快照。
+ *
+ * ★ CodeRabbit #80（第 3 轮）：**不能看"该实例回调数为 0"就整批恢复** ——
+ *   那分不清两种情形：① 文件没改、URL 未变 ⇒ ESM 缓存命中、模块根本没执行（该恢复）；
+ *   ② 文件改了、模块删掉了 `onDelta` 注册 ⇒ 执行了但没注册（**不该恢复**，用户就是想禁用它）。
+ *   所以由装载器报告"哪些文件命中了缓存"，这里只恢复 `allowOwners` 里的那些。
+ */
+export function restoreReasoningHandlers(snap: ReasoningSnapshot | undefined, allowOwners?: Set<string>): number {
+  if (!snap) return 0;
+  let n = 0;
+  for (const it of snap.items) {
+    if (allowOwners && !allowOwners.has(it.owner)) continue;
+    if (it.kind === 'delta') {
+      const fn = it.fn as ReasoningDeltaFn;
+      if (!deltaFns.has(fn)) {
+        deltaFns.set(fn, it.owner);
+        n += 1;
+      }
+    } else {
+      const fn = it.fn as ReasoningTurnFn;
+      if (!turnFns.has(fn)) {
+        turnFns.set(fn, it.owner);
+        n += 1;
+      }
+    }
+  }
+  return n;
+}
+
+export function clearReasoningHandlers(owner?: string): number {
+  let n = 0;
+  if (owner === undefined) {
+    n = deltaFns.size + turnFns.size;
+    deltaFns.clear();
+    turnFns.clear();
+    return n;
+  }
+  const o = String(owner || '');
+  for (const [fn, v] of [...deltaFns]) {
+    if (underOwner(v, o)) {
+      deltaFns.delete(fn);
+      n += 1;
+    }
+  }
+  for (const [fn, v] of [...turnFns]) {
+    if (underOwner(v, o)) {
+      turnFns.delete(fn);
+      n += 1;
+    }
+  }
+  return n;
+}
 const api = {
   onDelta: onReasoningDelta,
   onTurnEnd: onReasoningTurnEnd,

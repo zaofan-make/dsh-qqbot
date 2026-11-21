@@ -26,8 +26,57 @@
  * | `silent` | 完全不发，只写日志 |
  * | `regex` | 按 `turnErrorSilentPattern` 匹配 `code + message`：命中→静默，其余→原文 |
  */
+const VALID_MODES = ['notify', 'friendly', 'silent', 'regex'];
+/**
+ * 取生效的模式：**按渠道覆盖优先，其次全局默认**，非法值一律回落 `notify`（fail-open）。
+ *
+ * @param key   `turn` = 回合异常；`tool` = 工具报错
+ * @param scope `group` / `c2c`（其它值视为不覆盖）
+ */
+export function effectiveErrorMode(cfg, key, scope) {
+    const baseRaw = String((key === 'turn' ? cfg?.turnErrorMode : cfg?.toolErrorMode) ?? 'notify').trim().toLowerCase();
+    const base = VALID_MODES.includes(baseRaw) ? baseRaw : 'notify';
+    const byScope = key === 'turn' ? cfg?.turnErrorModeByScope : cfg?.toolErrorModeByScope;
+    if (!byScope || typeof byScope !== 'object')
+        return base;
+    const s = String(scope ?? '').trim().toLowerCase();
+    if (s !== 'group' && s !== 'c2c')
+        return base;
+    const picked = String(byScope[s] ?? '').trim().toLowerCase();
+    return VALID_MODES.includes(picked) ? picked : base;
+}
 /** 默认的「人话」文案（friendly 模式） */
 export const FRIENDLY_TURN_ERROR = '⚠️ 这轮卡住了，再说一次试试~';
+/** 工具报错的「人话」文案（issue #77，toolErrorMode=friendly） */
+export const FRIENDLY_TOOL_ERROR = '⚠️ 有个工具没跑通，这轮先这样~';
+/**
+ * 决定这条**工具报错**要不要发、发什么（issue #77）。
+ *
+ * 注意：入参 `rawText` 是现有 `formatToolResult()` **已经渲染好的** ❌ 文本 ——
+ * 这里只做"发/不发/换一句"，不重新拼格式（别跟"详细主动"里的工具提示重复造轮子）。
+ *
+ * @param scope `group` / `c2c`（按渠道覆盖策略用）
+ * @returns `null` = 不发；string = 发这个
+ */
+export function resolveToolErrorMessage(cfg, rawText, scope) {
+    const mode = effectiveErrorMode(cfg, 'tool', scope);
+    if (mode === 'silent')
+        return null;
+    if (mode === 'friendly')
+        return FRIENDLY_TOOL_ERROR;
+    if (mode === 'regex') {
+        const pat = String(cfg?.toolErrorSilentPattern ?? '').trim();
+        if (pat) {
+            try {
+                // 不区分大小写；匹配渲染后的整段 ❌ 文本，用户可只写 `TOOL_TIMEOUT` 或 `执行失败`
+                if (new RegExp(pat, 'i').test(rawText))
+                    return null;
+            }
+            catch { /* 正则写错 = 不拦截（fail-open） */ }
+        }
+    }
+    return rawText;
+}
 /**
  * 决定这条回合异常要不要发、发什么。
  *
@@ -35,8 +84,8 @@ export const FRIENDLY_TURN_ERROR = '⚠️ 这轮卡住了，再说一次试试~
  * @param message 错误原文
  * @returns `null` = 不发；string = 发这个
  */
-export function resolveTurnErrorMessage(cfg, code, message) {
-    const mode = String(cfg?.turnErrorMode ?? 'notify').trim().toLowerCase();
+export function resolveTurnErrorMessage(cfg, code, message, scope) {
+    const mode = effectiveErrorMode(cfg, 'turn', scope);
     if (mode === 'silent')
         return null;
     if (mode === 'friendly')

@@ -191,6 +191,16 @@ export interface OutboundLoadResult {
   middleware: OutboundMiddleware[];
   extensions: OutboundExtension[];
   files: string[];
+  /**
+   * 本次**命中 ESM 缓存**、模块没重新执行的文件（URL 与上次相同）。
+   *
+   * ★ CodeRabbit #80（第 3 轮）：思考回调清理后要不要恢复，全看这个 ——
+   *   命中缓存 ⇒ 模块里那句 `onDelta(...)` 没再执行 ⇒ 得把旧回调放回去；
+   *   没命中（文件改了）⇒ 以新模块的注册结果为准，**不恢复**（用户可能就是想删掉注册）。
+   */
+  cachedPaths: string[];
+  /** 本次扫到的全部扩展文件（绝对路径；用来判断"哪些文件这次根本没装载"，例如被停用） */
+  scannedPaths: string[];
 }
 
 export interface LoadOutboundOptions {
@@ -244,6 +254,8 @@ interface ObBucket {
   cfg: { dataRoot: string; logger: Logger; apiCall?: unknown };
   loaded: OutboundExtension[];
   breaker: Map<string, number>;
+  /** 文件名 → 上次装载用的 URL（含 `?v=`），用来判断本次是否命中 ESM 缓存 */
+  urls: Map<string, string>;
 }
 const buckets = new Map<string, ObBucket>();
 const ownerKey = new WeakMap<object, string>();
@@ -260,7 +272,7 @@ function ensureBucket(dataRoot: string, logger: Logger, apiCall?: unknown): ObBu
   const k = obKey(dataRoot);
   let b = buckets.get(k);
   if (!b) {
-    b = { cfg: { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) }, loaded: [], breaker: new Map<string, number>() };
+    b = { cfg: { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) }, loaded: [], breaker: new Map<string, number>(), urls: new Map<string, string>() };
     buckets.set(k, b);
   } else {
     b.cfg = { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) };
@@ -316,7 +328,7 @@ export async function reloadOutboundExtensions(dataRoot?: string): Promise<Outbo
 // （P1：全局 loaded 已并入 buckets，各实例一份）
 
 function emptyResult(files: string[] = []): OutboundLoadResult {
-  return { total: 0, skipped: 0, middleware: [], extensions: [], files };
+  return { total: 0, skipped: 0, middleware: [], extensions: [], files, cachedPaths: [], scannedPaths: [] };
 }
 
 function pickFn(...cands: unknown[]): OutboundMiddleware | undefined {
@@ -369,12 +381,29 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
   const files = hits.map((h) => h.name);
 
   const result = emptyResult(files);
+  // ★ 2026-11-21（issue #78 / CodeRabbit #80）：装载期间标出"这批回调属于哪个实例"，
+  //   这样 `/tools_reload` 只清掉本实例的思考回调（别的实例不重载，清了就再也回不来）。
+  //
+  //   ★ 第 2 轮复审：归属不能存全局变量 —— 装载是 `await import()`，两个实例并发装载会互相覆盖。
+  //   改成 AsyncLocalStorage：归属跟着这次 `run()` 的异步调用链走。
+  const rb = await import('./reasoning-bus.js').catch(() => undefined);
+  const ownerRoot = String(dataRoot || '');
   for (const hit of hits) {
     const f = hit.name;
     const abs = hit.abs;
     try {
       const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
-      const mod = await import(url);
+      // ★ CodeRabbit #80（第 3/4 轮）：URL 与上次相同 ⇒ ESM 缓存命中，模块**不会重新执行**。
+      //   用**绝对路径**做 key：`scanExtFiles` 不按文件名去重，不同目录同名扩展会串。
+      result.scannedPaths.push(abs);
+      const cached = bucket?.urls.get(abs) === url;
+      if (cached) result.cachedPaths.push(abs);
+      // ★ 归属细化到"实例#文件"：这样恢复时可以只挑"命中缓存 / 这次没装载"的那些模块。
+      const doImport = (): Promise<unknown> => import(url);
+      const mod = (rb && typeof rb.runWithReasoningOwner === 'function'
+        ? await rb.runWithReasoningOwner(`${ownerRoot}#${abs}`, doImport)
+        : await doImport()) as Parameters<typeof normalizeOutbound>[0];
+      bucket?.urls.set(abs, url);
       const ext = normalizeOutbound(mod, f, abs, logger);
       if (!ext) {
         result.skipped += 1;
@@ -465,6 +494,32 @@ function noteBreaker(name: string, logger: Logger): number {
 
 let active = 0;
 let lastCtx: OutboundCtx | null = null;
+
+/**
+ * 扩展调 `send(text)` **没给 target** 时，是否回落到"最近一次出站的会话"。
+ *
+ * ★ 2026-11-21（issue #78）：默认 **false（fail-closed）**。
+ *   旧行为是回落 ⇒ 多会话并发/思考流这类"没有明确目标"的发送会串台
+ *   （实测：私聊任务的思考草稿发进了无关的群）。业界主流（Slack/Telegram/Discord）
+ *   也都是"没有 channel 就拒发"。真要旧行为，把配置 `outboundLastCtxFallback` 打开。
+ *
+ * ★ CodeRabbit #80：开关按**发送器实例**存（WeakMap），不是模块级单变量 ——
+ *   否则后启动的实例（默认 false）会把先启动实例的 true 覆盖掉。
+ */
+const fallbackByOwner = new WeakMap<object, boolean>();
+/** 拒发告警节流：第一次必打，之后每 200 次打一次 */
+let rejectedNoTarget = 0;
+
+/** 由 bootstrap 按配置设置（每个实例各自一份，互不影响） */
+export function setOutboundLastCtxFallback(owner: unknown, v: boolean): void {
+  if (owner && typeof owner === 'object') fallbackByOwner.set(owner as object, v === true);
+}
+
+/** 诊断用：该发送器是否允许回落 */
+export function outboundLastCtxFallbackEnabled(owner?: unknown): boolean {
+  if (!owner || typeof owner !== 'object') return false;
+  return fallbackByOwner.get(owner as object) === true;
+}
 
 /** 当前是否正在跑出站链（其他扩展可用于"别在我发消息时又触发我"） */
 export function outboundActive(): boolean {
@@ -723,14 +778,29 @@ export async function sendViaOutboundChannel(
   opts: RunOutboundOptions = {},
   sendOpts: { adaptive?: boolean } = {},
 ): Promise<boolean> {
+  const ownerObj = (opts.sender ?? lastCtx?.sender ?? null) as object | null;
+  const allowFallback = ownerObj ? fallbackByOwner.get(ownerObj) === true : false;
+  // ★ CodeRabbit #80（第 2 轮）：**sender 始终可以回落** —— 它是"机器人的发送器"，不涉及"发给谁"，
+  //   跨会话用同一个 sender 不会串台。只有 **target** 才必须 fail-closed。
+  //   否则显式给了 target 的调用（如全局 send 包装只传 target 不传 sender）会因缺 sender 被拒发。
   const sender = (opts.sender ?? lastCtx?.sender ?? null) as {
     sendText?: (t: unknown, c: string) => Promise<unknown>;
     sendMarkdown?: (t: unknown, c: string) => Promise<unknown>;
     /** ⚠️ 真实签名是**三个参数**：`sendMedia(target, kind, { url } | { localPath })` */
     sendMedia?: (t: unknown, k: string, s: { url?: string; localPath?: string }) => Promise<unknown>;
   } | null;
-  const target = (opts.target ?? lastCtx?.target ?? null) as Record<string, unknown> | null;
-  if (!sender || !target) return false;
+  const target = (opts.target ?? (allowFallback ? lastCtx?.target : null) ?? null) as Record<string, unknown> | null;
+  if (!sender || !target) {
+    // ★ 2026-11-21（issue #78）：没有明确 target 就**拒发**（除非显式开了回落）。
+    //   以前这里静默回落到 lastCtx ⇒ 并发会话串台；现在至少留一行日志，便于发现"扩展少传了 target"。
+    rejectedNoTarget += 1;
+    if (rejectedNoTarget === 1 || rejectedNoTarget % 200 === 0) {
+      const { logger } = opts;
+      const warn = logger && typeof logger.warn === 'function' ? logger.warn.bind(logger) : undefined;
+      warn?.(`[ext-outbound] 拒绝发送：调用方没给 target（第 ${rejectedNoTarget} 次；outboundLastCtxFallback=${allowFallback}）`);
+    }
+    return false;
+  }
 
   const body = String(payload.text ?? payload.path ?? payload.url ?? '');
   if (!body) return false;

@@ -4386,3 +4386,65 @@ return (head + body + tail).trim();
 **安全防御不能靠"识别伪造"，要靠"结构上不可能"**。
 转义、正则、黑名单都是识别路线，换个字符就穿；**定界符 + 全量转义**才是结构路线。
 
+
+---
+
+## 11.40 会话类型/名字注入（issue #79）与「多实例串台」的五个坑（2026-11-21）
+
+### 要做什么
+私聊与群聊的注入格式几乎同构（`[昵称 #ref]: "正文"`），模型只能靠猜，实测把私聊判成群聊、按群规矩回复。
+所以给每个会话显式标一句（独立 `user/message`，`source.kind='qqbot:session-kind'`）：
+
+```
+[当前会话] 渠道=QQ 群聊 · 群名「群组管理」 · 群 openid 尾号 BA1DDC6B
+这是群聊：发言会被群里所有人看到，别按私聊口吻假设。
+```
+```
+[当前会话] 渠道=QQ 私聊 · 对方「做早饭」 · 用户 openid 尾号 06E96C63
+这是私聊：只有对方看得到，不等于群里有人围观。
+```
+
+实现：`src/features/session-kind.ts`（缓存/预取/兜底）+ `session-manager.ts` 注入段。
+
+### 坑 1：`manager.groupAdmin` 在「群管理没开」时恒为 undefined
+`groupAdmin` 是带开关的 getter（`groupAdmin.enabled=false` ⇒ undefined），拿它当 API 客户端
+⇒ prefetch 开头就 return、群名永远空。
+**正解**：`manager.groupAdmin ?? manager.mediaApi`（`mediaApi` 用 appId/appSecret 现建，与群管理开关无关，
+素材上传就是靠它 —— 见 `SessionManager.mediaApi` 注释）。
+
+### 坑 2：注入条件不能依赖 `recMemo` / `findByAgent`
+`findByAgent` 只查 `this.sessions`；**重启/回收后由宿主恢复的 QQ 会话在它眼里是 undefined**
+⇒ `recMemo` 为空 ⇒ 整块注入被跳过（现象：重启后再也不注入）。
+**正解**：`modelResolver.findKeyBySessionId(sessionId)` 拿 sessionKey，从
+`qqbot:<appId>:<group|c2c>:<openid>@<uuid>` 正则解析 scope/peerId，不依赖内存表。
+
+### 坑 3：判重要看「有没有带名字的版本」
+名字是**异步 API 后到**的，首次注入往往是「群名未取到」。只按 `source.kind` 判重 ⇒
+拿到名字也不会再注（实测：「上下文没有重新注入」）。
+**正解**：扫 surface 里同 kind 的注入内容，`info.name` 非空时判断旧注入**是否已含这个名字**，没有就补一条。
+
+### 坑 4：名字缓存必须按 **bot 身份（appId）** 隔离
+同一 profile 可能跑多实例（`im-qqbot-2` / `im-qqbot-3`，不同 appId）。缓存只按 `gid`/`openid` 做 key
+⇒ A 拉到的名字被 B 读到，B 拉失败的空值还会盖掉 A 的好值。
+**正解**：所有 key 一律 `botKey(botId) + id`，`botId = config.appId`（扩展侧对应 `env.appId`）。
+> 扩展契约同页亦注明：`env.api` 来自 per-agent caps，**多实例下可能绑到另一台机器人的凭据**。
+
+### 坑 5：API 失败要有「零网络兜底」
+`getGroupInfo` 可能因 **11253（非白名单）** 或凭据问题失败。兜底直接读插件自己的历史目录：
+- 群聊：`{dataRoot}/.qqbot/msg-history/group_<openid>/<群名>.txt` —— **文件名就是群名**（`writeNameMarker`）
+- 私聊：同目录 `YYYY-MM-DD.jsonl` 的 `n` 字段（发送者昵称）
+
+同步读、无网络，与「群名/昵称」语义完全一致。
+
+### 验证
+1. 重启宿主，群里/私聊各发一句；
+2. 看下一轮上下文里 `[当前会话]` 那条的群名/昵称不是「未取到」；
+3. 日志应有 `[会话类型] 注入 kind=group name=「群组管理」 key=qqbot:1905515836:group:…`。
+
+### 相关配置
+- `sessionKindHint`（默认 true）：关掉不注入；
+- `toolErrorMode` / `toolErrorSilentPattern`（issue #77）：**工具**报错策略，与回合异常（`turnErrorMode`）分开；
+- `turnErrorModeByScope` / `toolErrorModeByScope`：按 `{group, c2c}` 覆盖（群聊静默、私聊保留原文）；
+- `outboundLastCtxFallback`（默认 false）：出站扩展没给 target 时是否回落「最近活跃会话」（默认 fail-closed，防串台）。
+- 面板侧：`client/qqbot-settings.js` 的字段要**手写**一份（不会自动从 schema 生成），并记得在
+  `index.ts` 的 `sync()` 里加 live 同步，否则「面板改了要重启才生效」。

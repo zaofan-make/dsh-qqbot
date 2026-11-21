@@ -382,6 +382,14 @@ window.__ModuleLoader__.load({
             { v: 'regex', label: '按下面的正则拦截' },
           ] },
           { k: 'turnErrorSilentPattern', kw: '报错 正则 拦截 过滤 静默 错误码', t: 'str', wide: true, label: '上面的「正则」模式用: 匹配 错误码+错误信息(不区分大小写, 命中就静默、其余照常发)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截', def: '' },
+          // ★ 2026-11-21 issue #77：工具报错（tool/result）也走策略，默认与旧版一致
+          { k: 'toolErrorMode', kw: '报错 工具 异常 tool error 提示 静默 拦截 失败', t: 'radio', label: '工具执行失败时发什么(issue #77):', def: 'notify', options: [
+            { v: 'notify', label: '照常发原文(默认)' },
+            { v: 'friendly', label: '发一句人话(细节只进日志)' },
+            { v: 'silent', label: '完全不发' },
+            { v: 'regex', label: '按下面的正则拦截' },
+          ] },
+          { k: 'toolErrorSilentPattern', kw: '报错 工具 正则 拦截 过滤 静默 超时 TOOL_TIMEOUT', t: 'str', wide: true, label: '上面的「正则」模式用: 匹配 渲染后的 ❌ 文本(不区分大小写, 命中就静默、其余照常发)。例: TOOL_TIMEOUT|执行失败。留空=不拦截', def: '' },
           { k: 'latexHint', kw: 'latex 数学 公式 彩色 颜色 上色 富文本 math', t: 'bool', label: '数学公式提示(默认关): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX」，可以输出行内公式 $E=mc^2$、居中公式 $$…$$、彩色字 $\\textcolor{#E74C3C}{\\text{重点}}$。⚠️ 只在支持 LaTeX 的客户端生效，旧版 QQ 会显示成源码', def: false },
           { k: 'imageAggregate.enabled', kw: '图片 聚合 拼接 多图 长图 缩略', t: 'bool', label: '图片聚合(默认关): 连续收到的几张图竖向拼成一张长图, 随那条唤醒的消息一起进上下文(只对能读图的模型生效)', def: false },
           { k: 'imageAggregate.max', kw: '图片 聚合 数量 上限 几张', t: 'num', label: '聚合数量上限(1~8): 环形缓冲, 最新的排最下面、最旧的排最上面; 已经聚合过的图不再重复聚合', def: 4 },
@@ -1922,6 +1930,12 @@ window.__ModuleLoader__.load({
             return ['notify', 'friendly', 'silent', 'regex'].indexOf(m) >= 0 ? m : 'notify';
           })(),
           turnErrorSilentPattern: String(v.turnErrorSilentPattern || ''),
+          // ★ 2026-11-21 issue #77：工具报错策略（同样必须在这里收集，否则面板改了存不下去）
+          toolErrorMode: (function () {
+            var m = String(v.toolErrorMode || '');
+            return ['notify', 'friendly', 'silent', 'regex'].indexOf(m) >= 0 ? m : 'notify';
+          })(),
+          toolErrorSilentPattern: String(v.toolErrorSilentPattern || ''),
           latexHint: typeof v.latexHint === 'boolean' ? v.latexHint : undefined,
           imageAggregate: {
             enabled: !!(v.imageAggregate && v.imageAggregate.enabled),

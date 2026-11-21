@@ -151,6 +151,16 @@ export interface OutboundLoadResult {
     middleware: OutboundMiddleware[];
     extensions: OutboundExtension[];
     files: string[];
+    /**
+     * 本次**命中 ESM 缓存**、模块没重新执行的文件（URL 与上次相同）。
+     *
+     * ★ CodeRabbit #80（第 3 轮）：思考回调清理后要不要恢复，全看这个 ——
+     *   命中缓存 ⇒ 模块里那句 `onDelta(...)` 没再执行 ⇒ 得把旧回调放回去；
+     *   没命中（文件改了）⇒ 以新模块的注册结果为准，**不恢复**（用户可能就是想删掉注册）。
+     */
+    cachedPaths: string[];
+    /** 本次扫到的全部扩展文件（绝对路径；用来判断"哪些文件这次根本没装载"，例如被停用） */
+    scannedPaths: string[];
 }
 export interface LoadOutboundOptions {
     dataRoot: string;
@@ -207,6 +217,10 @@ export declare function notifyOutboundSent(result: OutboundSentResult, owner?: u
 export declare function listOutboundExtensions(): OutboundExtension[];
 /** 改文件 + tools_reload = 复位通道 */
 export declare function resetOutboundBreaker(name?: string): void;
+/** 由 bootstrap 按配置设置（每个实例各自一份，互不影响） */
+export declare function setOutboundLastCtxFallback(owner: unknown, v: boolean): void;
+/** 诊断用：该发送器是否允许回落 */
+export declare function outboundLastCtxFallbackEnabled(owner?: unknown): boolean;
 /** 当前是否正在跑出站链（其他扩展可用于"别在我发消息时又触发我"） */
 export declare function outboundActive(): boolean;
 /** 最近一次出站的 ctx（其他扩展可用它拿 target 往同一个会话补发） */

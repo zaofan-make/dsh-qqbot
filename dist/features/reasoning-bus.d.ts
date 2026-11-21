@@ -25,6 +25,10 @@ export type ReasoningDeltaFn = (agentId: string, text: string, target?: Reasonin
 export type ReasoningTurnFn = (agentId: string, info: {
     hasReply: boolean;
 }) => void;
+/** 在"这批回调属于 owner"的上下文里执行装载（ext-outbound 用） */
+export declare function runWithReasoningOwner<T>(owner: string, fn: () => T): T;
+/** 兼容旧调用（同步设置 owners 已不适用，保留空实现避免外部报错） */
+export declare function setReasoningOwner(owner: string): void;
 /** 注册思考增量回调（返回取消函数） */
 export declare function onReasoningDelta(fn: ReasoningDeltaFn): () => void;
 /** 注册回合结束回调（返回取消函数） */
@@ -33,4 +37,27 @@ export declare function onReasoningTurnEnd(fn: ReasoningTurnFn): () => void;
 export declare function feedReasoning(agentId: string, text: string, target?: ReasoningTarget): void;
 /** 内核调用：本回合结束（hasReply = 该回合是否真的产出过正文增量） */
 export declare function endReasoningTurn(agentId: string, hasReply: boolean): void;
+/** 该实例（含其下各文件）当前注册了多少回调 */
+export declare function countReasoningHandlers(owner: string): number;
+/** 一条待恢复的回调（带它自己的归属，恢复时按模块筛） */
+export interface ReasoningSnapshotItem {
+    fn: ReasoningDeltaFn | ReasoningTurnFn;
+    owner: string;
+    kind: 'delta' | 'turn';
+}
+export interface ReasoningSnapshot {
+    items: ReasoningSnapshotItem[];
+}
+/** 取该实例（含其下各文件）的回调快照（清理前保存） */
+export declare function snapshotReasoningHandlers(owner: string): ReasoningSnapshot;
+/**
+ * 恢复快照。
+ *
+ * ★ CodeRabbit #80（第 3 轮）：**不能看"该实例回调数为 0"就整批恢复** ——
+ *   那分不清两种情形：① 文件没改、URL 未变 ⇒ ESM 缓存命中、模块根本没执行（该恢复）；
+ *   ② 文件改了、模块删掉了 `onDelta` 注册 ⇒ 执行了但没注册（**不该恢复**，用户就是想禁用它）。
+ *   所以由装载器报告"哪些文件命中了缓存"，这里只恢复 `allowOwners` 里的那些。
+ */
+export declare function restoreReasoningHandlers(snap: ReasoningSnapshot | undefined, allowOwners?: Set<string>): number;
+export declare function clearReasoningHandlers(owner?: string): number;
 //# sourceMappingURL=reasoning-bus.d.ts.map
