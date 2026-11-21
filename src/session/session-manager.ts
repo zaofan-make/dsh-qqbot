@@ -44,7 +44,7 @@ interface SegSessionLike {
   eventAt?: (seq: number) => unknown;
 }
 import { trimHistoryForContextless } from '../features/contextless-trim.js';
-import { memoTextForInject, setMemoMaxItems } from '../features/context-memo.js';
+import { memoForInject, setMemoMaxItems } from '../features/context-memo.js';
 import { traceContextless } from '../features/contextless-store.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
@@ -1892,6 +1892,8 @@ export class SessionManager {
         let ctxSmartText = '';
         let selfMemoText = '';
         let selfMemoKey = '';
+        /** 备忘**读取是否成功**（CodeRabbit：区分「读到空」=用户清空 与 「读失败」=不能作废现有备忘） */
+        let selfMemoOk = false;
         try {
           // ⚠️ 2026-10-01：靠「这个 turn 注过没有」去重 —— 原来用 step<=1 判，实测仍会一回合注两份
           //   （宿主每 step 都触发，且 currentStep 未必从 1 递增）。
@@ -1915,7 +1917,9 @@ export class SessionManager {
             }
             if (skM) {
               selfMemoKey = skM;
-              const memo = memoTextForInject(dataRootSmart, skM).trim();
+              const mr = memoForInject(dataRootSmart, skM);
+              selfMemoOk = mr.ok;
+              const memo = mr.text.trim();
               if (CTX_SMART_REMINDER) ctxSmartText = '<system-reminder>\n' + CTX_SMART_REMINDER + '\n</system-reminder>';
               if (memo) selfMemoText = memo;
             }
@@ -1936,7 +1940,7 @@ export class SessionManager {
         //   备忘会逐轮变化，所以下面的去重只比对固定部分（CTX_SMART_REMINDER），不受备忘影响。
         // ⚠️ 2026-11-10 修：memoLine **不能拼进 body** —— body 会被"群守则已在上下文里"的去重整体跳过
         //   （skipGroupRules），于是小传从此再也注不进去。小传单独成块，自己判自己的重。
-        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim(), ctxSmartText].filter(Boolean).join('\n\n');
+        const body = [FIXED_CHANNEL_CONTEXT.trim(), refCtx.trim(), rules.trim()].filter(Boolean).join('\n\n');
         if (!body) return decision;
         const text = `<system-reminder>\n${body}\n</system-reminder>`;
         const desired = {
@@ -2062,6 +2066,44 @@ export class SessionManager {
           });
           this.logger?.info?.(`[小传] 注入 ${memoLine.length} 字 (session=${recMemo?.sessionKey ?? '?'})`);
         }
+        // ★ CodeRabbit：**智能模式指令独立成块**（`qqbot:ctx-smart`）。
+        //   原来它拼在群守则 body 里、共用 `rulesFp` 判重 ⇒ 群守则没变时（智能模式刚打开、
+        //   或重启后恢复的会话）`skipGroupRules` 会把整条 body 丢掉 ⇒ 话题判断/压缩要求永远缺失。
+        if (ctxSmartOn && ctxSmartText) {
+          const SMART_KIND = 'qqbot:ctx-smart';
+          const smartFp = CTX_SMART_REMINDER.slice(0, 40);
+          const _smartInBatch = (dec.messages as unknown[]).some((m) => {
+            const mm = m as { source?: { kind?: string }; content?: Array<{ text?: string }> } | undefined;
+            return mm?.source?.kind === SMART_KIND && String(mm.content?.[0]?.text ?? '').includes(smartFp);
+          });
+          let _smartInSurface = false;
+          if (!_smartInBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+            for (const seq of agent.session.surface.nodes) {
+              const ev = agent.session.eventAt(seq) as
+                | { type?: string; data?: { source?: { kind?: string }; content?: unknown } }
+                | undefined;
+              if (ev?.type !== 'user/message' || ev.data?.source?.kind !== SMART_KIND) continue;
+              const c = ev.data?.content as unknown;
+              const txt = typeof c === 'string'
+                ? c
+                : Array.isArray(c)
+                  ? c.map((b) => String((b as { text?: unknown } | undefined)?.text ?? '')).join(String.fromCharCode(10))
+                  : '';
+              if (txt.includes(smartFp)) {
+                _smartInSurface = true;
+                break;
+              }
+            }
+          }
+          if (!_smartInBatch && !_smartInSurface) {
+            extraAll.push({
+              role: 'user',
+              id: randomUUID(),
+              content: [{ type: 'text', text: `<system-reminder>` + String.fromCharCode(10) + CTX_SMART_REMINDER + String.fromCharCode(10) + `</system-reminder>` }],
+              source: { kind: SMART_KIND, form: 'instructions', ns },
+            });
+          }
+        }
         // ★ 2026-11-21（主人定）：**自己的备忘独立注入、独立判重**。
         //   原来和群守则共用一条 body（去重只比群守则指纹）⇒ 群守则不变时，备忘改了也**永远不会重注**，
         //   模型看到的始终是最老那份。现在按"上下文里最后一条备忘块是否已含当前备忘文本"判重：
@@ -2105,7 +2147,7 @@ export class SessionManager {
             });
             this.logger?.info?.(`[备忘] 注入最新版 ${selfMemoText.length} 字`);
           }
-        } else if (ctxSmartOn && selfMemoKey) {
+        } else if (ctxSmartOn && selfMemoKey && selfMemoOk) {
           // ★ CodeRabbit：备忘被清空（用户用 context_memo 删光了）⇒ 历史里旧块还写着「以这条为准」，
           //   模型会继续把已删内容当备忘。这里补注一条「清空」状态；且只在**确实读到空**时补
           //   （未启用 / 读取失败时 selfMemoKey 为空，走不到这里，绝不覆盖有效备忘）。

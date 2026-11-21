@@ -20,6 +20,16 @@ export declare function deleteMemo(dataRoot: string, sessionKey: string, id: str
 export declare function clearMemo(dataRoot: string, sessionKey: string): number;
 /** 供注入：拼成一段 system 侧文本（空备忘返回空串）。超出上限从**最旧**开始丢。 */
 export declare function memoTextForInject(dataRoot: string, sessionKey: string): string;
+/**
+ * 注入用：**文本 + 读取是否成功**。
+ *
+ * CodeRabbit：注入侧要区分「成功读到空」（用户清空了备忘，要补一条作废标记）
+ * 与「读取失败」（EACCES 等，绝不能当作清空去覆盖现有备忘）。
+ */
+export declare function memoForInject(dataRoot: string, sessionKey: string): {
+    ok: boolean;
+    text: string;
+};
 /** 诊断：当前备忘条数与文件大小 */
 export declare function memoStats(dataRoot: string, sessionKey: string): {
     count: number;
