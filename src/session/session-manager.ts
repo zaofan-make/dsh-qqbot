@@ -1876,6 +1876,7 @@ export class SessionManager {
         //    ⚠️ 原来是挂在 `if (!body) return decision;` 之后的 —— 群守则体为空时直接早退，
         //       注入根本没机会执行（2026-10-01 实测：AI 反馈"没有任何一条要求我判断是不是同一个话题"）。
         let ctxSmartText = '';
+        let selfMemoText = '';
         try {
           // ⚠️ 2026-10-01：靠「这个 turn 注过没有」去重 —— 原来用 step<=1 判，实测仍会一回合注两份
           //   （宿主每 step 都触发，且 currentStep 未必从 1 递增）。
@@ -1883,13 +1884,24 @@ export class SessionManager {
           //   同一回合内 step2 的 messages 必然带着 step1 注入的那份，因此一定拦得住（比按 turn 可靠）。
           // ★★★ 2026-10-01 最终解：**替换式注入** —— 不赌任何时序判据，改为"每次注之前先剔掉旧的同类块"，
           //   这样无论宿主触发多少次（实测每次工具往返都触发），上下文里恒定只有 1 份。
+          //
+          // ★★ 2026-11-21 主人指出：备忘原来**和群守则拼在同一条 body 里**，而那条的去重只比群守则指纹
+          //   ⇒ 群守则不变时，备忘改了也**永远不会重新注入**（模型看到的始终是最老那份备忘）。
+          //   现在拆开：固定提示继续跟 body 走；**备忘独立成块**（`qqbot:self-memo`），自己判自己的重。
           if (ctxSmartOn && dataRootSmart) {
             const recM = agent ? this.findByAgent(agent as never) : undefined;
-            const skM = recM?.sessionKey;
+            let skM = recM?.sessionKey;
+            if (!skM) {
+              // 重启/回收后 findByAgent 查不到宿主恢复的会话 ⇒ 用 model-prefs 反查（同会话类型注入那套）
+              try {
+                const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
+                skM = sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+              } catch { /* ignore */ }
+            }
             if (skM) {
               const memo = memoTextForInject(dataRootSmart, skM).trim();
-              const inner = [CTX_SMART_REMINDER, memo].filter(Boolean).join('\n\n');
-              if (inner) ctxSmartText = '<system-reminder>\n' + inner + '\n</system-reminder>';
+              if (CTX_SMART_REMINDER) ctxSmartText = '<system-reminder>\n' + CTX_SMART_REMINDER + '\n</system-reminder>';
+              if (memo) selfMemoText = memo;
             }
           }
         } catch (e) { this.logger?.debug?.('[contextless] 组装智能提示异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
@@ -2033,6 +2045,50 @@ export class SessionManager {
             source: { kind: 'qqbot:people-memo', form: 'instructions', ns },
           });
           this.logger?.info?.(`[小传] 注入 ${memoLine.length} 字 (session=${recMemo?.sessionKey ?? '?'})`);
+        }
+        // ★ 2026-11-21（主人定）：**自己的备忘独立注入、独立判重**。
+        //   原来和群守则共用一条 body（去重只比群守则指纹）⇒ 群守则不变时，备忘改了也**永远不会重注**，
+        //   模型看到的始终是最老那份。现在按"上下文里最后一条备忘块是否已含当前备忘文本"判重：
+        //   变了就补注一条（旧版留在历史里，新块写明"以此为准"）。
+        if (selfMemoText) {
+          const MEMO_KIND = 'qqbot:self-memo';
+          const _memoInBatch = (dec.messages as unknown[]).some((m) => {
+            const mm = m as { source?: { kind?: string }; content?: Array<{ text?: string }> } | undefined;
+            return mm?.source?.kind === MEMO_KIND && String(mm.content?.[0]?.text ?? '').includes(selfMemoText);
+          });
+          let _lastMemo = '';
+          if (!_memoInBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+            for (const seq of agent.session.surface.nodes) {
+              const ev = agent.session.eventAt(seq) as
+                | { type?: string; data?: { source?: { kind?: string }; content?: unknown } }
+                | undefined;
+              if (ev?.type !== 'user/message' || ev.data?.source?.kind !== MEMO_KIND) continue;
+              const c = ev.data?.content as unknown;
+              _lastMemo = typeof c === 'string'
+                ? c
+                : Array.isArray(c)
+                  ? c.map((b) => String((b as { text?: unknown } | undefined)?.text ?? '')).join(String.fromCharCode(10))
+                  : '';
+            }
+          }
+          if (!_memoInBatch && !_lastMemo.includes(selfMemoText)) {
+            extraAll.push({
+              role: 'user',
+              id: randomUUID(),
+              content: [{
+                type: 'text',
+                text: `<system-reminder>`
+                  + String.fromCharCode(10)
+                  + '〔你自己的备忘 · 最新版（之前若有旧版，一律以这条为准）〕'
+                  + String.fromCharCode(10)
+                  + selfMemoText
+                  + String.fromCharCode(10)
+                  + `</system-reminder>`,
+              }],
+              source: { kind: MEMO_KIND, form: 'instructions', ns },
+            });
+            this.logger?.info?.(`[备忘] 注入最新版 ${selfMemoText.length} 字`);
+          }
         }
         // ★ 2026-11-20：**数学公式提示独立成块**（维护手册 §11.39 铁律：自己的 kind + 自己的判重）。
         //   不拼进群守则 body —— 那样开关切换时指纹判断容易漏，而且和群守则耦合。
