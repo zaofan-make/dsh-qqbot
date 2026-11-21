@@ -219,8 +219,8 @@ export declare function listOutboundExtensions(): OutboundExtension[];
 export declare function resetOutboundBreaker(name?: string): void;
 /** 由 bootstrap 按配置设置（每个实例各自一份，互不影响） */
 export declare function setOutboundLastCtxFallback(owner: unknown, v: boolean): void;
-export declare function setOutboundSender(sender: unknown): void;
-export declare function currentOutboundSender(): object | null;
+export declare function setOutboundSender(ns: string, sender: unknown): void;
+export declare function outboundSenderOf(ns: string): object | null;
 /** 诊断用：该发送器是否允许回落 */
 export declare function outboundLastCtxFallbackEnabled(owner?: unknown): boolean;
 /** 当前是否正在跑出站链（其他扩展可用于"别在我发消息时又触发我"） */

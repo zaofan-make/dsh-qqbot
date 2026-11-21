@@ -2119,35 +2119,24 @@ export class SessionManager {
                     // ★ 名字是**后来**才从 API 拿到的，首次注入往往是"群名未取到"。
                     //   所以判重不只看"有没有注入过"，还要看**有没有注入过带名字的版本**：
                     //   现在拿到名字了就再补一条（之后不再重复）。
-                    let _hasKind = false;
-                    let _hasNamed = false;
+                    // ★ CodeRabbit：判重只看**最新一条**会话类型提示。
+                    //   名字变来变去（甲 → 乙 → 甲）时，扫任意一条命中会让"最新的乙"继续留在上下文里，
+                    //   模型看到的群名就是过期的。所以扫完全部，留下最后一条的文本再比。
+                    let _lastHintText = '';
                     if (agent?.session?.surface?.nodes && agent.session.eventAt) {
                         for (const seq of agent.session.surface.nodes) {
                             const ev = agent.session.eventAt(seq);
                             if (ev?.type !== 'user/message' || ev.data?.source?.kind !== KIND)
                                 continue;
-                            _hasKind = true;
-                            if (info.name) {
-                                // ★ CodeRabbit：**读文本块原文**再比较，别搜 JSON 序列化结果 ——
-                                //   昵称里有双引号/反斜杠/换行时 JSON 会转义，`includes(info.name)` 永远 false，
-                                //   结果每轮都追加一遍相同的提示。
-                                const c = ev.data?.content;
-                                const txt = typeof c === 'string'
-                                    ? c
-                                    : Array.isArray(c)
-                                        ? c.map((b) => String(b?.text ?? '')).join(String.fromCharCode(10))
-                                        : '';
-                                if (txt.includes(info.name)) {
-                                    _hasNamed = true;
-                                    break;
-                                }
-                            }
-                            else {
-                                break;
-                            }
+                            const c = ev.data?.content;
+                            _lastHintText = typeof c === 'string'
+                                ? c
+                                : Array.isArray(c)
+                                    ? c.map((b) => String(b?.text ?? '')).join(String.fromCharCode(10))
+                                    : '';
                         }
                     }
-                    const need = info.name ? !_hasNamed : !_hasKind;
+                    const need = info.name ? !_lastHintText.includes(info.name) : _lastHintText === '';
                     if (!_kindInBatch && need) {
                         extraAll.push({
                             role: 'user',

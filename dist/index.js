@@ -12,7 +12,7 @@ import { ConfigSchema, EditableConfigSchema } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
 import { getProfileDir, resolveEnv, resolveProfileName } from './shared/index.js';
 import { warmSessions } from './features/warm-sessions.js';
-import { setOutboundLastCtxFallback, currentOutboundSender } from './features/ext-outbound.js';
+import { setOutboundLastCtxFallback, outboundSenderOf } from './features/ext-outbound.js';
 import { applyExtToolVisibility } from './channel-tools.js';
 import { describeNsConflict, nsPathsOf, scanNsOwners } from './features/ns-guard.js';
 void getProfileDir;
@@ -704,8 +704,9 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             if (typeof next.outboundLastCtxFallback === 'boolean') {
                 live.outboundLastCtxFallback = next.outboundLastCtxFallback;
                 // ★ CodeRabbit（补审）：发送侧读 WeakMap，只改 live 不生效 ⇒ 顺手对同一 sender 重设
+                // ★ CodeRabbit：按**本实例的 ns** 取 sender —— 多实例时只留一个会改错对象
                 try {
-                    setOutboundLastCtxFallback(currentOutboundSender(), next.outboundLastCtxFallback);
+                    setOutboundLastCtxFallback(outboundSenderOf(ns), next.outboundLastCtxFallback);
                 }
                 catch { /* ignore */ }
             }
