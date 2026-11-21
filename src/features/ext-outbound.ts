@@ -371,10 +371,11 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
   const result = emptyResult(files);
   // ★ 2026-11-21（issue #78 / CodeRabbit #80）：装载期间标出"这批回调属于哪个实例"，
   //   这样 `/tools_reload` 只清掉本实例的思考回调（别的实例不重载，清了就再也回不来）。
-  try {
-    const rb = await import('./reasoning-bus.js');
-    rb.setReasoningOwner(String(dataRoot || ''));
-  } catch { /* 老宿主没有该模块时忽略 */ }
+  //
+  //   ★ 第 2 轮复审：归属不能存全局变量 —— 装载是 `await import()`，两个实例并发装载会互相覆盖。
+  //   改成 AsyncLocalStorage：归属跟着这次 `run()` 的异步调用链走。
+  const rb = await import('./reasoning-bus.js').catch(() => undefined);
+  const loadAll = async (): Promise<void> => {
   for (const hit of hits) {
     const f = hit.name;
     const abs = hit.abs;
@@ -393,6 +394,12 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
       result.skipped += 1;
       logger.warn(`[ext-outbound] ✗ ${f} 装载失败(已跳过, 不影响其它出站扩展): ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  };
+  if (rb && typeof rb.runWithReasoningOwner === 'function') {
+    await rb.runWithReasoningOwner(String(dataRoot || ''), loadAll);
+  } else {
+    await loadAll();
   }
   // ★★ 2026-11-14 修（审查发现）：`resetOutboundBreaker()` 原来**全仓无调用点** ——
   //   扩展一旦被熔断（连续把消息改坏/抛错），只有重启插件才能恢复，/tools-reload 也没用。
@@ -757,14 +764,16 @@ export async function sendViaOutboundChannel(
 ): Promise<boolean> {
   const ownerObj = (opts.sender ?? lastCtx?.sender ?? null) as object | null;
   const allowFallback = ownerObj ? fallbackByOwner.get(ownerObj) === true : false;
-  const fallback = allowFallback ? lastCtx : null;
-  const sender = (opts.sender ?? fallback?.sender ?? null) as {
+  // ★ CodeRabbit #80（第 2 轮）：**sender 始终可以回落** —— 它是"机器人的发送器"，不涉及"发给谁"，
+  //   跨会话用同一个 sender 不会串台。只有 **target** 才必须 fail-closed。
+  //   否则显式给了 target 的调用（如全局 send 包装只传 target 不传 sender）会因缺 sender 被拒发。
+  const sender = (opts.sender ?? lastCtx?.sender ?? null) as {
     sendText?: (t: unknown, c: string) => Promise<unknown>;
     sendMarkdown?: (t: unknown, c: string) => Promise<unknown>;
     /** ⚠️ 真实签名是**三个参数**：`sendMedia(target, kind, { url } | { localPath })` */
     sendMedia?: (t: unknown, k: string, s: { url?: string; localPath?: string }) => Promise<unknown>;
   } | null;
-  const target = (opts.target ?? fallback?.target ?? null) as Record<string, unknown> | null;
+  const target = (opts.target ?? (allowFallback ? lastCtx?.target : null) ?? null) as Record<string, unknown> | null;
   if (!sender || !target) {
     // ★ 2026-11-21（issue #78）：没有明确 target 就**拒发**（除非显式开了回落）。
     //   以前这里静默回落到 lastCtx ⇒ 并发会话串台；现在至少留一行日志，便于发现"扩展少传了 target"。

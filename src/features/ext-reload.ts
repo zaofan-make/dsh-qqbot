@@ -173,17 +173,35 @@ export async function reloadExtOutbound(dataRoot?: string): Promise<ExtOutboundR
     // ★ 2026-11-21（issue #78）：**只清本实例**的思考回调，再重载本实例的出站扩展。
     //   ★ CodeRabbit #80：原来清的是全局 Set ⇒ 别的实例回调被一起删掉、又不会重新加载
     //   ⇒ 它们的思考转发静默停摆。现在按 dataRoot 归属清，清理范围 ≡ 重载范围。
+    //
+    //   ★ 第 2 轮复审：装载器用 `?v=${fileVersion(abs)}` 导入 —— **文件没改**时 URL 不变、
+    //   ESM 缓存命中、模块不会重新执行 ⇒ 不会重新注册 onDelta。所以清理前先快照，
+    //   重载后若该实例一个回调都没有，就把旧回调放回去（否则思考转发停摆）。
+    let owner = '';
+    let snap: { owner: string; deltas: unknown[]; turns: unknown[] } | undefined;
     try {
       const rb = await import('./reasoning-bus.js');
       const { currentOutboundDataRoot } = await import('./ext-outbound.js');
-      const owner = String(dataRoot || currentOutboundDataRoot() || '');
-      if (owner) rb.clearReasoningHandlers(owner);
+      owner = String(dataRoot || currentOutboundDataRoot() || '');
+      if (owner) {
+        snap = rb.snapshotReasoningHandlers(owner) as unknown as typeof snap;
+        rb.clearReasoningHandlers(owner);
+      }
     } catch { /* 老宿主没有该模块时的兜底：忽略 */ }
     const { reloadOutboundExtensions } = await import('./ext-outbound.js');
     // ★★ 2026-11-14（CodeRabbit 复审）：P1 之后 reloadOutboundExtensions 已按 dataRoot 取桶，
     //   这里不再需要「当前配置对比」—— 那个判断在配了 A、B 之后永远只返回最后一个，
     //   导致请求 A 反而报目录不匹配、A 永远热刷不了。直接下传 dataRoot 即可。
     const r = await reloadOutboundExtensions(dataRoot);
+    // 重载后该实例没有回调 ⇒ 说明模块走了 ESM 缓存（文件没改），把清理前的回调放回去
+    if (owner) {
+      try {
+        const rb = await import('./reasoning-bus.js');
+        if (rb.countReasoningHandlers(owner) === 0) {
+          rb.restoreReasoningHandlers(snap as never);
+        }
+      } catch { /* 恢复失败只影响思考转发，不影响出站 */ }
+    }
     return { count: r.total, names: r.extensions.map((e) => e.name) };
   } catch (err) {
     return { error: `出站扩展重载失败: ${err instanceof Error ? err.message : String(err)}` };

@@ -25,7 +25,9 @@ export type ReasoningDeltaFn = (agentId: string, text: string, target?: Reasonin
 export type ReasoningTurnFn = (agentId: string, info: {
     hasReply: boolean;
 }) => void;
-/** 装载扩展前由 ext-outbound 调用：标出接下来注册的回调属于哪个实例 */
+/** 在"这批回调属于 owner"的上下文里执行装载（ext-outbound 用） */
+export declare function runWithReasoningOwner<T>(owner: string, fn: () => T): T;
+/** 兼容旧调用（同步设置 owners 已不适用，保留空实现避免外部报错） */
 export declare function setReasoningOwner(owner: string): void;
 /** 注册思考增量回调（返回取消函数） */
 export declare function onReasoningDelta(fn: ReasoningDeltaFn): () => void;
@@ -44,5 +46,22 @@ export declare function endReasoningTurn(agentId: string, hasReply: boolean): vo
  *
  * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
  */
+/** 该实例当前注册了多少回调（重载后判断"新扩展有没有重新注册"） */
+export declare function countReasoningHandlers(owner: string): number;
+export interface ReasoningSnapshot {
+    owner: string;
+    deltas: ReasoningDeltaFn[];
+    turns: ReasoningTurnFn[];
+}
+/** 取该实例的回调快照（清理前保存，热重载后若没重新注册就恢复） */
+export declare function snapshotReasoningHandlers(owner: string): ReasoningSnapshot;
+/**
+ * 恢复快照。
+ *
+ * ★ CodeRabbit #80（第 2 轮）：热重载用 `?v=${fileVersion(abs)}` 导入 —— **文件没改**时 URL 不变、
+ *   ESM 缓存命中、模块根本不重新执行 ⇒ 不会重新注册 onDelta。若我们事先清掉了，
+ *   该实例的思考转发就永久停摆。所以"重载后仍然没人注册"时把旧回调放回去。
+ */
+export declare function restoreReasoningHandlers(snap: ReasoningSnapshot | undefined): number;
 export declare function clearReasoningHandlers(owner?: string): number;
 //# sourceMappingURL=reasoning-bus.d.ts.map
