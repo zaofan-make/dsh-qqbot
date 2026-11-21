@@ -2093,7 +2093,9 @@ export class SessionManager {
                 if (ctxSmartOn && ctxSmartText) {
                     const SMART_KIND = 'qqbot:ctx-smart';
                     const smartFp = CTX_SMART_REMINDER.slice(0, 40);
-                    const _smartInBatch = dec.messages.some((m) => {
+                    // ★ CodeRabbit：判重要看**剔旧之后**的 `_baseMsgs` —— `_stripOldCtxSmart` 已经把本批里的旧智能块删掉了，
+                    //   若还拿原始 `dec.messages` 判，就会误以为"本批已有"而不再补注，最终消息里反而没有这条提示。
+                    const _smartInBatch = _baseMsgs.some((m) => {
                         const mm = m;
                         return mm?.source?.kind === SMART_KIND && String(mm.content?.[0]?.text ?? '').includes(smartFp);
                     });
