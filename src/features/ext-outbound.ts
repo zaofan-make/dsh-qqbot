@@ -198,7 +198,9 @@ export interface OutboundLoadResult {
    *   命中缓存 ⇒ 模块里那句 `onDelta(...)` 没再执行 ⇒ 得把旧回调放回去；
    *   没命中（文件改了）⇒ 以新模块的注册结果为准，**不恢复**（用户可能就是想删掉注册）。
    */
-  cachedFiles: string[];
+  cachedPaths: string[];
+  /** 本次扫到的全部扩展文件（绝对路径；用来判断"哪些文件这次根本没装载"，例如被停用） */
+  scannedPaths: string[];
 }
 
 export interface LoadOutboundOptions {
@@ -326,7 +328,7 @@ export async function reloadOutboundExtensions(dataRoot?: string): Promise<Outbo
 // （P1：全局 loaded 已并入 buckets，各实例一份）
 
 function emptyResult(files: string[] = []): OutboundLoadResult {
-  return { total: 0, skipped: 0, middleware: [], extensions: [], files, cachedFiles: [] };
+  return { total: 0, skipped: 0, middleware: [], extensions: [], files, cachedPaths: [], scannedPaths: [] };
 }
 
 function pickFn(...cands: unknown[]): OutboundMiddleware | undefined {
@@ -391,16 +393,17 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
     const abs = hit.abs;
     try {
       const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
-      // ★ CodeRabbit #80（第 3 轮）：URL 与上次相同 ⇒ ESM 缓存命中，模块**不会重新执行**。
-      //   这个信息要报给调用方，由它决定"清理后的回调要不要恢复"（按模块，不按实例总数）。
-      const cached = bucket?.urls.get(f) === url;
-      if (cached) result.cachedFiles.push(f);
-      // ★ 归属细化到"实例#文件"：这样恢复时可以只挑"命中缓存"的那几个模块。
+      // ★ CodeRabbit #80（第 3/4 轮）：URL 与上次相同 ⇒ ESM 缓存命中，模块**不会重新执行**。
+      //   用**绝对路径**做 key：`scanExtFiles` 不按文件名去重，不同目录同名扩展会串。
+      result.scannedPaths.push(abs);
+      const cached = bucket?.urls.get(abs) === url;
+      if (cached) result.cachedPaths.push(abs);
+      // ★ 归属细化到"实例#文件"：这样恢复时可以只挑"命中缓存 / 这次没装载"的那些模块。
       const doImport = (): Promise<unknown> => import(url);
       const mod = (rb && typeof rb.runWithReasoningOwner === 'function'
-        ? await rb.runWithReasoningOwner(`${ownerRoot}#${f}`, doImport)
+        ? await rb.runWithReasoningOwner(`${ownerRoot}#${abs}`, doImport)
         : await doImport()) as Parameters<typeof normalizeOutbound>[0];
-      bucket?.urls.set(f, url);
+      bucket?.urls.set(abs, url);
       const ext = normalizeOutbound(mod, f, abs, logger);
       if (!ext) {
         result.skipped += 1;

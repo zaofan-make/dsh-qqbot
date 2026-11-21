@@ -178,7 +178,7 @@ export async function reloadExtOutbound(dataRoot?: string): Promise<ExtOutboundR
     //   ESM 缓存命中、模块不会重新执行 ⇒ 不会重新注册 onDelta。所以清理前先快照，
     //   重载后若该实例一个回调都没有，就把旧回调放回去（否则思考转发停摆）。
     let owner = '';
-    let snap: { owner: string; deltas: unknown[]; turns: unknown[] } | undefined;
+    let snap: { items: Array<{ fn: unknown; owner: string; kind: 'delta' | 'turn' }> } | undefined;
     try {
       const rb = await import('./reasoning-bus.js');
       const { currentOutboundDataRoot } = await import('./ext-outbound.js');
@@ -193,13 +193,23 @@ export async function reloadExtOutbound(dataRoot?: string): Promise<ExtOutboundR
     //   这里不再需要「当前配置对比」—— 那个判断在配了 A、B 之后永远只返回最后一个，
     //   导致请求 A 反而报目录不匹配、A 永远热刷不了。直接下传 dataRoot 即可。
     const r = await reloadOutboundExtensions(dataRoot);
-    // ★ CodeRabbit #80（第 3 轮）：恢复要**按模块**判 —— 只有"命中 ESM 缓存、模块没重新执行"的文件
-    //   才恢复旧回调；文件改过的以新模块注册结果为准（用户可能就是想删掉 onDelta 注册）。
+    // ★ CodeRabbit #80（第 3/4 轮）：恢复要**按模块**判，且用排除法：
+    //   · 本次扫到、URL 变了（模块真的重新执行）⇒ 以新注册结果为准，**不恢复**；
+    //   · 命中 ESM 缓存（没执行）⇒ 恢复；
+    //   · 这次压根没扫到（被停用/移走）⇒ 也恢复 —— 它的模块还在 ESM 缓存里，
+    //     以后重新启用时同样不会执行，不恢复就等于永久丢失（第 4 轮复审指出的场景）。
     if (owner) {
       try {
         const rb = await import('./reasoning-bus.js');
-        const cached = new Set(((r as { cachedFiles?: string[] }).cachedFiles ?? []).map((f) => `${owner}#${f}`));
-        if (snap && cached.size > 0) rb.restoreReasoningHandlers(snap as never, cached);
+        const res = r as { cachedPaths?: string[]; scannedPaths?: string[] };
+        const cached = new Set(res.cachedPaths ?? []);
+        const scanned = new Set(res.scannedPaths ?? []);
+        // 真的重新执行过的模块
+        const reran = new Set([...scanned].filter((p) => !cached.has(p)).map((p) => `${owner}#${p}`));
+        if (snap) {
+          const allow = new Set(snap.items.map((it) => it.owner).filter((o) => !reran.has(o)));
+          rb.restoreReasoningHandlers(snap as never, allow);
+        }
       } catch { /* 恢复失败只影响思考转发，不影响出站 */ }
     }
     return { count: r.total, names: r.extensions.map((e) => e.name) };

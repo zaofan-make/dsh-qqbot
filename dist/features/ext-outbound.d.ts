@@ -158,7 +158,9 @@ export interface OutboundLoadResult {
      *   命中缓存 ⇒ 模块里那句 `onDelta(...)` 没再执行 ⇒ 得把旧回调放回去；
      *   没命中（文件改了）⇒ 以新模块的注册结果为准，**不恢复**（用户可能就是想删掉注册）。
      */
-    cachedFiles: string[];
+    cachedPaths: string[];
+    /** 本次扫到的全部扩展文件（绝对路径；用来判断"哪些文件这次根本没装载"，例如被停用） */
+    scannedPaths: string[];
 }
 export interface LoadOutboundOptions {
     dataRoot: string;
