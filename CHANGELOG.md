@@ -1,3 +1,65 @@
+## 1.13.21 (2026-11-22)
+
+### 一、工具报错也能"策略化"了（issue #77）
+
+原来 `tool/result` 只要带 `error` 就直接把原文发出去（`❌ 工具 web_fetch 执行失败 ToolTimeoutError: TOOL_TIMEOUT`），
+和回合异常（issue #73）是同一类问题，但多一层：**群聊该静默、私聊要留原文排查**。
+
+- 新配置 `toolErrorMode`：`notify`（默认，与旧版逐字一致）/ `friendly`（一句人话）/ `silent`（不发）/ `regex`
+- 新配置 `toolErrorSilentPattern`：`regex` 档的匹配式，例 `TOOL_TIMEOUT|执行失败`
+- 新配置 `turnErrorModeByScope` / `toolErrorModeByScope`：按渠道覆盖，例 `{ group: "silent", c2c: "notify" }`
+- 设置面板同步加了这两栏，且改完**即时生效**（不用重启）
+
+### 二、思考流不再跨会话串台（issue #78）
+
+- 瞬态 `reasoning-delta` 现在**带上本回合的投递目标**，扩展不必再"猜最近活跃会话"
+- 出站扩展 `send()` 没给 target 时**默认拒发**（fail-closed）；要旧行为可开 `outboundLastCtxFallback`
+- 新增 `clearReasoningHandlers(owner)`：`/tools_reload` 先按实例清回调再重载，
+  且按"文件是否真的重新执行"决定要不要恢复旧回调（不再出现"注释掉的扩展还在发消息"）
+
+### 三、会话类型与名字显式标注（issue #79）
+
+私聊与群聊的注入格式几乎同构，模型只能靠猜（实测把私聊判成群聊）。现在每个会话首次注入一条：
+
+```
+[当前会话] 渠道=QQ 群聊 · 群名「群组管理」 · 群 openid 尾号 BA1DDC6B
+这是群聊：发言会被群里所有人看到，别按私聊口吻假设。
+```
+
+- 群名走官方 `GET /v2/groups/{openid}/info`、昵称走 `GET /v2/users/{openid}/info`
+- 都带内存缓存 + 后台预取（注入本身同步，不等网络）；拿不到时**回落到本地历史目录**（`msg-history/<scope>_<openid>/`，群聊读 `<群名>.txt`、私聊读 jsonl 的 `n`）
+- 缓存按 **bot 身份（appId）** 隔离，多实例互不污染
+- 配置项 `sessionKindHint`（默认开）
+
+### 四、无上下文模式：备忘与智能提示各自独立注入
+
+以前「你（机器人）自己的备忘」和群守则拼在同一条 body 里、共用群守则的指纹判重，
+群守则不变时备忘改了也**永远不会重新注入**。现在：
+
+- 备忘独立成块（`qqbot:self-memo`），变了就补注最新版（旧版自动以新块为准）
+- 话题判断/压缩要求独立成块（`qqbot:ctx-smart`），不再被"群守则已在上下文里"连带跳过
+- 备忘被清空会补一条作废标记；**读取失败则不注入**（不会误废有效备忘）
+
+### 五、顺手修掉的多实例坑
+
+- 设置页热改 `outboundLastCtxFallback` 按 `settingsNs` 找对应 sender（不再改错实例）
+- 名字/回调归属、缓存 key 全部加实例维度
+- `ctxSmartOn` 在宿主恢复会话（`findByAgent` 为空）时用 model-prefs 反查兜底
+
+---
+
+## 1.13.20 (2026-11-20)
+
+### 修复：LaTeX 不渲染
+
+QQ 只在 markdown 通道（`msg_type=2`）渲染公式，而插件在没有 markdown 语法时会降级成纯文本
+（`msg_type=0`），于是 `$E=mc^2$` 原样显示成源码。
+
+- 新增 `scanLatexRanges()` / `toPlainText()`：识别 `$…$`、`$$…$$`（含转义与奇偶判断、区间整体保护）
+- 带公式的消息不再走纯文本降级；被动回复的纯文本兜底也会先试原 msgId
+
+---
+
 ## 1.13.19 (2026-11-20)
 
 ### 新功能：数学公式提示开关（`latexHint`，**默认关**）
