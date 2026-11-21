@@ -1193,7 +1193,7 @@ export async function bootstrapGateway(
   try { registerOutboundOwner(dataRootOf(config), sender); } catch { /* 登记失败不影响发送 */ }
   // ★ 2026-11-21（issue #78）：扩展 `send()` 无 target 时默认**拒发**（fail-closed），
   //   避免回落"最近活跃会话"造成跨会话串台。要旧行为就把 outboundLastCtxFallback 打开。
-  try { setOutboundLastCtxFallback(config.outboundLastCtxFallback === true); } catch { /* ignore */ }
+  try { setOutboundLastCtxFallback(sender, config.outboundLastCtxFallback === true); } catch { /* ignore */ }
   const outboundHandler = createOutboundHandler(manager, sender, config, logger, toolsRegistry);
   (ctx as unknown as { on(event: string, handler: (...args: unknown[]) => void): void })
     .on('session/event', outboundHandler as (...args: unknown[]) => void);

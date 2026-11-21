@@ -44,7 +44,7 @@ export declare function rememberGroupName(gid: string, name: string): void;
  * 下一轮就有了。失败也写空串（短 TTL），免得对着没权限的群每轮打接口。
  */
 export declare function prefetchGroupName(client: SessionKindClient | undefined, gid: string): void;
-/** 后台拉用户名并缓存；已有入站昵称时直接跳过（省一次接口调用） */
+/** 后台拉用户名并缓存；已有未过期缓存时跳过（省一次接口调用） */
 export declare function prefetchUserName(client: SessionKindClient | undefined, openid: string): void;
 export interface SessionKindInfo {
     /** `group` = QQ 群聊；`c2c` = QQ 私聊 */

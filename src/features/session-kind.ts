@@ -75,34 +75,46 @@ export function rememberGroupName(gid: string, name: string): void {
  */
 export function prefetchGroupName(client: SessionKindClient | undefined, gid: string): void {
   const id = String(gid || '').trim();
-  if (!id || cachedGroupName(id) || inflight.has('g:' + id)) return;
+  // ★ CodeRabbit #80：判"有没有**未过期**的缓存条目"，而不是判名字非空 ——
+  //   失败缓存的是空串，用 cachedGroupName() 判会永远当"没缓存"，无权限的群会一直重打接口（30 QPM）。
+  if (!id || fresh(groupNameCache.get(id)) || inflight.has('g:' + id)) return;
   if (!client || typeof client.getGroupInfo !== 'function') return;
   inflight.add('g:' + id);
+  const startedAt = Date.now();
   void (async () => {
     let name = '';
     try {
       const r = await client.getGroupInfo!(id);
       if (r && r.ok !== false) name = String(r.data?.group_name ?? '').trim();
     } catch { name = ''; } finally {
-      groupNameCache.set(id, { name, at: Date.now() });
+      // ★ CodeRabbit #80：请求期间若别处写入了更新的名字，别用（可能是空的）结果覆盖它
+      const prev = groupNameCache.get(id);
+      if (!(prev && prev.at > startedAt && prev.name)) {
+        groupNameCache.set(id, { name, at: Date.now() });
+      }
       inflight.delete('g:' + id);
     }
   })();
 }
 
-/** 后台拉用户名并缓存；已有入站昵称时直接跳过（省一次接口调用） */
+/** 后台拉用户名并缓存；已有未过期缓存时跳过（省一次接口调用） */
 export function prefetchUserName(client: SessionKindClient | undefined, openid: string): void {
   const id = String(openid || '').trim();
-  if (!id || cachedUserName(id) || inflight.has('u:' + id)) return;
+  if (!id || fresh(userNameCache.get(id)) || inflight.has('u:' + id)) return;
   if (!client || typeof client.getUserInfo !== 'function') return;
   inflight.add('u:' + id);
+  const startedAt = Date.now();
   void (async () => {
     let name = '';
     try {
       const r = await client.getUserInfo!(id);
       if (r && r.ok !== false) name = String(r.data?.username ?? '').trim();
     } catch { name = ''; } finally {
-      userNameCache.set(id, { name, at: Date.now() });
+      // ★ CodeRabbit #80：入站消息可能在请求期间写入了 senderName，旧请求失败不能拿空串盖掉它
+      const prev = userNameCache.get(id);
+      if (!(prev && prev.at > startedAt && prev.name)) {
+        userNameCache.set(id, { name, at: Date.now() });
+      }
       inflight.delete('u:' + id);
     }
   })();

@@ -110,16 +110,15 @@ export function hasExtInboundReloader() {
  */
 export async function reloadExtOutbound(dataRoot) {
     try {
-        // ★ 2026-11-21（issue #78）：**先清思考回调**再重载。
-        //   扩展的 onDelta 取消函数常被漏存，热重载后旧闭包仍在 Set 里继续往外发消息。
-        //   清完再重载 ⇒ 新扩展注册的是新回调，旧的一律不再触发。
+        // ★ 2026-11-21（issue #78）：**只清本实例**的思考回调，再重载本实例的出站扩展。
+        //   ★ CodeRabbit #80：原来清的是全局 Set ⇒ 别的实例回调被一起删掉、又不会重新加载
+        //   ⇒ 它们的思考转发静默停摆。现在按 dataRoot 归属清，清理范围 ≡ 重载范围。
         try {
             const rb = await import('./reasoning-bus.js');
-            const n = rb.clearReasoningHandlers();
-            if (n > 0) {
-                // 用不到 logger，这里只做一次静默清理；数量给诊断用
-                void n;
-            }
+            const { currentOutboundDataRoot } = await import('./ext-outbound.js');
+            const owner = String(dataRoot || currentOutboundDataRoot() || '');
+            if (owner)
+                rb.clearReasoningHandlers(owner);
         }
         catch { /* 老宿主没有该模块时的兜底：忽略 */ }
         const { reloadOutboundExtensions } = await import('./ext-outbound.js');

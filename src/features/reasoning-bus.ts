@@ -26,25 +26,39 @@ export interface ReasoningTarget {
 export type ReasoningDeltaFn = (agentId: string, text: string, target?: ReasoningTarget) => void;
 export type ReasoningTurnFn = (agentId: string, info: { hasReply: boolean }) => void;
 
-const deltaFns = new Set<ReasoningDeltaFn>();
-const turnFns = new Set<ReasoningTurnFn>();
+/**
+ * 回调 → 归属实例（dataRoot）。
+ *
+ * ★ CodeRabbit #80：清理必须与"重载哪个实例"对齐 —— 全局 Set 一清就把**别的实例**的
+ *   回调也删了，而那些实例不会重新加载扩展 ⇒ 它们的思考转发从此静默停摆。
+ *   所以按归属记，`clearReasoningHandlers(owner)` 只删这个实例的。
+ */
+const deltaFns = new Map<ReasoningDeltaFn, string>();
+const turnFns = new Map<ReasoningTurnFn, string>();
+/** 当前正在装载哪个实例的扩展（由 ext-outbound 在 import 扩展前设置） */
+let loadingOwner = '';
+
+/** 装载扩展前由 ext-outbound 调用：标出接下来注册的回调属于哪个实例 */
+export function setReasoningOwner(owner: string): void {
+  loadingOwner = String(owner || '');
+}
 
 /** 注册思考增量回调（返回取消函数） */
 export function onReasoningDelta(fn: ReasoningDeltaFn): () => void {
-  deltaFns.add(fn);
+  deltaFns.set(fn, loadingOwner);
   return () => deltaFns.delete(fn);
 }
 
 /** 注册回合结束回调（返回取消函数） */
 export function onReasoningTurnEnd(fn: ReasoningTurnFn): () => void {
-  turnFns.add(fn);
+  turnFns.set(fn, loadingOwner);
   return () => turnFns.delete(fn);
 }
 
 /** 内核调用：来了一段思考增量 */
 export function feedReasoning(agentId: string, text: string, target?: ReasoningTarget): void {
   if (!agentId || !text) return;
-  for (const fn of deltaFns) {
+  for (const fn of deltaFns.keys()) {
     try {
       fn(agentId, text, target);
     } catch { /* 扩展自己抛错不能影响消息流 */ }
@@ -54,7 +68,7 @@ export function feedReasoning(agentId: string, text: string, target?: ReasoningT
 /** 内核调用：本回合结束（hasReply = 该回合是否真的产出过正文增量） */
 export function endReasoningTurn(agentId: string, hasReply: boolean): void {
   if (!agentId) return;
-  for (const fn of turnFns) {
+  for (const fn of turnFns.keys()) {
     try {
       fn(agentId, { hasReply });
     } catch { /* 同上 */ }
@@ -70,10 +84,27 @@ export function endReasoningTurn(agentId: string, hasReply: boolean): void {
  *
  * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
  */
-export function clearReasoningHandlers(): number {
-  const n = deltaFns.size + turnFns.size;
-  deltaFns.clear();
-  turnFns.clear();
+export function clearReasoningHandlers(owner?: string): number {
+  let n = 0;
+  if (owner === undefined) {
+    n = deltaFns.size + turnFns.size;
+    deltaFns.clear();
+    turnFns.clear();
+    return n;
+  }
+  const o = String(owner || '');
+  for (const fn of [...deltaFns.keys()]) {
+    if ((deltaFns.get(fn) ?? '') === o) {
+      deltaFns.delete(fn);
+      n += 1;
+    }
+  }
+  for (const fn of [...turnFns.keys()]) {
+    if ((turnFns.get(fn) ?? '') === o) {
+      turnFns.delete(fn);
+      n += 1;
+    }
+  }
   return n;
 }
 

@@ -369,6 +369,12 @@ export async function loadOutboundExtensions(opts: LoadOutboundOptions): Promise
   const files = hits.map((h) => h.name);
 
   const result = emptyResult(files);
+  // ★ 2026-11-21（issue #78 / CodeRabbit #80）：装载期间标出"这批回调属于哪个实例"，
+  //   这样 `/tools_reload` 只清掉本实例的思考回调（别的实例不重载，清了就再也回不来）。
+  try {
+    const rb = await import('./reasoning-bus.js');
+    rb.setReasoningOwner(String(dataRoot || ''));
+  } catch { /* 老宿主没有该模块时忽略 */ }
   for (const hit of hits) {
     const f = hit.name;
     const abs = hit.abs;
@@ -473,19 +479,23 @@ let lastCtx: OutboundCtx | null = null;
  *   旧行为是回落 ⇒ 多会话并发/思考流这类"没有明确目标"的发送会串台
  *   （实测：私聊任务的思考草稿发进了无关的群）。业界主流（Slack/Telegram/Discord）
  *   也都是"没有 channel 就拒发"。真要旧行为，把配置 `outboundLastCtxFallback` 打开。
+ *
+ * ★ CodeRabbit #80：开关按**发送器实例**存（WeakMap），不是模块级单变量 ——
+ *   否则后启动的实例（默认 false）会把先启动实例的 true 覆盖掉。
  */
-let allowLastCtxFallback = false;
+const fallbackByOwner = new WeakMap<object, boolean>();
 /** 拒发告警节流：第一次必打，之后每 200 次打一次 */
 let rejectedNoTarget = 0;
 
-/** 由 bootstrap 按配置设置（热改需重启，扩展侧不频繁变） */
-export function setOutboundLastCtxFallback(v: boolean): void {
-  allowLastCtxFallback = v === true;
+/** 由 bootstrap 按配置设置（每个实例各自一份，互不影响） */
+export function setOutboundLastCtxFallback(owner: unknown, v: boolean): void {
+  if (owner && typeof owner === 'object') fallbackByOwner.set(owner as object, v === true);
 }
 
-/** 诊断用：当前是否允许回落 */
-export function outboundLastCtxFallbackEnabled(): boolean {
-  return allowLastCtxFallback;
+/** 诊断用：该发送器是否允许回落 */
+export function outboundLastCtxFallbackEnabled(owner?: unknown): boolean {
+  if (!owner || typeof owner !== 'object') return false;
+  return fallbackByOwner.get(owner as object) === true;
 }
 
 /** 当前是否正在跑出站链（其他扩展可用于"别在我发消息时又触发我"） */
@@ -745,7 +755,9 @@ export async function sendViaOutboundChannel(
   opts: RunOutboundOptions = {},
   sendOpts: { adaptive?: boolean } = {},
 ): Promise<boolean> {
-  const fallback = allowLastCtxFallback ? lastCtx : null;
+  const ownerObj = (opts.sender ?? lastCtx?.sender ?? null) as object | null;
+  const allowFallback = ownerObj ? fallbackByOwner.get(ownerObj) === true : false;
+  const fallback = allowFallback ? lastCtx : null;
   const sender = (opts.sender ?? fallback?.sender ?? null) as {
     sendText?: (t: unknown, c: string) => Promise<unknown>;
     sendMarkdown?: (t: unknown, c: string) => Promise<unknown>;
@@ -760,7 +772,7 @@ export async function sendViaOutboundChannel(
     if (rejectedNoTarget === 1 || rejectedNoTarget % 200 === 0) {
       const { logger } = opts;
       const warn = logger && typeof logger.warn === 'function' ? logger.warn.bind(logger) : undefined;
-      warn?.(`[ext-outbound] 拒绝发送：调用方没给 target（第 ${rejectedNoTarget} 次；outboundLastCtxFallback=${allowLastCtxFallback}）`);
+      warn?.(`[ext-outbound] 拒绝发送：调用方没给 target（第 ${rejectedNoTarget} 次；outboundLastCtxFallback=${allowFallback}）`);
     }
     return false;
   }

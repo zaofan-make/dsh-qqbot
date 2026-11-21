@@ -207,10 +207,10 @@ export declare function notifyOutboundSent(result: OutboundSentResult, owner?: u
 export declare function listOutboundExtensions(): OutboundExtension[];
 /** 改文件 + tools_reload = 复位通道 */
 export declare function resetOutboundBreaker(name?: string): void;
-/** 由 bootstrap 按配置设置（热改需重启，扩展侧不频繁变） */
-export declare function setOutboundLastCtxFallback(v: boolean): void;
-/** 诊断用：当前是否允许回落 */
-export declare function outboundLastCtxFallbackEnabled(): boolean;
+/** 由 bootstrap 按配置设置（每个实例各自一份，互不影响） */
+export declare function setOutboundLastCtxFallback(owner: unknown, v: boolean): void;
+/** 诊断用：该发送器是否允许回落 */
+export declare function outboundLastCtxFallbackEnabled(owner?: unknown): boolean;
 /** 当前是否正在跑出站链（其他扩展可用于"别在我发消息时又触发我"） */
 export declare function outboundActive(): boolean;
 /** 最近一次出站的 ctx（其他扩展可用它拿 target 往同一个会话补发） */

@@ -25,6 +25,8 @@ export type ReasoningDeltaFn = (agentId: string, text: string, target?: Reasonin
 export type ReasoningTurnFn = (agentId: string, info: {
     hasReply: boolean;
 }) => void;
+/** 装载扩展前由 ext-outbound 调用：标出接下来注册的回调属于哪个实例 */
+export declare function setReasoningOwner(owner: string): void;
 /** 注册思考增量回调（返回取消函数） */
 export declare function onReasoningDelta(fn: ReasoningDeltaFn): () => void;
 /** 注册回合结束回调（返回取消函数） */
@@ -42,5 +44,5 @@ export declare function endReasoningTurn(agentId: string, hasReply: boolean): vo
  *
  * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
  */
-export declare function clearReasoningHandlers(): number;
+export declare function clearReasoningHandlers(owner?: string): number;
 //# sourceMappingURL=reasoning-bus.d.ts.map
