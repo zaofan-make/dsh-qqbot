@@ -151,6 +151,14 @@ export interface OutboundLoadResult {
     middleware: OutboundMiddleware[];
     extensions: OutboundExtension[];
     files: string[];
+    /**
+     * 本次**命中 ESM 缓存**、模块没重新执行的文件（URL 与上次相同）。
+     *
+     * ★ CodeRabbit #80（第 3 轮）：思考回调清理后要不要恢复，全看这个 ——
+     *   命中缓存 ⇒ 模块里那句 `onDelta(...)` 没再执行 ⇒ 得把旧回调放回去；
+     *   没命中（文件改了）⇒ 以新模块的注册结果为准，**不恢复**（用户可能就是想删掉注册）。
+     */
+    cachedFiles: string[];
 }
 export interface LoadOutboundOptions {
     dataRoot: string;

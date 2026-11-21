@@ -134,13 +134,14 @@ export async function reloadExtOutbound(dataRoot) {
         //   这里不再需要「当前配置对比」—— 那个判断在配了 A、B 之后永远只返回最后一个，
         //   导致请求 A 反而报目录不匹配、A 永远热刷不了。直接下传 dataRoot 即可。
         const r = await reloadOutboundExtensions(dataRoot);
-        // 重载后该实例没有回调 ⇒ 说明模块走了 ESM 缓存（文件没改），把清理前的回调放回去
+        // ★ CodeRabbit #80（第 3 轮）：恢复要**按模块**判 —— 只有"命中 ESM 缓存、模块没重新执行"的文件
+        //   才恢复旧回调；文件改过的以新模块注册结果为准（用户可能就是想删掉 onDelta 注册）。
         if (owner) {
             try {
                 const rb = await import('./reasoning-bus.js');
-                if (rb.countReasoningHandlers(owner) === 0) {
-                    rb.restoreReasoningHandlers(snap);
-                }
+                const cached = new Set((r.cachedFiles ?? []).map((f) => `${owner}#${f}`));
+                if (snap && cached.size > 0)
+                    rb.restoreReasoningHandlers(snap, cached);
             }
             catch { /* 恢复失败只影响思考转发，不影响出站 */ }
         }

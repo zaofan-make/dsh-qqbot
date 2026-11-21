@@ -37,31 +37,27 @@ export declare function onReasoningTurnEnd(fn: ReasoningTurnFn): () => void;
 export declare function feedReasoning(agentId: string, text: string, target?: ReasoningTarget): void;
 /** 内核调用：本回合结束（hasReply = 该回合是否真的产出过正文增量） */
 export declare function endReasoningTurn(agentId: string, hasReply: boolean): void;
-/**
- * 清空**所有**思考回调（2026-11-21，issue #78）。
- *
- * 为什么需要它：扩展注册回调时拿到的是取消函数，但**调用方经常漏存**；
- * 出站扩展热重载（`/tools_reload`）后旧闭包仍在 Set 里继续跑 ——
- * 于是"已经注释掉的扩展"还在往外发消息（实测）。
- *
- * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
- */
-/** 该实例当前注册了多少回调（重载后判断"新扩展有没有重新注册"） */
+/** 该实例（含其下各文件）当前注册了多少回调 */
 export declare function countReasoningHandlers(owner: string): number;
-export interface ReasoningSnapshot {
+/** 一条待恢复的回调（带它自己的归属，恢复时按模块筛） */
+export interface ReasoningSnapshotItem {
+    fn: ReasoningDeltaFn | ReasoningTurnFn;
     owner: string;
-    deltas: ReasoningDeltaFn[];
-    turns: ReasoningTurnFn[];
+    kind: 'delta' | 'turn';
 }
-/** 取该实例的回调快照（清理前保存，热重载后若没重新注册就恢复） */
+export interface ReasoningSnapshot {
+    items: ReasoningSnapshotItem[];
+}
+/** 取该实例（含其下各文件）的回调快照（清理前保存） */
 export declare function snapshotReasoningHandlers(owner: string): ReasoningSnapshot;
 /**
  * 恢复快照。
  *
- * ★ CodeRabbit #80（第 2 轮）：热重载用 `?v=${fileVersion(abs)}` 导入 —— **文件没改**时 URL 不变、
- *   ESM 缓存命中、模块根本不重新执行 ⇒ 不会重新注册 onDelta。若我们事先清掉了，
- *   该实例的思考转发就永久停摆。所以"重载后仍然没人注册"时把旧回调放回去。
+ * ★ CodeRabbit #80（第 3 轮）：**不能看"该实例回调数为 0"就整批恢复** ——
+ *   那分不清两种情形：① 文件没改、URL 未变 ⇒ ESM 缓存命中、模块根本没执行（该恢复）；
+ *   ② 文件改了、模块删掉了 `onDelta` 注册 ⇒ 执行了但没注册（**不该恢复**，用户就是想禁用它）。
+ *   所以由装载器报告"哪些文件命中了缓存"，这里只恢复 `allowOwners` 里的那些。
  */
-export declare function restoreReasoningHandlers(snap: ReasoningSnapshot | undefined): number;
+export declare function restoreReasoningHandlers(snap: ReasoningSnapshot | undefined, allowOwners?: Set<string>): number;
 export declare function clearReasoningHandlers(owner?: string): number;
 //# sourceMappingURL=reasoning-bus.d.ts.map

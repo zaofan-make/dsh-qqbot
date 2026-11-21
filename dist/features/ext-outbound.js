@@ -62,7 +62,7 @@ function ensureBucket(dataRoot, logger, apiCall) {
     const k = obKey(dataRoot);
     let b = buckets.get(k);
     if (!b) {
-        b = { cfg: { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) }, loaded: [], breaker: new Map() };
+        b = { cfg: { dataRoot: String(dataRoot ?? ''), logger, ...(apiCall !== undefined ? { apiCall } : {}) }, loaded: [], breaker: new Map(), urls: new Map() };
         buckets.set(k, b);
     }
     else {
@@ -116,7 +116,7 @@ export async function reloadOutboundExtensions(dataRoot) {
 // ─────────────────────────── 装载 ───────────────────────────
 // （P1：全局 loaded 已并入 buckets，各实例一份）
 function emptyResult(files = []) {
-    return { total: 0, skipped: 0, middleware: [], extensions: [], files };
+    return { total: 0, skipped: 0, middleware: [], extensions: [], files, cachedFiles: [] };
 }
 function pickFn(...cands) {
     for (const c of cands)
@@ -174,33 +174,36 @@ export async function loadOutboundExtensions(opts) {
     //   ★ 第 2 轮复审：归属不能存全局变量 —— 装载是 `await import()`，两个实例并发装载会互相覆盖。
     //   改成 AsyncLocalStorage：归属跟着这次 `run()` 的异步调用链走。
     const rb = await import('./reasoning-bus.js').catch(() => undefined);
-    const loadAll = async () => {
-        for (const hit of hits) {
-            const f = hit.name;
-            const abs = hit.abs;
-            try {
-                const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
-                const mod = await import(url);
-                const ext = normalizeOutbound(mod, f, abs, logger);
-                if (!ext) {
-                    result.skipped += 1;
-                    continue;
-                }
-                result.total += 1;
-                result.extensions.push(ext);
-                result.middleware.push(ext.middleware);
-            }
-            catch (err) {
+    const ownerRoot = String(dataRoot || '');
+    for (const hit of hits) {
+        const f = hit.name;
+        const abs = hit.abs;
+        try {
+            const url = pathToFileURL(abs).href + `?v=${fileVersion(abs)}`;
+            // ★ CodeRabbit #80（第 3 轮）：URL 与上次相同 ⇒ ESM 缓存命中，模块**不会重新执行**。
+            //   这个信息要报给调用方，由它决定"清理后的回调要不要恢复"（按模块，不按实例总数）。
+            const cached = bucket?.urls.get(f) === url;
+            if (cached)
+                result.cachedFiles.push(f);
+            // ★ 归属细化到"实例#文件"：这样恢复时可以只挑"命中缓存"的那几个模块。
+            const doImport = () => import(url);
+            const mod = (rb && typeof rb.runWithReasoningOwner === 'function'
+                ? await rb.runWithReasoningOwner(`${ownerRoot}#${f}`, doImport)
+                : await doImport());
+            bucket?.urls.set(f, url);
+            const ext = normalizeOutbound(mod, f, abs, logger);
+            if (!ext) {
                 result.skipped += 1;
-                logger.warn(`[ext-outbound] ✗ ${f} 装载失败(已跳过, 不影响其它出站扩展): ${err instanceof Error ? err.message : String(err)}`);
+                continue;
             }
+            result.total += 1;
+            result.extensions.push(ext);
+            result.middleware.push(ext.middleware);
         }
-    };
-    if (rb && typeof rb.runWithReasoningOwner === 'function') {
-        await rb.runWithReasoningOwner(String(dataRoot || ''), loadAll);
-    }
-    else {
-        await loadAll();
+        catch (err) {
+            result.skipped += 1;
+            logger.warn(`[ext-outbound] ✗ ${f} 装载失败(已跳过, 不影响其它出站扩展): ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
     // ★★ 2026-11-14 修（审查发现）：`resetOutboundBreaker()` 原来**全仓无调用点** ——
     //   扩展一旦被熔断（连续把消息改坏/抛错），只有重启插件才能恢复，/tools-reload 也没用。

@@ -85,52 +85,60 @@ export function endReasoningTurn(agentId, hasReply) {
  *
  * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
  */
-/** 该实例当前注册了多少回调（重载后判断"新扩展有没有重新注册"） */
+/** 归属前缀匹配：`owner` 本身，或它下面按文件细分的 `owner#file` */
+const underOwner = (v, o) => v === o || v.startsWith(o + '#');
+/** 该实例（含其下各文件）当前注册了多少回调 */
 export function countReasoningHandlers(owner) {
     const o = String(owner || '');
     let n = 0;
     for (const v of deltaFns.values())
-        if (v === o)
+        if (underOwner(v, o))
             n += 1;
     for (const v of turnFns.values())
-        if (v === o)
+        if (underOwner(v, o))
             n += 1;
     return n;
 }
-/** 取该实例的回调快照（清理前保存，热重载后若没重新注册就恢复） */
+/** 取该实例（含其下各文件）的回调快照（清理前保存） */
 export function snapshotReasoningHandlers(owner) {
     const o = String(owner || '');
-    const deltas = [];
-    const turns = [];
+    const items = [];
     for (const [fn, v] of deltaFns)
-        if (v === o)
-            deltas.push(fn);
+        if (underOwner(v, o))
+            items.push({ fn, owner: v, kind: 'delta' });
     for (const [fn, v] of turnFns)
-        if (v === o)
-            turns.push(fn);
-    return { owner: o, deltas, turns };
+        if (underOwner(v, o))
+            items.push({ fn, owner: v, kind: 'turn' });
+    return { items };
 }
 /**
  * 恢复快照。
  *
- * ★ CodeRabbit #80（第 2 轮）：热重载用 `?v=${fileVersion(abs)}` 导入 —— **文件没改**时 URL 不变、
- *   ESM 缓存命中、模块根本不重新执行 ⇒ 不会重新注册 onDelta。若我们事先清掉了，
- *   该实例的思考转发就永久停摆。所以"重载后仍然没人注册"时把旧回调放回去。
+ * ★ CodeRabbit #80（第 3 轮）：**不能看"该实例回调数为 0"就整批恢复** ——
+ *   那分不清两种情形：① 文件没改、URL 未变 ⇒ ESM 缓存命中、模块根本没执行（该恢复）；
+ *   ② 文件改了、模块删掉了 `onDelta` 注册 ⇒ 执行了但没注册（**不该恢复**，用户就是想禁用它）。
+ *   所以由装载器报告"哪些文件命中了缓存"，这里只恢复 `allowOwners` 里的那些。
  */
-export function restoreReasoningHandlers(snap) {
+export function restoreReasoningHandlers(snap, allowOwners) {
     if (!snap)
         return 0;
     let n = 0;
-    for (const fn of snap.deltas) {
-        if (!deltaFns.has(fn)) {
-            deltaFns.set(fn, snap.owner);
-            n += 1;
+    for (const it of snap.items) {
+        if (allowOwners && !allowOwners.has(it.owner))
+            continue;
+        if (it.kind === 'delta') {
+            const fn = it.fn;
+            if (!deltaFns.has(fn)) {
+                deltaFns.set(fn, it.owner);
+                n += 1;
+            }
         }
-    }
-    for (const fn of snap.turns) {
-        if (!turnFns.has(fn)) {
-            turnFns.set(fn, snap.owner);
-            n += 1;
+        else {
+            const fn = it.fn;
+            if (!turnFns.has(fn)) {
+                turnFns.set(fn, it.owner);
+                n += 1;
+            }
         }
     }
     return n;
@@ -144,14 +152,14 @@ export function clearReasoningHandlers(owner) {
         return n;
     }
     const o = String(owner || '');
-    for (const fn of [...deltaFns.keys()]) {
-        if ((deltaFns.get(fn) ?? '') === o) {
+    for (const [fn, v] of [...deltaFns]) {
+        if (underOwner(v, o)) {
             deltaFns.delete(fn);
             n += 1;
         }
     }
-    for (const fn of [...turnFns.keys()]) {
-        if ((turnFns.get(fn) ?? '') === o) {
+    for (const [fn, v] of [...turnFns]) {
+        if (underOwner(v, o)) {
             turnFns.delete(fn);
             n += 1;
         }
