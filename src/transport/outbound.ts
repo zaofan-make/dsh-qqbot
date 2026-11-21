@@ -9,6 +9,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
+import { containsMedia, normalizeMediaMarkers } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -842,7 +843,7 @@ class OutboundRouter {
           || (typeof _record.turnStartAt === 'number'
               && (_record.lastInboundAt ?? 0) > _record.turnStartAt);
         if (!qqActiveThisTurn) {
-          const hasMedia = /\[MEDIA:(image|file|video|voice)\|/i.test(text);
+          const hasMedia = containsMedia(normalizeMediaMarkers(text));
           if (!hasMedia) {
             this.logger.debug(
               `im-qqbot: [web静默] 跳过正文块 tag=${tag} key=${_record.sessionKey} len=${text.length}`,
@@ -853,7 +854,7 @@ class OutboundRouter {
       }
 
       // 2026-10-27: 已被 present 直发的文件，正文里同路径的 [MEDIA:file|…] 标记剔除，避免一份文件发两遍
-      const deduped = stripDeliveredFileMarkers(text, this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
+      const deduped = stripDeliveredFileMarkers(normalizeMediaMarkers(text), this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
       if (deduped.trim() === '') return; // 整段只剩"已被 present 的同一文件"→ 不再发空消息
       text = deduped;
 
