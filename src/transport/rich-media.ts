@@ -25,9 +25,9 @@ const MEDIA_RE = /\[MEDIA:(image|video|voice|file)\|([^\]]+)\]/g;
  *
  * 规则：
  *   - 不区分大小写、容忍标记内空白；
- *   - src 必须带路径特征（\`\\\` 或 \`/\`）才转换：正文里讨论格式的字样
+ *   - src 必须带路径特征（反斜杠或正斜杠）才转换：正文里讨论格式的字样
  *     （如「发图格式是 <MEDIA:image|你的图片路径>」）保持原样，不误伤；
- *   - kind 统一小写：present 去重正则（\`/\\[MEDIA:file\\|...\\]/g\`）没有 i 标志，
+ *   - kind 统一小写：present 去重正则 /\[MEDIA:file\|...\]/g 没有 i 标志，
  *     保留大写变体会绕过去重，造成同一文件发两遍。
  */
 const ANGLE_MEDIA_RE = /<\s*MEDIA\s*:\s*(image|video|voice|file)\s*\|\s*([^<>]*?)\s*>/gi;
@@ -37,7 +37,7 @@ export function normalizeMediaMarkers(text: string): string {
   if (typeof text !== 'string' || text.indexOf('<') === -1) return text;
   return text.replace(ANGLE_MEDIA_RE, (whole, kind: string, src: string) => {
     if (!/[\\/]/.test(src)) return whole;
-    return \`[MEDIA:\${kind.toLowerCase()}|\${src}]\`;
+    return '[MEDIA:' + kind.toLowerCase() + '|' + src + ']';
   });
 }
 /** 撤回标记：支持 [RECALL] 或 [RECALL:N]（N=撤倒数第 N 条，默认 1） */
