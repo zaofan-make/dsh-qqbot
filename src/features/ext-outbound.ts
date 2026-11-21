@@ -515,6 +515,22 @@ export function setOutboundLastCtxFallback(owner: unknown, v: boolean): void {
   if (owner && typeof owner === 'object') fallbackByOwner.set(owner as object, v === true);
 }
 
+/**
+ * 记下"当前发送器"（bootstrap 建好 sender 时调），供设置页保存时热改开关 ——
+ * 否则面板改了 `outboundLastCtxFallback` 只更新 config，发送侧读的仍是启动时那份 WeakMap。
+ *
+ * ★ CodeRabbit：**按实例（settingsNs）绑**，不能只留一个 —— 多实例时"最后启动的那个"会顶掉前面的，
+ *   保存 A 的设置反而改到 B 的开关。
+ */
+const senderByNs = new Map<string, object>();
+export function setOutboundSender(ns: string, sender: unknown): void {
+  if (!sender || typeof sender !== 'object') return;
+  senderByNs.set(String(ns || 'im-qqbot'), sender as object);
+}
+export function outboundSenderOf(ns: string): object | null {
+  return senderByNs.get(String(ns || 'im-qqbot')) ?? null;
+}
+
 /** 诊断用：该发送器是否允许回落 */
 export function outboundLastCtxFallbackEnabled(owner?: unknown): boolean {
   if (!owner || typeof owner !== 'object') return false;

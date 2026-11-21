@@ -42,9 +42,16 @@ function fileOf(dataRoot, sessionKey) {
     return join(dataRoot, '.qqbot', 'context-memo', `${safe || 'session'}-${h}.jsonl`);
 }
 function load(file) {
+    return loadSafe(file).items;
+}
+/**
+ * 读文件并**带上"读成功没有"的标志**（CodeRabbit：注入侧要区分「读到空」和「读失败」——
+ * 前者是用户清空了备忘，后者不能当成清空去作废现有备忘）。
+ */
+function loadSafe(file) {
     try {
         if (!existsSync(file))
-            return [];
+            return { items: [], ok: true }; // 从没写过 = 空备忘，不算失败
         const out = [];
         for (const line of readFileSync(file, 'utf8').split('\n')) {
             const s = line.trim();
@@ -58,10 +65,10 @@ function load(file) {
             }
             catch { /* 坏行跳过 */ }
         }
-        return out;
+        return { items: out, ok: true };
     }
     catch {
-        return [];
+        return { items: [], ok: false }; // EACCES 之类：读取失败，别当成"已清空"
     }
 }
 /** 原子重写（编辑/删除/清空都走它） */
@@ -137,9 +144,23 @@ export function clearMemo(dataRoot, sessionKey) {
 }
 /** 供注入：拼成一段 system 侧文本（空备忘返回空串）。超出上限从**最旧**开始丢。 */
 export function memoTextForInject(dataRoot, sessionKey) {
-    const items = listMemo(dataRoot, sessionKey);
+    return memoForInject(dataRoot, sessionKey).text;
+}
+/**
+ * 注入用：**文本 + 读取是否成功**。
+ *
+ * CodeRabbit：注入侧要区分「成功读到空」（用户清空了备忘，要补一条作废标记）
+ * 与「读取失败」（EACCES 等，绝不能当作清空去覆盖现有备忘）。
+ */
+export function memoForInject(dataRoot, sessionKey) {
+    if (!dataRoot || !sessionKey)
+        return { ok: false, text: '' };
+    const rd = loadSafe(fileOf(dataRoot, sessionKey));
+    if (!rd.ok)
+        return { ok: false, text: '' };
+    const items = rd.items;
     if (!items.length)
-        return '';
+        return { ok: true, text: '' };
     const lines = [];
     let used = 0;
     for (let i = items.length - 1; i >= 0; i--) {
@@ -153,12 +174,15 @@ export function memoTextForInject(dataRoot, sessionKey) {
         used += line.length + 1;
     }
     if (!lines.length)
-        return '';
-    return [
-        '【你（机器人）自己的备忘 —— 无上下文模式下用来代替被压缩掉的历史】',
-        ...lines,
-        '（这些是你过去的总结，不会被压缩丢掉；要增改删请用 context_memo 工具）',
-    ].join('\n');
+        return { ok: true, text: '' };
+    return {
+        ok: true,
+        text: [
+            '【你（机器人）自己的备忘 —— 无上下文模式下用来代替被压缩掉的历史】',
+            ...lines,
+            '（这些是你过去的总结，不会被压缩丢掉；要增改删请用 context_memo 工具）',
+        ].join('\n'),
+    };
 }
 /** 诊断：当前备忘条数与文件大小 */
 export function memoStats(dataRoot, sessionKey) {
