@@ -2089,28 +2089,65 @@ export class SessionManager {
                 //   私聊与群聊的注入格式几乎同构，模型只能靠猜（实测把私聊判成群聊、按群规矩回复）。
                 //   群名/昵称走官方 API（`session-kind.ts` 里带缓存 + 后台预取，注入本身同步不等网络）。
                 //   ⚠️ source.kind 必须带 `qqbot:` 前缀（维护手册 §11.21：否则 dock 会把注入当成对方发言）。
-                if (this.config.sessionKindHint !== false && _ownedByMe && recMemo) {
+                //
+                //   ★★ 2026-11-21 主人实测「重启后没重新注入」：**不能依赖 `_ownedByMe`/`recMemo`** ——
+                //      `findByAgent` 只查 this.sessions，重启/回收后从宿主恢复的 QQ 会话在它眼里是 undefined，
+                //      于是这条注入会被整块跳过（group-rules 那套有同样隐患，但它另有 model-prefs 兜底）。
+                //      这里改用 **sessionKey 反查**（model-prefs 的 sessionIds，纯内存），从 key 里解析 scope/peerId。
+                const _kindKey = (() => {
+                    if (recMemo?.sessionKey)
+                        return String(recMemo.sessionKey);
+                    try {
+                        const sidNow = String(agent?.session?.id ?? '');
+                        return sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+                    }
+                    catch {
+                        return '';
+                    }
+                })();
+                const _kindParts = (() => {
+                    const m = /^qqbot:[^:]+:(group|c2c):(.+)$/.exec(_kindKey);
+                    if (!m)
+                        return undefined;
+                    const peer = String(m[2] ?? '').replace(/@[0-9a-f-]{8,}$/i, '');
+                    return peer ? { scope: String(m[1] ?? 'group'), peerId: peer } : undefined;
+                })();
+                if (this.config.sessionKindHint !== false && _kindParts) {
                     const KIND = 'qqbot:session-kind';
+                    const info = describeSessionKind(dataRootOf(this.config), String(this.config.appId ?? ''), _kindParts.scope, _kindParts.peerId, recMemo ? recMemo.peerName : undefined);
                     const _kindInBatch = dec.messages.some((m) => m?.source?.kind === KIND);
-                    let _kindInSurface = false;
-                    if (!_kindInBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+                    // ★ 名字是**后来**才从 API 拿到的，首次注入往往是"群名未取到"。
+                    //   所以判重不只看"有没有注入过"，还要看**有没有注入过带名字的版本**：
+                    //   现在拿到名字了就再补一条（之后不再重复）。
+                    let _hasKind = false;
+                    let _hasNamed = false;
+                    if (agent?.session?.surface?.nodes && agent.session.eventAt) {
                         for (const seq of agent.session.surface.nodes) {
                             const ev = agent.session.eventAt(seq);
-                            if (ev?.type === 'user/message' && ev.data?.source?.kind === KIND) {
-                                _kindInSurface = true;
+                            if (ev?.type !== 'user/message' || ev.data?.source?.kind !== KIND)
+                                continue;
+                            _hasKind = true;
+                            if (info.name) {
+                                const txt = JSON.stringify(ev.data?.content ?? '');
+                                if (txt.includes(info.name)) {
+                                    _hasNamed = true;
+                                    break;
+                                }
+                            }
+                            else {
                                 break;
                             }
                         }
                     }
-                    if (!_kindInBatch && !_kindInSurface && recMemo.scope && recMemo.peerId) {
-                        const info = describeSessionKind(String(recMemo.scope), String(recMemo.peerId), recMemo.peerName);
+                    const need = info.name ? !_hasNamed : !_hasKind;
+                    if (!_kindInBatch && need) {
                         extraAll.push({
                             role: 'user',
                             id: randomUUID(),
                             content: [{ type: 'text', text: `<system-reminder>` + String.fromCharCode(10) + buildSessionKindHint(info) + String.fromCharCode(10) + `</system-reminder>` }],
                             source: { kind: KIND, form: 'instructions', ns },
                         });
-                        this.logger?.info?.(`[会话类型] 注入 kind=${info.kind}${info.name ? ` name=「${info.name}」` : ' name=(未取到)'} session=${recMemo.sessionKey}`);
+                        this.logger?.info?.(`[会话类型] 注入 kind=${info.kind}${info.name ? ` name=「${info.name}」` : ' name=(未取到)'} key=${_kindKey}`);
                     }
                 }
                 const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];

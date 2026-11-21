@@ -297,15 +297,19 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
             //   私聊：先把消息自带 senderName 记下，再用 GET /v2/users/{openid}/info 补
             try {
                 const nm = String(msg.senderName ?? '').trim();
-                const ga = manager.groupAdmin;
+                // ★ 2026-11-21：#79 的名字只走官方 API，**与「群管理功能开不开」无关**。
+                //   `groupAdmin.enabled=false` 时那个 getter 恒为 undefined ⇒ 群名永远取不到；
+                //   `mediaApi` 是用 appId/appSecret 现建的轻量客户端（见 SessionManager.mediaApi 注释），永远可用。
+                const ga = manager.groupAdmin ?? manager.mediaApi;
                 const pid = String(rPeer ?? '');
+                const botId = String(config.appId ?? '');
                 if (rScope === 'c2c') {
                     if (nm)
-                        rememberUserName(pid, nm);
-                    prefetchUserName(ga, pid);
+                        rememberUserName(botId, pid, nm);
+                    prefetchUserName(ga, botId, pid);
                 }
                 else {
-                    prefetchGroupName(ga, pid);
+                    prefetchGroupName(ga, botId, pid);
                 }
             }
             catch { /* 名字只是锦上添花，失败不影响入站 */ }

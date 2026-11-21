@@ -610,6 +610,9 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     stripFacePlaceholder: live.stripFacePlaceholder,
     turnErrorMode: live.turnErrorMode,
     turnErrorSilentPattern: live.turnErrorSilentPattern,
+    // ★ 2026-11-21 issue #77：工具报错策略（panel 要能看到当前值）
+    toolErrorMode: live.toolErrorMode,
+    toolErrorSilentPattern: live.toolErrorSilentPattern,
     latexHint: live.latexHint,
     botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
   };
@@ -642,6 +645,16 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
         live.turnErrorMode = next.turnErrorMode;
       }
       if (typeof next.turnErrorSilentPattern === 'string') live.turnErrorSilentPattern = next.turnErrorSilentPattern;
+      // ★ 2026-11-21 issue #77：工具报错策略同样热生效（漏了就得重启才改得动）
+      if (next.toolErrorMode === 'notify' || next.toolErrorMode === 'friendly'
+        || next.toolErrorMode === 'silent' || next.toolErrorMode === 'regex') {
+        live.toolErrorMode = next.toolErrorMode;
+      }
+      if (typeof next.toolErrorSilentPattern === 'string') live.toolErrorSilentPattern = next.toolErrorSilentPattern;
+      if (next.turnErrorModeByScope && typeof next.turnErrorModeByScope === 'object') live.turnErrorModeByScope = next.turnErrorModeByScope;
+      if (next.toolErrorModeByScope && typeof next.toolErrorModeByScope === 'object') live.toolErrorModeByScope = next.toolErrorModeByScope;
+      if (typeof next.sessionKindHint === 'boolean') live.sessionKindHint = next.sessionKindHint;
+      if (typeof next.outboundLastCtxFallback === 'boolean') live.outboundLastCtxFallback = next.outboundLastCtxFallback;
       if (typeof next.latexHint === 'boolean') live.latexHint = next.latexHint;
       if (next.localModel && typeof next.localModel === 'object') live.localModel = next.localModel;
       setLexicalFallback(((live as { localModel?: { lexicalFallback?: boolean } }).localModel?.lexicalFallback) === true);   // 兜底开关热生效(settings 服务路径)

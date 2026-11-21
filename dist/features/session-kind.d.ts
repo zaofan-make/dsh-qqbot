@@ -32,20 +32,20 @@ export interface SessionKindClient {
     } | undefined>;
 }
 /** 同步读群名缓存（注入时用）：未命中返回空串 */
-export declare function cachedGroupName(gid: string): string;
+export declare function cachedGroupName(botId: string, gid: string): string;
 /** 同步读使用者昵称缓存（注入时用） */
-export declare function cachedUserName(openid: string): string;
+export declare function cachedUserName(botId: string, openid: string): string;
 /** 记下入站消息自带的昵称（私聊 `senderName`、群名片），比 API 快且免费 */
-export declare function rememberUserName(openid: string, name: string): void;
+export declare function rememberUserName(botId: string, openid: string, name: string): void;
 /** 手动写入群名（别处已经拿到时用，例如群名接口的调用方） */
-export declare function rememberGroupName(gid: string, name: string): void;
+export declare function rememberGroupName(botId: string, gid: string, name: string): void;
 /**
  * 后台拉群名并缓存（**不阻塞**当前回合）。没有缓存时，这一轮注入只能写"群名未取到"，
  * 下一轮就有了。失败也写空串（短 TTL），免得对着没权限的群每轮打接口。
  */
-export declare function prefetchGroupName(client: SessionKindClient | undefined, gid: string): void;
+export declare function prefetchGroupName(client: SessionKindClient | undefined, botId: string, gid: string): void;
 /** 后台拉用户名并缓存；已有未过期缓存时跳过（省一次接口调用） */
-export declare function prefetchUserName(client: SessionKindClient | undefined, openid: string): void;
+export declare function prefetchUserName(client: SessionKindClient | undefined, botId: string, openid: string): void;
 export interface SessionKindInfo {
     /** `group` = QQ 群聊；`c2c` = QQ 私聊 */
     kind: 'group' | 'c2c';
@@ -55,13 +55,14 @@ export interface SessionKindInfo {
     peerId: string;
 }
 /**
- * 描述当前会话的渠道与名字（**同步**：只用缓存，绝不在回合里等网络）。
+ * 描述当前会话的渠道与名字（**同步**：缓存 → 历史文件兜底，绝不在回合里等网络）。
  *
+ * @param dataRoot 数据根（读 `{dataRoot}/.qqbot/msg-history/…` 兜底用）
  * @param scope    `group` / `c2c`
  * @param peerId   群 openid / 用户 openid
- * @param peerName 入站消息自带的昵称（私聊 senderName / 群名片），优先级高于缓存
+ * @param peerName 入站消息自带的昵称（私聊 senderName / 群名片），优先级最高
  */
-export declare function describeSessionKind(scope: string, peerId: string, peerName?: string): SessionKindInfo;
+export declare function describeSessionKind(dataRoot: string, botId: string, scope: string, peerId: string, peerName?: string): SessionKindInfo;
 /**
  * 拼注入正文（调用方包进 `<system-reminder>`，放进**独立**的 user/message 事件）。
  *
