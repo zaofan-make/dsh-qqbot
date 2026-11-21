@@ -466,6 +466,28 @@ function noteBreaker(name: string, logger: Logger): number {
 let active = 0;
 let lastCtx: OutboundCtx | null = null;
 
+/**
+ * 扩展调 `send(text)` **没给 target** 时，是否回落到"最近一次出站的会话"。
+ *
+ * ★ 2026-11-21（issue #78）：默认 **false（fail-closed）**。
+ *   旧行为是回落 ⇒ 多会话并发/思考流这类"没有明确目标"的发送会串台
+ *   （实测：私聊任务的思考草稿发进了无关的群）。业界主流（Slack/Telegram/Discord）
+ *   也都是"没有 channel 就拒发"。真要旧行为，把配置 `outboundLastCtxFallback` 打开。
+ */
+let allowLastCtxFallback = false;
+/** 拒发告警节流：第一次必打，之后每 200 次打一次 */
+let rejectedNoTarget = 0;
+
+/** 由 bootstrap 按配置设置（热改需重启，扩展侧不频繁变） */
+export function setOutboundLastCtxFallback(v: boolean): void {
+  allowLastCtxFallback = v === true;
+}
+
+/** 诊断用：当前是否允许回落 */
+export function outboundLastCtxFallbackEnabled(): boolean {
+  return allowLastCtxFallback;
+}
+
 /** 当前是否正在跑出站链（其他扩展可用于"别在我发消息时又触发我"） */
 export function outboundActive(): boolean {
   return active > 0;
@@ -723,14 +745,25 @@ export async function sendViaOutboundChannel(
   opts: RunOutboundOptions = {},
   sendOpts: { adaptive?: boolean } = {},
 ): Promise<boolean> {
-  const sender = (opts.sender ?? lastCtx?.sender ?? null) as {
+  const fallback = allowLastCtxFallback ? lastCtx : null;
+  const sender = (opts.sender ?? fallback?.sender ?? null) as {
     sendText?: (t: unknown, c: string) => Promise<unknown>;
     sendMarkdown?: (t: unknown, c: string) => Promise<unknown>;
     /** ⚠️ 真实签名是**三个参数**：`sendMedia(target, kind, { url } | { localPath })` */
     sendMedia?: (t: unknown, k: string, s: { url?: string; localPath?: string }) => Promise<unknown>;
   } | null;
-  const target = (opts.target ?? lastCtx?.target ?? null) as Record<string, unknown> | null;
-  if (!sender || !target) return false;
+  const target = (opts.target ?? fallback?.target ?? null) as Record<string, unknown> | null;
+  if (!sender || !target) {
+    // ★ 2026-11-21（issue #78）：没有明确 target 就**拒发**（除非显式开了回落）。
+    //   以前这里静默回落到 lastCtx ⇒ 并发会话串台；现在至少留一行日志，便于发现"扩展少传了 target"。
+    rejectedNoTarget += 1;
+    if (rejectedNoTarget === 1 || rejectedNoTarget % 200 === 0) {
+      const { logger } = opts;
+      const warn = logger && typeof logger.warn === 'function' ? logger.warn.bind(logger) : undefined;
+      warn?.(`[ext-outbound] 拒绝发送：调用方没给 target（第 ${rejectedNoTarget} 次；outboundLastCtxFallback=${allowLastCtxFallback}）`);
+    }
+    return false;
+  }
 
   const body = String(payload.text ?? payload.path ?? payload.url ?? '');
   if (!body) return false;

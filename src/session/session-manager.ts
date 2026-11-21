@@ -22,6 +22,7 @@ import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import type { ImQQBotConfig } from '../config.js';
 import { FIXED_CHANNEL_CONTEXT, REFERENCE_CONTEXT } from '../config.js';
 import { LATEX_HINT_BLOCK } from '../config.js';
+import { describeSessionKind, buildSessionKindHint } from '../features/session-kind.js';
 import { takePendingMemo, recallLines } from '../features/people-memo.js';
 import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextlessWindowOf, getContextless, listContextless, describeStorePath } from '../features/contextless-store.js';
 import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
@@ -2068,6 +2069,36 @@ export class SessionManager {
             source: { kind: 'qqbot:latex-hint', form: 'instructions', ns },
           });
           this.logger?.debug?.('[latexHint] 注入数学公式提示');
+        }
+        // ★ 2026-11-21（issue #79）：**会话类型标注** —— 独立事件 + 自己的 source.kind。
+        //   私聊与群聊的注入格式几乎同构，模型只能靠猜（实测把私聊判成群聊、按群规矩回复）。
+        //   群名/昵称走官方 API（`session-kind.ts` 里带缓存 + 后台预取，注入本身同步不等网络）。
+        //   ⚠️ source.kind 必须带 `qqbot:` 前缀（维护手册 §11.21：否则 dock 会把注入当成对方发言）。
+        if (this.config.sessionKindHint !== false && _ownedByMe && recMemo) {
+          const KIND = 'qqbot:session-kind';
+          const _kindInBatch = (dec.messages as unknown[]).some((m) =>
+            (m as { source?: { kind?: string } } | undefined)?.source?.kind === KIND);
+          let _kindInSurface = false;
+          if (!_kindInBatch && agent?.session?.surface?.nodes && agent.session.eventAt) {
+            for (const seq of agent.session.surface.nodes) {
+              const ev = agent.session.eventAt(seq) as { type?: string; data?: { source?: { kind?: string } } } | undefined;
+              if (ev?.type === 'user/message' && ev.data?.source?.kind === KIND) { _kindInSurface = true; break; }
+            }
+          }
+          if (!_kindInBatch && !_kindInSurface && recMemo.scope && recMemo.peerId) {
+            const info = describeSessionKind(
+              String(recMemo.scope),
+              String(recMemo.peerId),
+              (recMemo as { peerName?: string }).peerName,
+            );
+            extraAll.push({
+              role: 'user',
+              id: randomUUID(),
+              content: [{ type: 'text', text: `<system-reminder>` + String.fromCharCode(10) + buildSessionKindHint(info) + String.fromCharCode(10) + `</system-reminder>` }],
+              source: { kind: KIND, form: 'instructions', ns },
+            });
+            this.logger?.info?.(`[会话类型] 注入 kind=${info.kind}${info.name ? ` name=「${info.name}」` : ' name=(未取到)'} session=${recMemo.sessionKey}`);
+          }
         }
         const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
         return { ...dec, messages: entered };

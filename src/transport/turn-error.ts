@@ -32,10 +32,85 @@ export type TurnErrorMode = 'notify' | 'friendly' | 'silent' | 'regex';
 export interface TurnErrorConfig {
   turnErrorMode?: string;
   turnErrorSilentPattern?: string;
+  /** 按渠道覆盖回合异常策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串/缺省 = 不覆盖 */
+  turnErrorModeByScope?: Partial<Record<'group' | 'c2c', string>>;
+}
+
+/**
+ * 工具报错（issue #77，2026-11-21）。
+ *
+ * `tool/result` 原来是「事件带 error 就直发」，没有策略 —— 与 #73 的回合异常同构，
+ * 但多一层：**群聊和私聊的"正确行为"不一样**（群里该静默，私聊要留原文排查）。
+ *
+ * 所以除了自己的四档，还支持按渠道覆盖。
+ */
+export interface ToolErrorConfig {
+  toolErrorMode?: string;
+  toolErrorSilentPattern?: string;
+  /** 按渠道覆盖工具报错策略：`{ group: 'silent', c2c: 'notify' }`；空串/缺省 = 不覆盖 */
+  toolErrorModeByScope?: Partial<Record<'group' | 'c2c', string>>;
+}
+
+/** 合起来给调用方用（`this.config` 同时满足两个接口） */
+export type ErrorPolicyConfig = TurnErrorConfig & ToolErrorConfig;
+
+const VALID_MODES: readonly TurnErrorMode[] = ['notify', 'friendly', 'silent', 'regex'];
+
+/**
+ * 取生效的模式：**按渠道覆盖优先，其次全局默认**，非法值一律回落 `notify`（fail-open）。
+ *
+ * @param key   `turn` = 回合异常；`tool` = 工具报错
+ * @param scope `group` / `c2c`（其它值视为不覆盖）
+ */
+export function effectiveErrorMode(
+  cfg: ErrorPolicyConfig | undefined,
+  key: 'turn' | 'tool',
+  scope?: string,
+): TurnErrorMode {
+  const baseRaw = String((key === 'turn' ? cfg?.turnErrorMode : cfg?.toolErrorMode) ?? 'notify').trim().toLowerCase();
+  const base = (VALID_MODES as readonly string[]).includes(baseRaw) ? (baseRaw as TurnErrorMode) : 'notify';
+  const byScope = key === 'turn' ? cfg?.turnErrorModeByScope : cfg?.toolErrorModeByScope;
+  if (!byScope || typeof byScope !== 'object') return base;
+  const s = String(scope ?? '').trim().toLowerCase();
+  if (s !== 'group' && s !== 'c2c') return base;
+  const picked = String((byScope as Record<string, unknown>)[s] ?? '').trim().toLowerCase();
+  return (VALID_MODES as readonly string[]).includes(picked) ? (picked as TurnErrorMode) : base;
 }
 
 /** 默认的「人话」文案（friendly 模式） */
 export const FRIENDLY_TURN_ERROR = '⚠️ 这轮卡住了，再说一次试试~';
+
+/** 工具报错的「人话」文案（issue #77，toolErrorMode=friendly） */
+export const FRIENDLY_TOOL_ERROR = '⚠️ 有个工具没跑通，这轮先这样~';
+
+/**
+ * 决定这条**工具报错**要不要发、发什么（issue #77）。
+ *
+ * 注意：入参 `rawText` 是现有 `formatToolResult()` **已经渲染好的** ❌ 文本 ——
+ * 这里只做"发/不发/换一句"，不重新拼格式（别跟"详细主动"里的工具提示重复造轮子）。
+ *
+ * @param scope `group` / `c2c`（按渠道覆盖策略用）
+ * @returns `null` = 不发；string = 发这个
+ */
+export function resolveToolErrorMessage(
+  cfg: ErrorPolicyConfig | undefined,
+  rawText: string,
+  scope?: string,
+): string | null {
+  const mode = effectiveErrorMode(cfg, 'tool', scope);
+  if (mode === 'silent') return null;
+  if (mode === 'friendly') return FRIENDLY_TOOL_ERROR;
+  if (mode === 'regex') {
+    const pat = String(cfg?.toolErrorSilentPattern ?? '').trim();
+    if (pat) {
+      try {
+        // 不区分大小写；匹配渲染后的整段 ❌ 文本，用户可只写 `TOOL_TIMEOUT` 或 `执行失败`
+        if (new RegExp(pat, 'i').test(rawText)) return null;
+      } catch { /* 正则写错 = 不拦截（fail-open） */ }
+    }
+  }
+  return rawText;
+}
 
 /**
  * 决定这条回合异常要不要发、发什么。
@@ -48,8 +123,9 @@ export function resolveTurnErrorMessage(
   cfg: TurnErrorConfig | undefined,
   code: string,
   message: string,
+  scope?: string,
 ): string | null {
-  const mode = String(cfg?.turnErrorMode ?? 'notify').trim().toLowerCase() as TurnErrorMode;
+  const mode = effectiveErrorMode(cfg, 'turn', scope);
 
   if (mode === 'silent') return null;
   if (mode === 'friendly') return FRIENDLY_TURN_ERROR;

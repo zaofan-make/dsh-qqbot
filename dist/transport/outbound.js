@@ -34,7 +34,7 @@ import { rewriteLocalMarkdownImages, localMarkdownImagesToMediaMarkers, stripMar
 import { botAvatarMarkdown } from '../features/bot-avatar.js';
 import { stripOutboundArtifacts } from './strip-artifacts.js';
 import { replaceFacePlaceholders } from './face-placeholder.js';
-import { resolveTurnErrorMessage } from './turn-error.js';
+import { resolveTurnErrorMessage, resolveToolErrorMessage } from './turn-error.js';
 /**
  * 「正文被平台判违规」已经告知过 AI 的回合标记（2026-11-07 主人要的功能）。
  * 键＝SessionRecord 对象，值＝该回合的 turnStartAt；同一回合只提醒一次，免得连发刷屏。
@@ -82,7 +82,18 @@ class OutboundRouter {
      */
     routeStreamFrame(agentId, delta) {
         if (delta.kind === 'reasoning-delta') {
-            feedReasoning(agentId, delta.text);
+            // ★ 2026-11-21（issue #78）：**带上本回合的投递目标**。
+            //   原来只传 agentId ⇒ 扩展发消息时没有 target，只能回落到"最近活跃会话" ⇒ 并发会话必然串台。
+            //   agentId 就是 DSH sessionId（见 streamAttempt 注释），可反查 QQ 会话记录。
+            let reasonTarget;
+            try {
+                const rec = this.manager.findBySessionId(agentId);
+                if (rec?.scope && rec?.peerId) {
+                    reasonTarget = { scope: String(rec.scope), peerId: String(rec.peerId) };
+                }
+            }
+            catch { /* 查不到就不带 target：由扩展自己决定要不要发 */ }
+            feedReasoning(agentId, delta.text, reasonTarget);
             return;
         }
         const buffer = this.buffers.get(agentId);
@@ -565,7 +576,12 @@ class OutboundRouter {
         if (this.isDetail() && !this.gateSilenced.has(record.sessionKey))
             this.queueToolCallNotice(record, event);
     }
-    /** 工具结果：错误始终发送；成功结果按开关，详细主动(detail)下强制发送 */
+    /**
+     * 工具结果：成功结果按开关（详细主动 detail 下强制），**报错则走 toolErrorMode 策略**（issue #77）。
+     *
+     * 复用现有的 `formatToolResult()` 渲染，不另造格式；策略只管「发原文 / 换一句人话 / 不发」。
+     * 默认 `notify` = 与旧版逐字一致（报错原文照发）。
+     */
     onToolResult(record, event) {
         const call = this.toolCalls.get(event.callId);
         this.toolCalls.delete(event.callId);
@@ -581,12 +597,23 @@ class OutboundRouter {
         }
         if (this.gateSilenced.has(record.sessionKey))
             return;
-        if (event.error === undefined && !this.shouldShowToolResults())
+        const isError = event.error !== undefined;
+        if (!isError && !this.shouldShowToolResults())
             return;
         const text = formatToolResult(call.name, call.args, event.raw, this.toolsRegistry, record.agent);
         if (!text)
             return;
-        void this.trackSend(record, this.send(record, text, 'sendToolResult', 'tool/result'));
+        // ★ 2026-11-21（issue #77）：报错也要能"不发/换一句" —— 群聊里一段 ❌ + 内部错误码很突兀，
+        //   私聊却需要原文排查。策略按 `toolErrorMode` + `toolErrorModeByScope`（群/私聊可不同）。
+        let outText = text;
+        if (isError) {
+            outText = resolveToolErrorMessage(this.config, text, String(record.scope));
+            if (outText === null) {
+                this.logger.warn(`im-qqbot: 工具报错已静音(toolErrorMode): ${call.name} ${text.slice(0, 160)}`);
+                return;
+            }
+        }
+        void this.trackSend(record, this.send(record, outText, 'sendToolResult', 'tool/result'));
     }
     /** 轮次结束：清理 buffer，异常结束时告知用户 */
     onTurnEnd(sessionId, _record, event) {
@@ -628,7 +655,7 @@ class OutboundRouter {
             //   —— 群友看着突兀、暴露内部错误码和上游响应结构，活跃群里还反复出现。
             //   而且这条是 onTurnEnd 里**直接 this.send** 的，不走出站扩展链，用户侧没有拦截点。
             //   四档见 config.turnErrorMode：notify(默认) / friendly / silent / regex。
-            const errText = resolveTurnErrorMessage(this.config, failure.code, failure.message);
+            const errText = resolveTurnErrorMessage(this.config, failure.code, failure.message, String(_record.scope));
             const errMode = String(this.config.turnErrorMode ?? 'notify').trim().toLowerCase();
             // ★ 2026-11-19 审查：**friendly 也要记原文**。
             //   原实现只在"不发"时记日志 ⇒ friendly 分支把 code/message 丢了，

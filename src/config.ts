@@ -289,6 +289,21 @@ export interface EditableConfig {
   turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
   /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
   turnErrorSilentPattern?: string;
+  /** 按渠道覆盖回合异常策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+  turnErrorModeByScope?: { group?: string; c2c?: string };
+  /** 工具报错策略（issue #77，默认 notify）：notify=原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截 */
+  toolErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
+  /** `toolErrorMode: 'regex'` 的匹配式（不区分大小写，匹配渲染后的 ❌ 文本）。留空=不拦截 */
+  toolErrorSilentPattern?: string;
+  /** 按渠道覆盖工具报错策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+  toolErrorModeByScope?: { group?: string; c2c?: string };
+  /**
+   * 扩展调 `send()` **没给 target** 时，是否回落到"最近一次出站的会话"（issue #78，默认 **false**）。
+   *
+   * 旧行为是回落 ⇒ 多会话并发下会串台（实测：私聊任务的思考草稿发进了无关的群）。
+   * 业界（Slack/Telegram/Discord）都是"没有 channel 就拒发"。要兼容旧扩展再打开。
+   */
+  outboundLastCtxFallback?: boolean;
   /**
    * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
    *
@@ -298,6 +313,16 @@ export interface EditableConfig {
    * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
    */
   latexHint?: boolean;
+  /**
+   * 会话类型标注（issue #79，默认 **true**）。
+   *
+   * 私聊与群聊的注入格式几乎同构，模型会靠猜（实测把私聊判成群聊）。
+   * 开启后，每个会话**第一次**给模型注入一条独立的事件（`source.kind = 'qqbot:session-kind'`）：
+   *   `[当前会话] 渠道=QQ 群聊 · 群名「xxx」` / `渠道=QQ 私聊 · 对方「xxx」`
+   * 群名走官方 `GET /v2/groups/{openid}/info`、昵称走 `GET /v2/users/{openid}/info`（都带缓存）；
+   * 取不到就只写渠道，不编名字。
+   */
+  sessionKindHint?: boolean;
   /**
    * 开新档时自动归档旧会话（默认开）。
    * `/new`、`/bot-new`、换模型 fork 出新档时，把被取代的旧会话写进宿主 `archivedSessionIds`；
@@ -720,7 +745,13 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
   stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
   turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
   latexHint: Schema.boolean().default(false).description('数学公式提示(默认关, 2026-11-20): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX, 可以输出 $…$ 行内公式或 $…$ 居中公式, 也能用 \\textcolor{#hex}{…} 上色」。⚠️ 只在支持 LaTeX 的客户端生效, 旧版 QQ 会显示成源码'),
+      sessionKindHint: Schema.boolean().default(true).description('会话类型标注(issue #79, 默认开): 每个会话首次注入一条「渠道=QQ 群聊/私聊 + 群名或对方昵称」。群名走 GET /v2/groups/{openid}/info、昵称走 GET /v2/users/{openid}/info（带缓存），取不到只写渠道'),
   turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
+      turnErrorModeByScope: Schema.object({ group: Schema.string().default(''), c2c: Schema.string().default('') }).description('按渠道覆盖回合异常策略(issue #77): { group: silent, c2c: notify }；空串=不覆盖'),
+      toolErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('工具报错时发什么(issue #77): notify=照常发原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截'),
+      toolErrorSilentPattern: Schema.string().default('').description('toolErrorMode=regex 时的匹配式(不区分大小写, 匹配渲染后的 ❌ 文本)。例: TOOL_TIMEOUT|执行失败。留空=不拦截'),
+      toolErrorModeByScope: Schema.object({ group: Schema.string().default(''), c2c: Schema.string().default('') }).description('按渠道覆盖工具报错策略(issue #77): 群聊 silent + 私聊 notify 是常见组合；空串=不覆盖'),
+      outboundLastCtxFallback: Schema.boolean().default(false).description('出站扩展未指定 target 时是否回落到最近活跃会话(issue #78, 默认关=拒发)。开启=旧行为, 多会话并发会串台'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imageAggregate: Schema.object({
     enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
@@ -822,6 +853,21 @@ export interface ImQQBotConfig {
   turnErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
   /** `turnErrorMode: 'regex'` 的匹配式（不区分大小写，匹配 code+message）。留空=不拦截 */
   turnErrorSilentPattern?: string;
+  /** 按渠道覆盖回合异常策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+  turnErrorModeByScope?: { group?: string; c2c?: string };
+  /** 工具报错策略（issue #77，默认 notify）：notify=原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截 */
+  toolErrorMode?: 'notify' | 'friendly' | 'silent' | 'regex';
+  /** `toolErrorMode: 'regex'` 的匹配式（不区分大小写，匹配渲染后的 ❌ 文本）。留空=不拦截 */
+  toolErrorSilentPattern?: string;
+  /** 按渠道覆盖工具报错策略（issue #77）：`{ group: 'silent', c2c: 'notify' }`；空串=不覆盖 */
+  toolErrorModeByScope?: { group?: string; c2c?: string };
+  /**
+   * 扩展调 `send()` **没给 target** 时，是否回落到"最近一次出站的会话"（issue #78，默认 **false**）。
+   *
+   * 旧行为是回落 ⇒ 多会话并发下会串台（实测：私聊任务的思考草稿发进了无关的群）。
+   * 业界（Slack/Telegram/Discord）都是"没有 channel 就拒发"。要兼容旧扩展再打开。
+   */
+  outboundLastCtxFallback?: boolean;
   /**
    * 数学公式 / 彩色字提示（默认 false，2026-11-20 主人要）。
    *
@@ -831,6 +877,16 @@ export interface ImQQBotConfig {
    * ⚠️ 前提：客户端要支持（新版 QQ 可以；旧版会显示成源码）。所以默认关。
    */
   latexHint?: boolean;
+  /**
+   * 会话类型标注（issue #79，默认 **true**）。
+   *
+   * 私聊与群聊的注入格式几乎同构，模型会靠猜（实测把私聊判成群聊）。
+   * 开启后，每个会话**第一次**给模型注入一条独立的事件（`source.kind = 'qqbot:session-kind'`）：
+   *   `[当前会话] 渠道=QQ 群聊 · 群名「xxx」` / `渠道=QQ 私聊 · 对方「xxx」`
+   * 群名走官方 `GET /v2/groups/{openid}/info`、昵称走 `GET /v2/users/{openid}/info`（都带缓存）；
+   * 取不到就只写渠道，不编名字。
+   */
+  sessionKindHint?: boolean;
   /** 历史图片不重发(默认开): 只把**本插件聚合出来**的图片在历史里换成文字占位, 别的图一律不动 */
   imageOffload?: boolean;
   /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
@@ -1001,7 +1057,13 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
   stripFacePlaceholder: Schema.boolean().default(false).description('出站洗掉「【表情: XX】」占位符(默认开, issue #72): 官方 API 发不了 face, 入站只能转写成可读文本, 模型会照抄成裸文字'),
   turnErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('回合异常时往群里发什么(issue #73): notify=照常发原文 / friendly=发一句人话(细节只进日志) / silent=完全不发 / regex=按 turnErrorSilentPattern 拦截, 命中的静默、其余照常'),
   latexHint: Schema.boolean().default(false).description('数学公式提示(默认关, 2026-11-20): 勾上后系统提示词里提醒模型「QQ 支持 LaTeX」, 可输出 $…$ 行内公式 / $$…$$ 居中公式 / \\textcolor{#hex}{…} 彩色字。⚠️ 只在支持 LaTeX 的客户端生效, 旧版 QQ 会显示成源码'),
+      sessionKindHint: Schema.boolean().default(true).description('会话类型标注(issue #79, 默认开): 每个会话首次注入一条「渠道=QQ 群聊/私聊 + 群名或对方昵称」。群名走 GET /v2/groups/{openid}/info、昵称走 GET /v2/users/{openid}/info（带缓存），取不到只写渠道'),
   turnErrorSilentPattern: Schema.string().default('').description('turnErrorMode=regex 时的匹配式(不区分大小写, 匹配 code+message)。例: 400|10013|INVALID_REQUEST|内容违规。留空=不拦截'),
+      turnErrorModeByScope: Schema.object({ group: Schema.string().default(''), c2c: Schema.string().default('') }).description('按渠道覆盖回合异常策略(issue #77): { group: silent, c2c: notify }；空串=不覆盖'),
+      toolErrorMode: Schema.union(['notify', 'friendly', 'silent', 'regex']).default('notify').description('工具报错时发什么(issue #77): notify=照常发原文 / friendly=一句人话 / silent=不发 / regex=按下面正则拦截'),
+      toolErrorSilentPattern: Schema.string().default('').description('toolErrorMode=regex 时的匹配式(不区分大小写, 匹配渲染后的 ❌ 文本)。例: TOOL_TIMEOUT|执行失败。留空=不拦截'),
+      toolErrorModeByScope: Schema.object({ group: Schema.string().default(''), c2c: Schema.string().default('') }).description('按渠道覆盖工具报错策略(issue #77): 群聊 silent + 私聊 notify 是常见组合；空串=不覆盖'),
+      outboundLastCtxFallback: Schema.boolean().default(false).description('出站扩展未指定 target 时是否回落到最近活跃会话(issue #78, 默认关=拒发)。开启=旧行为, 多会话并发会串台'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imageAggregate: Schema.object({
     enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),

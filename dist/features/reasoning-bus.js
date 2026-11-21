@@ -50,6 +50,21 @@ export function endReasoningTurn(agentId, hasReply) {
         catch { /* 同上 */ }
     }
 }
+/**
+ * 清空**所有**思考回调（2026-11-21，issue #78）。
+ *
+ * 为什么需要它：扩展注册回调时拿到的是取消函数，但**调用方经常漏存**；
+ * 出站扩展热重载（`/tools_reload`）后旧闭包仍在 Set 里继续跑 ——
+ * 于是"已经注释掉的扩展"还在往外发消息（实测）。
+ *
+ * 只在**重载出站扩展前**调用：它清的是全部回调，装完会重新注册。
+ */
+export function clearReasoningHandlers() {
+    const n = deltaFns.size + turnFns.size;
+    deltaFns.clear();
+    turnFns.clear();
+    return n;
+}
 const api = {
     onDelta: onReasoningDelta,
     onTurnEnd: onReasoningTurnEnd,
