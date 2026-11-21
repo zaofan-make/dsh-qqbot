@@ -12,6 +12,7 @@ import { ConfigSchema, EditableConfigSchema } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
 import { getProfileDir, resolveEnv, resolveProfileName } from './shared/index.js';
 import { warmSessions } from './features/warm-sessions.js';
+import { setOutboundLastCtxFallback, currentOutboundSender } from './features/ext-outbound.js';
 import { applyExtToolVisibility } from './channel-tools.js';
 import { describeNsConflict, nsPathsOf, scanNsOwners } from './features/ns-guard.js';
 void getProfileDir;
@@ -634,6 +635,12 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
         // ★ 2026-11-21 issue #77：工具报错策略（panel 要能看到当前值）
         toolErrorMode: live.toolErrorMode,
         toolErrorSilentPattern: live.toolErrorSilentPattern,
+        // ★ CodeRabbit（补审）：sync 里同步的字段 entry 必须带上 —— 否则第一次 sync 会用 schema 默认值
+        //   覆盖启动配置（`sessionKindHint=false` 被掀回 true、`outboundLastCtxFallback=true` 被关掉）。
+        sessionKindHint: live.sessionKindHint,
+        outboundLastCtxFallback: live.outboundLastCtxFallback,
+        turnErrorModeByScope: live.turnErrorModeByScope,
+        toolErrorModeByScope: live.toolErrorModeByScope,
         latexHint: live.latexHint,
         botplayEvents: Array.isArray(live.botplayEvents) ? live.botplayEvents : [],
     };
@@ -694,8 +701,14 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
                 live.toolErrorModeByScope = next.toolErrorModeByScope;
             if (typeof next.sessionKindHint === 'boolean')
                 live.sessionKindHint = next.sessionKindHint;
-            if (typeof next.outboundLastCtxFallback === 'boolean')
+            if (typeof next.outboundLastCtxFallback === 'boolean') {
                 live.outboundLastCtxFallback = next.outboundLastCtxFallback;
+                // ★ CodeRabbit（补审）：发送侧读 WeakMap，只改 live 不生效 ⇒ 顺手对同一 sender 重设
+                try {
+                    setOutboundLastCtxFallback(currentOutboundSender(), next.outboundLastCtxFallback);
+                }
+                catch { /* ignore */ }
+            }
             if (typeof next.latexHint === 'boolean')
                 live.latexHint = next.latexHint;
             if (next.localModel && typeof next.localModel === 'object')

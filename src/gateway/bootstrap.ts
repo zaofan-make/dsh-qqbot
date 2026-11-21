@@ -15,7 +15,7 @@ import { handleInbound, createOutboundHandler } from '../transport/index.js';
 import { parseStreamFrame } from '../transport/events.js';
 import { setMaterialTargetFactory, rewriteLocalMarkdownImages, lastMediaRewrite } from '../features/md-media-rewrite.js';
 import { resolveAutoRecall } from '../features/auto-recall.js';
-import { registerOutboundOwner, setOutboundLastCtxFallback } from '../features/ext-outbound.js';
+import { registerOutboundOwner, setOutboundLastCtxFallback, setOutboundSender } from '../features/ext-outbound.js';
 import type { ToolsRegistryLike } from '../transport/tool-presenter.js';
 import type { QQBotSender } from '../transport/outbound-buffer.js';
 import { buildUserAgent } from '../shared/index.js';
@@ -1195,6 +1195,8 @@ export async function bootstrapGateway(
   //   middleware-setup 里登记的是 SDK 的 bot，但 createOutboundHandler 传的是上面这个 sender
   //   —— 两个对象不同 ⇒ WeakMap 永远 miss ⇒ 多实例下所有出站都会跳过扩展。这里补登记 sender。
   try { registerOutboundOwner(dataRootOf(config), sender); } catch { /* 登记失败不影响发送 */ }
+  // 记下当前 sender：设置页保存时要用它热改 outboundLastCtxFallback（否则得重启）
+  try { setOutboundSender(sender); } catch { /* ignore */ }
   // ★ 2026-11-21（issue #78）：扩展 `send()` 无 target 时默认**拒发**（fail-closed），
   //   避免回落"最近活跃会话"造成跨会话串台。要旧行为就把 outboundLastCtxFallback 打开。
   try { setOutboundLastCtxFallback(sender, config.outboundLastCtxFallback === true); } catch { /* ignore */ }

@@ -2128,7 +2128,15 @@ export class SessionManager {
                                 continue;
                             _hasKind = true;
                             if (info.name) {
-                                const txt = JSON.stringify(ev.data?.content ?? '');
+                                // ★ CodeRabbit：**读文本块原文**再比较，别搜 JSON 序列化结果 ——
+                                //   昵称里有双引号/反斜杠/换行时 JSON 会转义，`includes(info.name)` 永远 false，
+                                //   结果每轮都追加一遍相同的提示。
+                                const c = ev.data?.content;
+                                const txt = typeof c === 'string'
+                                    ? c
+                                    : Array.isArray(c)
+                                        ? c.map((b) => String(b?.text ?? '')).join(String.fromCharCode(10))
+                                        : '';
                                 if (txt.includes(info.name)) {
                                     _hasNamed = true;
                                     break;

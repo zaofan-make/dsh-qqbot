@@ -515,6 +515,18 @@ export function setOutboundLastCtxFallback(owner: unknown, v: boolean): void {
   if (owner && typeof owner === 'object') fallbackByOwner.set(owner as object, v === true);
 }
 
+/**
+ * 记下"当前发送器"（bootstrap 建好 sender 时调），供设置页保存时热改开关 ——
+ * 否则面板改了 `outboundLastCtxFallback` 只更新 config，发送侧读的仍是启动时那份 WeakMap。
+ */
+let currentSender: object | null = null;
+export function setOutboundSender(sender: unknown): void {
+  if (sender && typeof sender === 'object') currentSender = sender as object;
+}
+export function currentOutboundSender(): object | null {
+  return currentSender;
+}
+
 /** 诊断用：该发送器是否允许回落 */
 export function outboundLastCtxFallbackEnabled(owner?: unknown): boolean {
   if (!owner || typeof owner !== 'object') return false;
