@@ -1200,7 +1200,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
     catch { /* 登记失败不影响发送 */ }
     // 记下当前 sender（按实例 ns 绑）：设置页保存时用它热改 outboundLastCtxFallback（否则得重启）
     try {
-        setOutboundSender(String(config.settingsNs || 'im-qqbot'), sender);
+        setOutboundSender(String(config.settingsNs ?? '').trim() || 'im-qqbot', sender);
     }
     catch { /* ignore */ }
     // ★ 2026-11-21（issue #78）：扩展 `send()` 无 target 时默认**拒发**（fail-closed），

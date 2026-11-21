@@ -1782,6 +1782,20 @@ export class SessionManager {
             ctxSmartOn = isContextlessActive(skSmart, this.config.contextlessMode)
               && contextlessSmartOf(skSmart, this.config.contextlessSmart);
           }
+          // ★ CodeRabbit：**重启/回收后 `findByAgent` 全空 ⇒ ctxSmartOn 恒 false**，
+          //   智能提示与自己的备忘都注不进去（连下面那段反查都没机会执行）。
+          //   补一次 model-prefs 反查（与后面 `_kindKey` 同口径），有活跃记录时仍以记录为准。
+          if (!ctxSmartOn) {
+            try {
+              const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
+              const keyNow = sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+              if (keyNow) {
+                ctxSmartOn = isContextlessActive(keyNow, this.config.contextlessMode)
+                  && contextlessSmartOf(keyNow, this.config.contextlessSmart);
+                traceContextless('[ctxsmart] 反查兜底 key=' + keyNow + ' => on=' + String(ctxSmartOn));
+              }
+            } catch { /* ignore */ }
+          }
           if (ctxSmartOn && skSmart && dataRootSmart && (!Number.isFinite(currentStep) || currentStep <= 1)) {
             const req = readContextPending(dataRootSmart, skSmart);
             if (req) {
@@ -1877,6 +1891,7 @@ export class SessionManager {
         //       注入根本没机会执行（2026-10-01 实测：AI 反馈"没有任何一条要求我判断是不是同一个话题"）。
         let ctxSmartText = '';
         let selfMemoText = '';
+        let selfMemoKey = '';
         try {
           // ⚠️ 2026-10-01：靠「这个 turn 注过没有」去重 —— 原来用 step<=1 判，实测仍会一回合注两份
           //   （宿主每 step 都触发，且 currentStep 未必从 1 递增）。
@@ -1899,6 +1914,7 @@ export class SessionManager {
               } catch { /* ignore */ }
             }
             if (skM) {
+              selfMemoKey = skM;
               const memo = memoTextForInject(dataRootSmart, skM).trim();
               if (CTX_SMART_REMINDER) ctxSmartText = '<system-reminder>\n' + CTX_SMART_REMINDER + '\n</system-reminder>';
               if (memo) selfMemoText = memo;
@@ -2088,6 +2104,40 @@ export class SessionManager {
               source: { kind: MEMO_KIND, form: 'instructions', ns },
             });
             this.logger?.info?.(`[备忘] 注入最新版 ${selfMemoText.length} 字`);
+          }
+        } else if (ctxSmartOn && selfMemoKey) {
+          // ★ CodeRabbit：备忘被清空（用户用 context_memo 删光了）⇒ 历史里旧块还写着「以这条为准」，
+          //   模型会继续把已删内容当备忘。这里补注一条「清空」状态；且只在**确实读到空**时补
+          //   （未启用 / 读取失败时 selfMemoKey 为空，走不到这里，绝不覆盖有效备忘）。
+          const MEMO_KIND = 'qqbot:self-memo';
+          let _lastMemoEmpty = '';
+          if (agent?.session?.surface?.nodes && agent.session.eventAt) {
+            for (const seq of agent.session.surface.nodes) {
+              const ev = agent.session.eventAt(seq) as
+                | { type?: string; data?: { source?: { kind?: string }; content?: unknown } }
+                | undefined;
+              if (ev?.type !== 'user/message' || ev.data?.source?.kind !== MEMO_KIND) continue;
+              const c = ev.data?.content as unknown;
+              _lastMemoEmpty = typeof c === 'string'
+                ? c
+                : Array.isArray(c)
+                  ? c.map((b) => String((b as { text?: unknown } | undefined)?.text ?? '')).join(String.fromCharCode(10))
+                  : '';
+            }
+          }
+          if (_lastMemoEmpty && !_lastMemoEmpty.includes('备忘已清空')) {
+            extraAll.push({
+              role: 'user',
+              id: randomUUID(),
+              content: [{
+                type: 'text',
+                text: `<system-reminder>` + String.fromCharCode(10)
+                  + '〔你的备忘已清空：上下文里之前列出的备忘条目全部作废，不要再当作当前备忘使用。〕'
+                  + String.fromCharCode(10) + `</system-reminder>`,
+              }],
+              source: { kind: MEMO_KIND, form: 'instructions', ns },
+            });
+            this.logger?.info?.('[备忘] 已清空 → 注入作废标记');
           }
         }
         // ★ 2026-11-20：**数学公式提示独立成块**（维护手册 §11.39 铁律：自己的 kind + 自己的判重）。
