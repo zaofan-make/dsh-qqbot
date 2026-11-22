@@ -869,25 +869,41 @@ class OutboundRouter {
                     //   它内部还会再扫一次 RECALL ⇒ 二次撤回（可能撤到本次刚发的文本段）。
                     //   这类段改成直发 sendMedia（路径原样、指令不被解释）；其余段照旧走 sendRichOutbound
                     //   （表情包每轮上限与 passive/adaptive 回复模式由它统一处理）。
+                    // ★ CodeRabbit #84：路径里含 `[RECALL]` 的段**不能**走 sendRichOutbound ——
+                    //   它内部还会再扫一次 RECALL ⇒ 二次撤回（可能撤到本次刚发的文本段）。
+                    //   这类段改成直发 sendMedia（路径原样、指令不被解释）；其余段照旧走 sendRichOutbound
+                    //   （表情包每轮上限与 passive/adaptive 回复模式由它统一处理）。
+                    //
+                    //   ★ CodeRabbit #84（再次）：**必须按 buf 的原始顺序发** —— 先发 normal 再发 raw 会把
+                    //   `[诀REcall路径][普通文件]` 的顺序调换成"普通文件→RECALL路径"。所以：普通段先攒着批量发，
+                    //   遇到 raw 段就把攒的发出去、再直发它，最后收尾。
                     const isRaw = (s) => /\[RECALL(?::\s*\d+)?\]/.test(String(s.source ?? ''));
-                    const rawSegs = buf.filter(isRaw);
-                    const normalSegs = buf.filter((s) => !isRaw(s));
-                    if (normalSegs.length > 0) {
-                        const mediaOnly = normalSegs
+                    let pending = [];
+                    const flushPending = async () => {
+                        if (!pending.length)
+                            return;
+                        const mediaOnly = pending
                             .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
                             .join('');
+                        pending = [];
                         await sendRichOutbound(this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
-                    }
-                    for (const seg of rawSegs) {
+                    };
+                    for (const seg of buf) {
+                        if (!isRaw(seg)) {
+                            pending.push(seg); // 连续普通段合并成一次发送（闸门/上限仍在）
+                            continue;
+                        }
+                        await flushPending(); // 先把它前面攒的普通段发掉，保住顺序
                         try {
                             const src = resolveSource(String(seg.source ?? ''), this.config.cwd);
                             const sourceOpt = src.kind === 'url' ? { url: src.url } : { localPath: src.path };
                             await this.bot.sendMedia((this.resolveTarget(_record) ?? this.activeTarget(_record)), String(seg.kind ?? 'image'), sourceOpt);
                         }
-                        catch (e) {
-                            this.logger.error('im-qqbot: 路径含 [RECALL] 的媒体段发送失败: ' + (e instanceof Error ? e.message : String(e)));
+                        catch (err) {
+                            this.logger.error('im-qqbot: 路径含 [RECALL] 的媒体段发送失败: ' + (err instanceof Error ? err.message : String(err)));
                         }
                     }
+                    await flushPending();
                 };
                 for (const seg of _segs) {
                     if (seg.type === 'media') {
