@@ -9,7 +9,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
-import { containsMedia, normalizeMediaMarkers } from './rich-media.js';
+import { containsMedia, normalizeMediaMarkers, parseOutbound, resolveSource } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -904,13 +904,18 @@ class OutboundRouter {
       const outText = await rewriteLocalMarkdownImages(normalized, mdTarget as never);
 
       // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
-      // ★ CodeRabbit #83：但如果正文里还有 `[MEDIA:…]` 标记（normalizeMediaMarkers 产出的），
-      //   markdown 通道**不解析它们**，会把 `[MEDIA:image|C:\…]` 原样发到群里（路径泄漏、图也发不出）。
-      //   这种情况交给 sendRichOutbound —— 它内部会「文本段走 markdown（md 图照常渲染）+ 媒体段逐个 sendMedia」。
-      if (!containsMedia(outText) && outText.indexOf('qqbot-media://') >= 0) {
+      // ★ CodeRabbit #83/#84：正文里可能**同时**有 `qqbot-media://`（md 图）与 `[MEDIA:…]`（normalize 产出）：
+      //   · 全交给 markdown 通道 ⇒ `[MEDIA:…]` 原样发群（路径泄漏、图也发不出）；
+      //   · 全交给 sendRichOutbound ⇒ 丢掉"markdown 被拒 → 降级重发"的处理（文本段与内联图直接丢）。
+      //   所以拆开：**文本段（含 md 图）走原来的 try/catch 降级**，媒体段单独逐个 sendMedia。
+      const _segs = containsMedia(outText) ? parseOutbound(outText) : undefined;
+      const _mediaSegs = (_segs ?? []).filter((s) => s.type === 'media') as Array<{ kind?: string; source?: string }>;
+      const _mdText = _segs
+        ? _segs.filter((s) => s.type !== 'media').map((s) => (s as { text?: string }).text ?? '').join('')
+        : outText;
+      if (_mdText.indexOf('qqbot-media://') >= 0) {
         try {
-          await this.bot.sendMarkdown(this.activeTarget(_record), outText);
-          return;
+          await this.bot.sendMarkdown(this.activeTarget(_record), _mdText);
         } catch (err) {
           this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
           // 2026-10-30: 回落时不能把 qqbot-media 引用或原始 markdown 当文本发出去 ——
@@ -922,7 +927,7 @@ class OutboundRouter {
           await sendRichOutbound(
             this.bot,
             _record.replyTarget,
-            stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(text)),
+            stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(_mdText)),
             this.config.textChunkLimit,
             this.config.cwd,
             (m) => this.logger.error(m),
@@ -933,8 +938,22 @@ class OutboundRouter {
             this.onSendErrorFor(_record),
             { source },
           );
-          return;
         }
+        // 混合消息里的媒体段：单独发（上面那条通道不解析 `[MEDIA:…]`）
+        for (const seg of _mediaSegs) {
+          const src = resolveSource(String(seg.source ?? ''), this.config.cwd);
+          const sourceOpt = src.kind === 'url' ? { url: src.url } : { localPath: src.path };
+          try {
+            await this.bot.sendMedia(
+              this.activeTarget(_record) as never,
+              String(seg.kind ?? 'image') as never,
+              sourceOpt as never,
+            );
+          } catch (e) {
+            this.logger.error('im-qqbot: 混合消息里的媒体段发送失败: ' + (e instanceof Error ? e.message : String(e)));
+          }
+        }
+        return;
       }
       await sendRichOutbound(
         this.bot,
