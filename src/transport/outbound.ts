@@ -904,7 +904,10 @@ class OutboundRouter {
       const outText = await rewriteLocalMarkdownImages(normalized, mdTarget as never);
 
       // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
-      if (outText.indexOf('qqbot-media://') >= 0) {
+      // ★ CodeRabbit #83：但如果正文里还有 `[MEDIA:…]` 标记（normalizeMediaMarkers 产出的），
+      //   markdown 通道**不解析它们**，会把 `[MEDIA:image|C:\…]` 原样发到群里（路径泄漏、图也发不出）。
+      //   这种情况交给 sendRichOutbound —— 它内部会「文本段走 markdown（md 图照常渲染）+ 媒体段逐个 sendMedia」。
+      if (!containsMedia(outText) && outText.indexOf('qqbot-media://') >= 0) {
         try {
           await this.bot.sendMarkdown(this.activeTarget(_record), outText);
           return;

@@ -1,4 +1,6 @@
 export type MediaKind = 'image' | 'video' | 'voice' | 'file';
+/** 把带路径的尖括号媒体标记规范化成方括号形式；其余文本原样返回。 */
+export declare function normalizeMediaMarkers(text: string): string;
 /** 是否含撤回指令 */
 export declare function containsRecall(text: string): boolean;
 /** 收集文本里出现的所有撤回指令序号(按出现顺序)。[RECALL]→1。无则返回空数组。 */

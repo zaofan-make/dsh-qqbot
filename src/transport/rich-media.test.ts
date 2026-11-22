@@ -53,3 +53,30 @@ describe('containsMedia / stripDirectives', () => {
     expect(stripDirectives('hi <MEDIA:image|/tmp/a.png> there')).toBe('hi  there');
   });
 });
+
+// ── CodeRabbit #83 的回归用例 ──
+describe('路径里带方括号目录（CodeRabbit #83）', () => {
+  it('尖括号规范化后能完整解析（不在第一个 ] 处截断）', () => {
+    const input = String.raw`<MEDIA:image|C:\pics\[旅行]\a.png>`;
+    const norm = normalizeMediaMarkers(input);
+    expect(norm).toBe(String.raw`[MEDIA:image|C:\pics\[旅行]\a.png]`);
+    const segs = parseOutbound(norm);
+    const media = segs.filter((s) => s.type === 'media');
+    expect(media).toHaveLength(1);
+    expect(media[0]).toMatchObject({ kind: 'image', source: String.raw`C:\pics\[旅行]\a.png` });
+    const text = segs.filter((s) => s.type === 'text').map((s) => (s as { text: string }).text).join('');
+    expect(text).not.toContain('a.png');
+  });
+
+  it('方括号原生标记同样支持方括号目录', () => {
+    const segs = parseOutbound(String.raw`[MEDIA:file|G:\[备份]\报告.pdf]`);
+    const media = segs.filter((s) => s.type === 'media');
+    expect(media).toHaveLength(1);
+    expect(media[0]).toMatchObject({ kind: 'file', source: String.raw`G:\[备份]\报告.pdf` });
+  });
+
+  it('多段相邻标记不会互相吞掉', () => {
+    const segs = parseOutbound('[MEDIA:image|/tmp/a.png][MEDIA:image|/tmp/b.png]');
+    expect(segs.filter((s) => s.type === 'media')).toHaveLength(2);
+  });
+});

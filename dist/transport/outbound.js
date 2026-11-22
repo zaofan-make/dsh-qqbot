@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound } from './outbound-buffer.js';
+import { containsMedia, normalizeMediaMarkers } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -753,7 +754,7 @@ class OutboundRouter {
                     || (typeof _record.turnStartAt === 'number'
                         && (_record.lastInboundAt ?? 0) > _record.turnStartAt);
                 if (!qqActiveThisTurn) {
-                    const hasMedia = /\[MEDIA:(image|file|video|voice)\|/i.test(text);
+                    const hasMedia = containsMedia(normalizeMediaMarkers(text));
                     if (!hasMedia) {
                         this.logger.debug(`im-qqbot: [web静默] 跳过正文块 tag=${tag} key=${_record.sessionKey} len=${text.length}`);
                         return;
@@ -761,7 +762,7 @@ class OutboundRouter {
                 }
             }
             // 2026-10-27: 已被 present 直发的文件，正文里同路径的 [MEDIA:file|…] 标记剔除，避免一份文件发两遍
-            const deduped = stripDeliveredFileMarkers(text, this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
+            const deduped = stripDeliveredFileMarkers(normalizeMediaMarkers(text), this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
             if (deduped.trim() === '')
                 return; // 整段只剩"已被 present 的同一文件"→ 不再发空消息
             text = deduped;
@@ -812,7 +813,10 @@ class OutboundRouter {
             const normalized = normalizeMarkdownImages(text);
             const outText = await rewriteLocalMarkdownImages(normalized, mdTarget);
             // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
-            if (outText.indexOf('qqbot-media://') >= 0) {
+            // ★ CodeRabbit #83：但如果正文里还有 `[MEDIA:…]` 标记（normalizeMediaMarkers 产出的），
+            //   markdown 通道**不解析它们**，会把 `[MEDIA:image|C:\…]` 原样发到群里（路径泄漏、图也发不出）。
+            //   这种情况交给 sendRichOutbound —— 它内部会「文本段走 markdown（md 图照常渲染）+ 媒体段逐个 sendMedia」。
+            if (!containsMedia(outText) && outText.indexOf('qqbot-media://') >= 0) {
                 try {
                     await this.bot.sendMarkdown(this.activeTarget(_record), outText);
                     return;
