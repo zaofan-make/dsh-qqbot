@@ -9,7 +9,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
-import { containsMedia, normalizeMediaMarkers, parseOutbound } from './rich-media.js';
+import { containsMedia, normalizeMediaMarkers, parseOutbound, collectRecallIndices } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -915,7 +915,20 @@ class OutboundRouter {
       const _segs = containsMedia(outText) ? parseOutbound(outText) : undefined;
       const _hasMediaSeg = !!_segs && _segs.some((s) => s.type === 'media');
       if (_segs && _hasMediaSeg && outText.indexOf('qqbot-media://') >= 0) {
-        const _mdSend = async (t: string): Promise<void> => {
+        // ★ CodeRabbit #84：**先把正文里所有 [RECALL] 执行掉，再发媒体** ——
+        //   否则媒体先发出去、撤回落到了"刚发的那张图"（它已进发送历史），而不是发送前的那条消息。
+        //   执行完后发送文本段时要把这些指令剔掉，避免 sendRichOutbound 再执行一次。
+        const _recallIdx = collectRecallIndices(outText);
+        if (_recallIdx.length > 0) {
+          for (const idx of _recallIdx) {
+            try {
+              await this.bot.recallByIndex(this.activeTarget(_record) as never, idx);
+            } catch { /* 单条失败不影响后续发送 */ }
+          }
+        }
+        const _stripRecall = (s: string): string => s.replace(/\[RECALL(?::\s*\d+)?\]/g, '');
+        const _mdSend = async (raw: string): Promise<void> => {
+          const t = _stripRecall(raw);
           if (!t.trim()) return;
           if (t.indexOf('qqbot-media://') < 0) {
             await sendRichOutbound(
