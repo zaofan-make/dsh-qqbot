@@ -9,7 +9,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
-import { containsMedia, normalizeMediaMarkers, parseOutbound, collectRecallIndices } from './rich-media.js';
+import { containsMedia, normalizeMediaMarkers, parseOutbound, collectRecallIndices, resolveSource } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -918,7 +918,11 @@ class OutboundRouter {
         // ★ CodeRabbit #84：**先把正文里所有 [RECALL] 执行掉，再发媒体** ——
         //   否则媒体先发出去、撤回落到了"刚发的那张图"（它已进发送历史），而不是发送前的那条消息。
         //   执行完后发送文本段时要把这些指令剔掉，避免 sendRichOutbound 再执行一次。
-        const _recallIdx = collectRecallIndices(outText);
+        // ★ CodeRabbit #84：**只从文本段收集撤回指令** ——
+        //   媒体**路径**里可能正好含 `[RECALL]`（`C:\[RECALL]\a.txt` 这种目录名），
+        //   扫整条正文会把它当成指令执行一次，而 `_flushMedia` 重建标记后 sendRichOutbound 又会识别一次。
+        const _textForRecall = _segs.filter((s) => s.type !== 'media').map((s) => (s as { text?: string }).text ?? '').join('');
+        const _recallIdx = collectRecallIndices(_textForRecall);
         if (_recallIdx.length > 0) {
           for (const idx of _recallIdx) {
             try {
@@ -956,15 +960,38 @@ class OutboundRouter {
         let _mediaBuf: Array<{ kind?: string; source?: string }> = [];
         const _flushMedia = async (): Promise<void> => {
           if (!_mediaBuf.length) return;
-          const mediaOnly = _mediaBuf
-            .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
-            .join('');
+          const buf = _mediaBuf;
           _mediaBuf = [];
-          await sendRichOutbound(
-            this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd,
-            (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record),
-            undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source },
-          );
+          // ★ CodeRabbit #84：路径里含 `[RECALL]` 的段**不能**走 sendRichOutbound ——
+          //   它内部还会再扫一次 RECALL ⇒ 二次撤回（可能撤到本次刚发的文本段）。
+          //   这类段改成直发 sendMedia（路径原样、指令不被解释）；其余段照旧走 sendRichOutbound
+          //   （表情包每轮上限与 passive/adaptive 回复模式由它统一处理）。
+          const isRaw = (s: { source?: string }): boolean => /\[RECALL(?::\s*\d+)?\]/.test(String(s.source ?? ''));
+          const rawSegs = buf.filter(isRaw);
+          const normalSegs = buf.filter((s) => !isRaw(s));
+          if (normalSegs.length > 0) {
+            const mediaOnly = normalSegs
+              .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
+              .join('');
+            await sendRichOutbound(
+              this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd,
+              (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record),
+              undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source },
+            );
+          }
+          for (const seg of rawSegs) {
+            try {
+              const src = resolveSource(String(seg.source ?? ''), this.config.cwd);
+              const sourceOpt = src.kind === 'url' ? { url: src.url } : { localPath: src.path };
+              await this.bot.sendMedia(
+                (this.resolveTarget(_record) ?? this.activeTarget(_record)) as never,
+                String(seg.kind ?? 'image') as never,
+                sourceOpt as never,
+              );
+            } catch (e) {
+              this.logger.error('im-qqbot: 路径含 [RECALL] 的媒体段发送失败: ' + (e instanceof Error ? e.message : String(e)));
+            }
+          }
         };
         for (const seg of _segs) {
           if (seg.type === 'media') {
