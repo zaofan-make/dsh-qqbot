@@ -13,8 +13,35 @@
  */
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-/** 富媒体标记：支持单个或多段连续出现 */
-const MEDIA_RE = /\[MEDIA:(image|video|voice|file)\|([^\]]+)\]/g;
+/**
+ * 富媒体标记：支持单个或多段连续出现。
+ *
+ * ★ CodeRabbit #83：src 允许出现成对的 `[...]` —— Windows 路径常带方括号目录
+ *   （`C:\pics\[旅行]\a.png`），原来的 `[^\]]+` 会在第一个 `]` 处截断，把 `\a.png]` 当正文残留。
+ */
+const MEDIA_RE = /\[MEDIA:(image|video|voice|file)\|((?:[^\[\]]|\[[^\[\]]*\])+)\]/g;
+/**
+ * 尖括号容错（issue #81）：模型偶发把方括号标记写成尖括号变体，
+ * 而出站全线只认方括号 —— 整段（含本地图库路径）会按纯文本发到群里，路径泄漏、图也没发出去。
+ *
+ * 规则：
+ *   - 不区分大小写、容忍标记内空白；
+ *   - src 必须带路径特征（反斜杠或正斜杠）才转换：正文里讨论格式的字样
+ *     （如「发图格式是 <MEDIA:image|你的图片路径>」）保持原样，不误伤；
+ *   - kind 统一小写：present 去重正则 /\[MEDIA:file\|...\]/g 没有 i 标志，
+ *     保留大写变体会绕过去重，造成同一文件发两遍。
+ */
+const ANGLE_MEDIA_RE = /<\s*MEDIA\s*:\s*(image|video|voice|file)\s*\|\s*([^<>]*?)\s*>/gi;
+/** 把带路径的尖括号媒体标记规范化成方括号形式；其余文本原样返回。 */
+export function normalizeMediaMarkers(text) {
+    if (typeof text !== 'string' || text.indexOf('<') === -1)
+        return text;
+    return text.replace(ANGLE_MEDIA_RE, (whole, kind, src) => {
+        if (!/[\\/]/.test(src))
+            return whole;
+        return '[MEDIA:' + kind.toLowerCase() + '|' + src + ']';
+    });
+}
 /** 撤回标记：支持 [RECALL] 或 [RECALL:N]（N=撤倒数第 N 条，默认 1） */
 const RECALL_RE = /\[RECALL(?::\s*(\d+))?\]/;
 /** 全局版：一次性清除/收集文本里所有撤回指令 */
@@ -41,20 +68,21 @@ export function collectRecallIndices(text) {
 /** 是否含富媒体指令 */
 export function containsMedia(text) {
     MEDIA_RE.lastIndex = 0;
-    return MEDIA_RE.test(text);
+    return MEDIA_RE.test(normalizeMediaMarkers(text));
 }
 /**
  * 把一段 agent 文本拆成 Segment[]：文本段与富媒体段交替。
  * 富媒体标记被剔除；[RECALL] 不在此拆分（由调用方单独处理，避免污染文本段）。
  */
 export function parseOutbound(text) {
+    const normalized = normalizeMediaMarkers(text);
     const segments = [];
     MEDIA_RE.lastIndex = 0;
     let last = 0;
     let m;
-    while ((m = MEDIA_RE.exec(text)) !== null) {
+    while ((m = MEDIA_RE.exec(normalized)) !== null) {
         if (m.index > last) {
-            const t = text.slice(last, m.index);
+            const t = normalized.slice(last, m.index);
             if (t.trim())
                 segments.push({ type: 'text', text: t });
         }
@@ -64,8 +92,8 @@ export function parseOutbound(text) {
             segments.push({ type: 'media', kind, source });
         last = m.index + m[0].length;
     }
-    if (last < text.length) {
-        const t = text.slice(last);
+    if (last < normalized.length) {
+        const t = normalized.slice(last);
         if (t.trim())
             segments.push({ type: 'text', text: t });
     }
@@ -75,7 +103,7 @@ export function parseOutbound(text) {
  * 把标记文本清理成"仅剩要展示的纯文本"（去掉富媒体/撤回/引用指令），供降级/预览。
  */
 export function stripDirectives(text) {
-    return text.replace(MEDIA_RE, '').replace(RECALL_G_RE, '').replace(REF_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+    return normalizeMediaMarkers(text).replace(MEDIA_RE, '').replace(RECALL_G_RE, '').replace(REF_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 /**
  * 提取引用消息标记：[rf:短消息号]（2026-09-13 主人定）。

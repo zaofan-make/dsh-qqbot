@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound } from './outbound-buffer.js';
+import { containsMedia, normalizeMediaMarkers, parseOutbound, collectRecallIndices, resolveSource } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -753,7 +754,7 @@ class OutboundRouter {
                     || (typeof _record.turnStartAt === 'number'
                         && (_record.lastInboundAt ?? 0) > _record.turnStartAt);
                 if (!qqActiveThisTurn) {
-                    const hasMedia = /\[MEDIA:(image|file|video|voice)\|/i.test(text);
+                    const hasMedia = containsMedia(normalizeMediaMarkers(text));
                     if (!hasMedia) {
                         this.logger.debug(`im-qqbot: [web静默] 跳过正文块 tag=${tag} key=${_record.sessionKey} len=${text.length}`);
                         return;
@@ -761,7 +762,7 @@ class OutboundRouter {
                 }
             }
             // 2026-10-27: 已被 present 直发的文件，正文里同路径的 [MEDIA:file|…] 标记剔除，避免一份文件发两遍
-            const deduped = stripDeliveredFileMarkers(text, this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
+            const deduped = stripDeliveredFileMarkers(normalizeMediaMarkers(text), this.deliveredFiles.get(_record.sessionKey), this.config.cwd);
             if (deduped.trim() === '')
                 return; // 整段只剩"已被 present 的同一文件"→ 不再发空消息
             text = deduped;
@@ -812,22 +813,108 @@ class OutboundRouter {
             const normalized = normalizeMarkdownImages(text);
             const outText = await rewriteLocalMarkdownImages(normalized, mdTarget);
             // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
-            if (outText.indexOf('qqbot-media://') >= 0) {
-                try {
-                    await this.bot.sendMarkdown(this.activeTarget(_record), outText);
-                    return;
+            // ★ CodeRabbit #83/#84：正文里可能**同时**有 `qqbot-media://`（md 图）与 `[MEDIA:…]`（normalize 产出）：
+            // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
+            // ★ CodeRabbit #83/#84：正文里可能**同时**有 `qqbot-media://`（md 图）与 `[MEDIA:…]`（normalize 产出）：
+            //   · 全交给 markdown 通道 ⇒ `[MEDIA:…]` 原样发群（路径泄漏、图也发不出）；
+            //   · 全交给 sendRichOutbound ⇒ 丢掉"markdown 被拒 → 降级"的处理。
+            //   ★ 第 2 轮复审：**必须按原文顺序逐段发** —— 原来先把所有文本合并再发媒体，图片后面的说明会跑到图片前面。
+            //   现在：文本段（可能含 md 图）→ markdown + 失败降级；**连续的媒体段** 合并成一次 sendRichOutbound
+            //   （表情包每轮上限与 passive/adaptive 回复模式都在它内部处理）。
+            const _segs = containsMedia(outText) ? parseOutbound(outText) : undefined;
+            const _hasMediaSeg = !!_segs && _segs.some((s) => s.type === 'media');
+            if (_segs && _hasMediaSeg && outText.indexOf('qqbot-media://') >= 0) {
+                // ★ CodeRabbit #84：**先把正文里所有 [RECALL] 执行掉，再发媒体** ——
+                //   否则媒体先发出去、撤回落到了"刚发的那张图"（它已进发送历史），而不是发送前的那条消息。
+                //   执行完后发送文本段时要把这些指令剔掉，避免 sendRichOutbound 再执行一次。
+                // ★ CodeRabbit #84：**只从文本段收集撤回指令** ——
+                //   媒体**路径**里可能正好含 `[RECALL]`（`C:\[RECALL]\a.txt` 这种目录名），
+                //   扫整条正文会把它当成指令执行一次，而 `_flushMedia` 重建标记后 sendRichOutbound 又会识别一次。
+                const _textForRecall = _segs.filter((s) => s.type !== 'media').map((s) => s.text ?? '').join('');
+                const _recallIdx = collectRecallIndices(_textForRecall);
+                if (_recallIdx.length > 0) {
+                    for (const idx of _recallIdx) {
+                        try {
+                            await this.bot.recallByIndex(this.activeTarget(_record), idx);
+                        }
+                        catch { /* 单条失败不影响后续发送 */ }
+                    }
                 }
-                catch (err) {
-                    this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
-                    // 2026-10-30: 回落时不能把 qqbot-media 引用或原始 markdown 当文本发出去 ——
-                    //   本地图直接降级成 [MEDIA:image|路径]，走普通发图通道把图真发出来
-                    // 2026-10-31（主人实测截图）：**已经上传成 qqbot-media:// 的图**
-                    //   `localMarkdownImagesToMediaMarkers` 认不出来（它只认本地路径）⇒ 整段语法原样发到群里。
-                    //   这里再套一层 stripMarkdownImagesForPlainText 统一收拾：
-                    //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。绝不把语法露给群友。
-                    await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(text)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
-                    return;
+                const _stripRecall = (s) => s.replace(/\[RECALL(?::\s*\d+)?\]/g, '');
+                const _mdSend = async (raw) => {
+                    const t = _stripRecall(raw);
+                    if (!t.trim())
+                        return;
+                    if (t.indexOf('qqbot-media://') < 0) {
+                        await sendRichOutbound(this.bot, _record.replyTarget, t, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+                        return;
+                    }
+                    try {
+                        await this.bot.sendMarkdown(this.activeTarget(_record), t);
+                    }
+                    catch (err) {
+                        this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
+                        // 2026-10-30/31：回落时绝不把 qqbot-media 引用或原始 markdown 当文本发出去 ——
+                        //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。
+                        await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(t)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+                    }
+                };
+                let _mediaBuf = [];
+                const _flushMedia = async () => {
+                    if (!_mediaBuf.length)
+                        return;
+                    const buf = _mediaBuf;
+                    _mediaBuf = [];
+                    // ★ CodeRabbit #84：路径里含 `[RECALL]` 的段**不能**走 sendRichOutbound ——
+                    //   它内部还会再扫一次 RECALL ⇒ 二次撤回（可能撤到本次刚发的文本段）。
+                    //   这类段改成直发 sendMedia（路径原样、指令不被解释）；其余段照旧走 sendRichOutbound
+                    //   （表情包每轮上限与 passive/adaptive 回复模式由它统一处理）。
+                    // ★ CodeRabbit #84：路径里含 `[RECALL]` 的段**不能**走 sendRichOutbound ——
+                    //   它内部还会再扫一次 RECALL ⇒ 二次撤回（可能撤到本次刚发的文本段）。
+                    //   这类段改成直发 sendMedia（路径原样、指令不被解释）；其余段照旧走 sendRichOutbound
+                    //   （表情包每轮上限与 passive/adaptive 回复模式由它统一处理）。
+                    //
+                    //   ★ CodeRabbit #84（再次）：**必须按 buf 的原始顺序发** —— 先发 normal 再发 raw 会把
+                    //   `[诀REcall路径][普通文件]` 的顺序调换成"普通文件→RECALL路径"。所以：普通段先攒着批量发，
+                    //   遇到 raw 段就把攒的发出去、再直发它，最后收尾。
+                    const isRaw = (s) => /\[RECALL(?::\s*\d+)?\]/.test(String(s.source ?? ''));
+                    let pending = [];
+                    const flushPending = async () => {
+                        if (!pending.length)
+                            return;
+                        const mediaOnly = pending
+                            .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
+                            .join('');
+                        pending = [];
+                        await sendRichOutbound(this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+                    };
+                    for (const seg of buf) {
+                        if (!isRaw(seg)) {
+                            pending.push(seg); // 连续普通段合并成一次发送（闸门/上限仍在）
+                            continue;
+                        }
+                        await flushPending(); // 先把它前面攒的普通段发掉，保住顺序
+                        try {
+                            const src = resolveSource(String(seg.source ?? ''), this.config.cwd);
+                            const sourceOpt = src.kind === 'url' ? { url: src.url } : { localPath: src.path };
+                            await this.bot.sendMedia((this.resolveTarget(_record) ?? this.activeTarget(_record)), String(seg.kind ?? 'image'), sourceOpt);
+                        }
+                        catch (err) {
+                            this.logger.error('im-qqbot: 路径含 [RECALL] 的媒体段发送失败: ' + (err instanceof Error ? err.message : String(err)));
+                        }
+                    }
+                    await flushPending();
+                };
+                for (const seg of _segs) {
+                    if (seg.type === 'media') {
+                        _mediaBuf.push(seg);
+                        continue;
+                    }
+                    await _flushMedia(); // 保证"文字-图-文字"的原始顺序
+                    await _mdSend(String(seg.text ?? ''));
                 }
+                await _flushMedia();
+                return;
             }
             await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
         }
@@ -858,7 +945,10 @@ export function stripDeliveredFileMarkers(text, delivered, cwd) {
     if (delivered === undefined || delivered.size === 0)
         return text;
     let hit = false;
-    const out = String(text ?? '').replace(/\[MEDIA:file\|([^\]\n]+)\]/g, (whole, rawPath) => {
+    // ★ CodeRabbit #84（outside diff range）：路径允许成对 `[...]`，与 `parseOutbound` 的边界保持一致 ——
+    //   否则 `C:\pics\[旅行]\a.png` 会在第一个 `]` 处截断，比较键命中不了 delivered
+    //   ⇒ 已发的文件又被正文里的标记重复发一遍。
+    const out = String(text ?? '').replace(/\[MEDIA:file\|((?:[^\[\]]|\[[^\[\]]*\])+)\]/g, (whole, rawPath) => {
         const key = normalizePathForCompare(resolvePresentedPath(rawPath.trim(), cwd));
         if (delivered.has(key)) {
             hit = true;

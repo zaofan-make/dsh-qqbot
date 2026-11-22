@@ -16,8 +16,13 @@ import path from 'node:path';
 
 export type MediaKind = 'image' | 'video' | 'voice' | 'file';
 
-/** 富媒体标记：支持单个或多段连续出现 */
-const MEDIA_RE = /\[MEDIA:(image|video|voice|file)\|([^\]]+)\]/g;
+/**
+ * 富媒体标记：支持单个或多段连续出现。
+ *
+ * ★ CodeRabbit #83：src 允许出现成对的 `[...]` —— Windows 路径常带方括号目录
+ *   （`C:\pics\[旅行]\a.png`），原来的 `[^\]]+` 会在第一个 `]` 处截断，把 `\a.png]` 当正文残留。
+ */
+const MEDIA_RE = /\[MEDIA:(image|video|voice|file)\|((?:[^\[\]]|\[[^\[\]]*\])+)\]/g;
 
 /**
  * 尖括号容错（issue #81）：模型偶发把方括号标记写成尖括号变体，

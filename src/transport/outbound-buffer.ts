@@ -11,6 +11,7 @@ import type { OutboundCtx } from '../features/ext-outbound.js';
 import { StreamingWriter } from './streaming-writer.js';
 import {
   containsRecall,
+  containsMedia,
   collectRecallIndices,
   extractRefTag,
   parseOutbound,
@@ -304,8 +305,10 @@ async function sendRichOutboundNow(
       refId ? { scope: t.scope, targetId: t.targetId, msgId: t.msgId, referenceMessageId: refId } : t;
     const eff = (): ReplyTarget => withRef(resolveTarget ? resolveTarget() : target);
     const hasRecall = containsRecall(message.text);
+    // ★ CodeRabbit #83：`[RECALL]` 与媒体同时出现、又没有可撤回消息时，原来只看"剥离后还有没有文本"
+    //   ⇒ 纯媒体消息被判成空、媒体被丢掉。这里把媒体段也算进来。
     const hasContent = outboundTexts === undefined
-      ? stripDirectives(message.text).length > 0
+      ? (stripDirectives(message.text).length > 0 || containsMedia(message.text))
       : segments.some((segment) => segment.type === 'media' || segment.chunks.length > 0);
     // 撤回按消息顺序执行；纯撤回未命中不影响后续消息
     if (hasRecall) {
