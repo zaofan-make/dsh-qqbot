@@ -878,7 +878,10 @@ export function stripDeliveredFileMarkers(text, delivered, cwd) {
     if (delivered === undefined || delivered.size === 0)
         return text;
     let hit = false;
-    const out = String(text ?? '').replace(/\[MEDIA:file\|([^\]\n]+)\]/g, (whole, rawPath) => {
+    // ★ CodeRabbit #84（outside diff range）：路径允许成对 `[...]`，与 `parseOutbound` 的边界保持一致 ——
+    //   否则 `C:\pics\[旅行]\a.png` 会在第一个 `]` 处截断，比较键命中不了 delivered
+    //   ⇒ 已发的文件又被正文里的标记重复发一遍。
+    const out = String(text ?? '').replace(/\[MEDIA:file\|((?:[^\[\]]|\[[^\[\]]*\])+)\]/g, (whole, rawPath) => {
         const key = normalizePathForCompare(resolvePresentedPath(rawPath.trim(), cwd));
         if (delivered.has(key)) {
             hit = true;
