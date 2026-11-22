@@ -9,7 +9,7 @@ import type { ImQQBotConfig } from '../config.js';
 import type { Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
-import { containsMedia, normalizeMediaMarkers, parseOutbound, resolveSource } from './rich-media.js';
+import { containsMedia, normalizeMediaMarkers, parseOutbound } from './rich-media.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveMsgIndex } from './msg-index.js';
 import { dataRootOf } from '../gateway/data-root.js';
@@ -939,19 +939,29 @@ class OutboundRouter {
             { source },
           );
         }
-        // 混合消息里的媒体段：单独发（上面那条通道不解析 `[MEDIA:…]`）
-        for (const seg of _mediaSegs) {
-          const src = resolveSource(String(seg.source ?? ''), this.config.cwd);
-          const sourceOpt = src.kind === 'url' ? { url: src.url } : { localPath: src.path };
-          try {
-            await this.bot.sendMedia(
-              this.activeTarget(_record) as never,
-              String(seg.kind ?? 'image') as never,
-              sourceOpt as never,
-            );
-          } catch (e) {
-            this.logger.error('im-qqbot: 混合消息里的媒体段发送失败: ' + (e instanceof Error ? e.message : String(e)));
-          }
+        // 混合消息里的媒体段：**交给 sendRichOutbound 单独发**，而不是自己循环 sendMedia ——
+        //   ★ CodeRabbit #84：直接调 bot.sendMedia 会绕过两样东西：
+        //   ① 表情包每轮上限（`turnStickerSent` / `perTurnMax` 在 sendRichOutbound 内部计数）；
+        //   ② 回复模式（activeTarget 会剥掉 msgId ⇒ passive 变成主动，adaptive 的被动配额也没算）。
+        //   走 sendRichOutbound 这两条都由它内部统一处理。
+        if (_mediaSegs.length > 0) {
+          const mediaOnly = _mediaSegs
+            .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
+            .join('');
+          await sendRichOutbound(
+            this.bot,
+            _record.replyTarget,
+            mediaOnly,
+            this.config.textChunkLimit,
+            this.config.cwd,
+            (m) => this.logger.error(m),
+            () => this.resolveTarget(_record),
+            this.chunkTargetFn(_record),
+            undefined,
+            this.refLookupFor(_record),
+            this.onSendErrorFor(_record),
+            { source },
+          );
         }
         return;
       }
