@@ -905,64 +905,63 @@ class OutboundRouter {
 
       // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
       // ★ CodeRabbit #83/#84：正文里可能**同时**有 `qqbot-media://`（md 图）与 `[MEDIA:…]`（normalize 产出）：
+      // 2026-10-21: 改写后含 qqbot-media 图片引用 → 必须走 markdown 通道(msg_type=2)，普通文本不渲染图片
+      // ★ CodeRabbit #83/#84：正文里可能**同时**有 `qqbot-media://`（md 图）与 `[MEDIA:…]`（normalize 产出）：
       //   · 全交给 markdown 通道 ⇒ `[MEDIA:…]` 原样发群（路径泄漏、图也发不出）；
-      //   · 全交给 sendRichOutbound ⇒ 丢掉"markdown 被拒 → 降级重发"的处理（文本段与内联图直接丢）。
-      //   所以拆开：**文本段（含 md 图）走原来的 try/catch 降级**，媒体段单独逐个 sendMedia。
+      //   · 全交给 sendRichOutbound ⇒ 丢掉"markdown 被拒 → 降级"的处理。
+      //   ★ 第 2 轮复审：**必须按原文顺序逐段发** —— 原来先把所有文本合并再发媒体，图片后面的说明会跑到图片前面。
+      //   现在：文本段（可能含 md 图）→ markdown + 失败降级；**连续的媒体段** 合并成一次 sendRichOutbound
+      //   （表情包每轮上限与 passive/adaptive 回复模式都在它内部处理）。
       const _segs = containsMedia(outText) ? parseOutbound(outText) : undefined;
-      const _mediaSegs = (_segs ?? []).filter((s) => s.type === 'media') as Array<{ kind?: string; source?: string }>;
-      const _mdText = _segs
-        ? _segs.filter((s) => s.type !== 'media').map((s) => (s as { text?: string }).text ?? '').join('')
-        : outText;
-      if (_mdText.indexOf('qqbot-media://') >= 0) {
-        try {
-          await this.bot.sendMarkdown(this.activeTarget(_record), _mdText);
-        } catch (err) {
-          this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
-          // 2026-10-30: 回落时不能把 qqbot-media 引用或原始 markdown 当文本发出去 ——
-          //   本地图直接降级成 [MEDIA:image|路径]，走普通发图通道把图真发出来
-          // 2026-10-31（主人实测截图）：**已经上传成 qqbot-media:// 的图**
-          //   `localMarkdownImagesToMediaMarkers` 认不出来（它只认本地路径）⇒ 整段语法原样发到群里。
-          //   这里再套一层 stripMarkdownImagesForPlainText 统一收拾：
-          //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。绝不把语法露给群友。
-          await sendRichOutbound(
-            this.bot,
-            _record.replyTarget,
-            stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(_mdText)),
-            this.config.textChunkLimit,
-            this.config.cwd,
-            (m) => this.logger.error(m),
-            () => this.resolveTarget(_record),
-            this.chunkTargetFn(_record),
-            undefined,
-            this.refLookupFor(_record),
-            this.onSendErrorFor(_record),
-            { source },
-          );
-        }
-        // 混合消息里的媒体段：**交给 sendRichOutbound 单独发**，而不是自己循环 sendMedia ——
-        //   ★ CodeRabbit #84：直接调 bot.sendMedia 会绕过两样东西：
-        //   ① 表情包每轮上限（`turnStickerSent` / `perTurnMax` 在 sendRichOutbound 内部计数）；
-        //   ② 回复模式（activeTarget 会剥掉 msgId ⇒ passive 变成主动，adaptive 的被动配额也没算）。
-        //   走 sendRichOutbound 这两条都由它内部统一处理。
-        if (_mediaSegs.length > 0) {
-          const mediaOnly = _mediaSegs
+      const _hasMediaSeg = !!_segs && _segs.some((s) => s.type === 'media');
+      if (_segs && _hasMediaSeg && outText.indexOf('qqbot-media://') >= 0) {
+        const _mdSend = async (t: string): Promise<void> => {
+          if (!t.trim()) return;
+          if (t.indexOf('qqbot-media://') < 0) {
+            await sendRichOutbound(
+              this.bot, _record.replyTarget, t, this.config.textChunkLimit, this.config.cwd,
+              (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record),
+              undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source },
+            );
+            return;
+          }
+          try {
+            await this.bot.sendMarkdown(this.activeTarget(_record), t);
+          } catch (err) {
+            this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
+            // 2026-10-30/31：回落时绝不把 qqbot-media 引用或原始 markdown 当文本发出去 ——
+            //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。
+            await sendRichOutbound(
+              this.bot, _record.replyTarget,
+              stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(t)),
+              this.config.textChunkLimit, this.config.cwd,
+              (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record),
+              undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source },
+            );
+          }
+        };
+        let _mediaBuf: Array<{ kind?: string; source?: string }> = [];
+        const _flushMedia = async (): Promise<void> => {
+          if (!_mediaBuf.length) return;
+          const mediaOnly = _mediaBuf
             .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
             .join('');
+          _mediaBuf = [];
           await sendRichOutbound(
-            this.bot,
-            _record.replyTarget,
-            mediaOnly,
-            this.config.textChunkLimit,
-            this.config.cwd,
-            (m) => this.logger.error(m),
-            () => this.resolveTarget(_record),
-            this.chunkTargetFn(_record),
-            undefined,
-            this.refLookupFor(_record),
-            this.onSendErrorFor(_record),
-            { source },
+            this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd,
+            (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record),
+            undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source },
           );
+        };
+        for (const seg of _segs) {
+          if (seg.type === 'media') {
+            _mediaBuf.push(seg as unknown as { kind?: string; source?: string });
+            continue;
+          }
+          await _flushMedia();   // 保证"文字-图-文字"的原始顺序
+          await _mdSend(String((seg as { text?: string }).text ?? ''));
         }
+        await _flushMedia();
         return;
       }
       await sendRichOutbound(
