@@ -48,16 +48,23 @@ const DOWNLOAD_SCRIPT = [
     "fs.mkdirSync(out, { recursive: true });",
     "const urls = fs.readFileSync(txt, 'utf8').split(/\\r?\\n/).filter((l) => /^https?:/.test(l));",
     "let ok = 0, fail = 0;",
-    "for (let i = 0; i < urls.length; i++) {",
-    "  const ext = urls[i].includes('appid=1415') ? '.mp4' : '.jpg';",
-    "  const name = String(i + 1).padStart(2, '0') + ext;",
-    "  try {",
-    "    const r = await fetch(urls[i]);",
-    "    if (!r.ok) throw new Error('HTTP ' + r.status);",
-    "    fs.writeFileSync(path.join(out, name), Buffer.from(await r.arrayBuffer()));",
-    "    ok++;",
-    "  } catch (e) { fail++; console.log('fail ' + (i + 1) + ': ' + e.message); }",
+    "const CONC = 6;",
+    "let cursor = 0;",
+    "async function worker() {",
+    "  while (true) {",
+    "    const i = cursor++;",
+    "    if (i >= urls.length) return;",
+    "    const ext = urls[i].includes('appid=1415') ? '.mp4' : '.jpg';",
+    "    const name = String(i + 1).padStart(2, '0') + ext;",
+    "    try {",
+    "      const r = await fetch(urls[i]);",
+    "      if (!r.ok) throw new Error('HTTP ' + r.status);",
+    "      fs.writeFileSync(path.join(out, name), Buffer.from(await r.arrayBuffer()));",
+    "      ok++;",
+    "    } catch (e) { fail++; console.log('fail ' + (i + 1) + ': ' + e.message); }",
+    "  }",
     "}",
+    "await Promise.all(Array.from({ length: Math.min(CONC, urls.length) }, () => worker()));",
     "console.log('done: ' + ok + ' ok, ' + fail + ' fail -> ' + out);",
     "",
 ].join('\n');
@@ -99,10 +106,13 @@ function clipKeepUrls(text, max = TEXT_MAX) {
     // 超长：保留到"最后一个能完整放下的 URL"为止，避免切出半截链接
     let cut = limit;
     let fitted = false;
+    let from = 0;
     for (const u of urls) {
-        const at = t.indexOf(u);
+        // ★ CodeRabbit：带 fromIndex 递增搜索 —— 否则 `https://e.test/a` 会命中 `https://e.test/abcdef` 的前缀
+        const at = t.indexOf(u, from);
         if (at < 0)
             continue;
+        from = at + u.length;
         const end = at + u.length;
         if (end <= limit) {
             cut = end;

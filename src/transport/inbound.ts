@@ -1290,8 +1290,12 @@ function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger:
         if (fp) {
           // ★ CodeRabbit：**逐个精确替换**已提取到的 URL 本体（边界与 extractUrls 一致），
           //   不要用 [^\s]+ —— 那会把 URL 后面的中文分号/尺寸等元信息一起吃掉。
+          // ★ CodeRabbit：替换**所有**提取到的 URL 本体（不要求前面有 `URL:` 标签），
+          //   并按长度降序替换 —— 否则短 URL 会命中长 URL 的前缀，把长链接切碎。
           let slim = text;
-          for (const u of allUrls) slim = slim.split('URL:' + u).join('URL:(见链接文件)');
+          for (const u of [...allUrls].sort((x, y) => y.length - x.length)) {
+            slim = slim.split(u).join('(见链接文件)');
+          }
           kept = slim;
           parts.push(kept);
           parts.push('[本条含 ' + allUrls.length + ' 个链接，已一行一个存到 ' + fp.fp + ']');
