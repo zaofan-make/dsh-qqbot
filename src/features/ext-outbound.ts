@@ -598,10 +598,17 @@ export function makeOutboundCtx(
       return true;
     },
     async sendMedia(input): Promise<boolean> {
-      return sendViaOutboundChannel({ ...input }, opts);
+      // ★ 2026-11-23（BnnBot-Suite 实测反馈）：fail-closed 之后，出站链里的 ctx.send/sendMedia
+      //   若 opts.target 为空会被**全部拒发** —— 典型症状是"多段回复只发出第一段"
+      //   （拆分气泡类扩展逐段调 ctx.send，第一段走正常出站有 target，后续段没有）。
+      //   这里用「本 ctx 的 target → 最近一次出站 ctx 的 target」兜底；
+      //   真正的"扩展主动发消息"（caps.send）仍保持 fail-closed，不放宽。
+      const fallbackTarget = (opts.target ?? self.target ?? lastCtx?.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ ...input }, { ...opts, target: fallbackTarget });
     },
     async send(text, o): Promise<boolean> {
-      return sendViaOutboundChannel({ text: String(text ?? '') }, opts, o);
+      const fallbackTarget = (opts.target ?? self.target ?? lastCtx?.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: fallbackTarget }, o);
     },
     /**
      * ★★ 丢后台（2026-10-16 主人定的架构）★★
