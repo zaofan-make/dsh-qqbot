@@ -10,6 +10,7 @@
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { captureSegment } from '../features/segment-ledger.js';
+import { exportLinksForMessage, extractUrls } from '../features/msg-history.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -1270,7 +1271,34 @@ function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger:
     state.mention?.wasMentioned,
   );
   if (text) {
-    parts.push(text);
+    // ★ 2026-11-23（主人要求）：**链接不塞进上下文**。
+    //   合并转发/聊天记录动辄 40+ 个 URL（每个 250 字符 ≈ 11k 字符），全进上下文纯烧 token。
+    //   做法：把 `URL:https://…` 换成占位，链接落盘，正文只给「多少个 + 存在哪 + 一行下载命令」。
+    //   模型既不读文件、也不抄 URL，直接执行那行命令（curl 不支持 -i，用 PowerShell 管道喂）。
+    let kept = text;
+    try {
+      const allUrls = extractUrls(text);
+      if (allUrls.length >= 3) {
+        const gid = String((msg as { groupOpenid?: string }).groupOpenid ?? '');
+        const isGroup = gid !== '';
+        const fp = exportLinksForMessage(isGroup ? 'group' : 'c2c', isGroup ? gid : String((msg as { senderId?: string }).senderId ?? ''), {
+          id: String((msg as { messageId?: string }).messageId ?? ''),
+          t: Date.now(),
+          n: String((msg as { senderName?: string }).senderName ?? ''),
+          x: text,
+        });
+        if (fp) {
+          // 元信息（发送者/文件名/类型）保留，只把 URL 本体换成占位
+          kept = text.replace(/URL:https?:\/\/[^\s]+/g, 'URL:(见链接文件)');
+          parts.push(kept);
+          parts.push('[本条含 ' + allUrls.length + ' 个链接，已一行一个存到 ' + fp + ']');
+          parts.push('[下载直接执行：node "' + fp.replace(/\.txt$/, '-dl.mjs') + '"（三平台通用，不用读文件、别抄 URL）]');
+          parts.push('[想放到别处就在命令后面再加一个目录参数：node "…-dl.mjs" "目标目录"；不传则下到脚本旁边的同名文件夹]');
+          kept = '';
+        }
+      }
+    } catch { /* 落盘失败则保持原文 */ }
+    if (kept) parts.push(kept);
   }
 
   const voiceTexts = extractVoiceTexts(msg.attachments, state.processedAttachments, logger);

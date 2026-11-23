@@ -17,6 +17,8 @@
 import type { MsgKind } from './msg-recent.js';
 /** 默认保留天数（主人定：7 天） */
 export declare const KEEP_DAYS = 7;
+/** 从文本里抽出所有 http(s) 链接（去重、保序） */
+export declare function extractUrls(text: string): string[];
 export interface HistoryRec {
     /** QQ message_id */
     id: string;
@@ -52,6 +54,16 @@ export declare function pruneOld(): void;
  * 群名变了会顺手删掉旧名字文件；同时刷新根目录 _索引.txt。
  */
 export declare function markSession(scope: 'group' | 'c2c', peerId: string): void;
+/**
+ * ★ 2026-11-23（主人要求）：**入站时就把链接落盘并拿到路径**，
+ * 好在消息正文里告诉模型「链接存在这个文件里」，它读文件即可批量下载。
+ */
+export declare function exportLinksForMessage(scope: 'group' | 'c2c', peerId: string, rec: {
+    id?: string;
+    t: number;
+    n?: string;
+    x?: string;
+}): string | undefined;
 /** 记一条（写入当天文件） */
 export declare function appendMsgHistory(scope: 'group' | 'c2c', peerId: string, rec: Partial<HistoryRec> & {
     id: string;

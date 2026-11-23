@@ -27,6 +27,88 @@ export const KEEP_DAYS = 7;
 const MAX_READ_LINES = 5000;
 /** 正文摘要长度 */
 const TEXT_MAX = 200;
+/**
+ * ★ 2026-11-23（主人实测）：带链接的记录**不能按 200 截断** ——
+ *   合并转发（`[群聊的聊天记录]`）里全是 URL，切在 200 字等于只留下第一个 URL 的前半截，
+ *   台账里那条记录直接"只剩一个坏链接"。
+ *   带 URL 的正文放宽到这个上限（约 40 个附件仍能装下），无 URL 的照旧 200。
+ */
+const TEXT_MAX_WITH_URL = 20000;
+/**
+ * 跨平台下载脚本（随每个链接文件一起生成 `<同名>-dl.mjs`）。
+ * 用法：`node "<文件>-dl.mjs"` —— 读同目录同名 .txt，下载到同名子目录。
+ * 三平台通用（node 内置 fetch/fs），不需要 wget/curl。
+ */
+const DOWNLOAD_SCRIPT = [
+  "import fs from 'node:fs';",
+  "import path from 'node:path';",
+  "import { fileURLToPath } from 'node:url';",
+  "const here = path.dirname(fileURLToPath(import.meta.url));",
+  "const base = path.basename(fileURLToPath(import.meta.url)).replace(/-dl\\.mjs$/, '');",
+  "const txt = path.join(here, base + '.txt');",
+  "const outArg = process.argv[2];",
+  "const out = outArg ? path.resolve(outArg) : path.join(here, base);",
+  "fs.mkdirSync(out, { recursive: true });",
+  "const urls = fs.readFileSync(txt, 'utf8').split(/\\r?\\n/).filter((l) => /^https?:/.test(l));",
+  "let ok = 0, fail = 0;",
+  "for (let i = 0; i < urls.length; i++) {",
+  "  const ext = urls[i].includes('appid=1415') ? '.mp4' : '.jpg';",
+  "  const name = String(i + 1).padStart(2, '0') + ext;",
+  "  try {",
+  "    const r = await fetch(urls[i]);",
+  "    if (!r.ok) throw new Error('HTTP ' + r.status);",
+  "    fs.writeFileSync(path.join(out, name), Buffer.from(await r.arrayBuffer()));",
+  "    ok++;",
+  "  } catch (e) { fail++; console.log('fail ' + (i + 1) + ': ' + e.message); }",
+  "}",
+  "console.log('done: ' + ok + ' ok, ' + fail + ' fail -> ' + out);",
+  "",
+].join('\n');
+
+/** 已落盘的消息 id → 文件路径（幂等 + 入站/台账两条路复用） */
+const LINKED = new Map<string, string>();
+/** 链接落盘目录名（与会话目录同级） */
+const LINK_DIR = 'downloadlink';
+/** 链接文件保留天数（主人定：7 天，与台账一致） */
+const LINK_KEEP_DAYS = 7;
+
+/** 从文本里抽出所有 http(s) 链接（去重、保序） */
+export function extractUrls(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re = /https?:\/\/[^\s"'<>()\u3000，。；、]+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(String(text ?? ''))) !== null) {
+    const u = m[0].replace(/[.,;:]+$/, '');
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
+}
+
+/**
+ * 按上限裁剪正文，但**绝不把 URL 切断**：
+ * 有链接时放到 {@link TEXT_MAX_WITH_URL}；真要超，就退到最后一个完整 URL 结束处。
+ */
+function clipKeepUrls(text: string, max = TEXT_MAX): string {
+  const t = String(text ?? '').replace(/\s+/gu, ' ').trim();
+  if (t.length <= max) return t;
+  const urls = extractUrls(t);
+  if (!urls.length) return t.slice(0, max);
+  const limit = TEXT_MAX_WITH_URL;
+  if (t.length <= limit) return t;
+  // 超长：保留到"最后一个能完整放下的 URL"为止，避免切出半截链接
+  let cut = limit;
+  for (const u of urls) {
+    const at = t.indexOf(u);
+    if (at < 0) continue;
+    const end = at + u.length;
+    if (end <= limit) cut = end;
+    else break;
+  }
+  return t.slice(0, cut) + ' …';
+}
 
 /**
  * ★ 2026-11-14（主人要求"22ms 还是太长，内存里塞今天的"）：**当天文件的行缓存**。
@@ -337,6 +419,87 @@ export function markSession(scope: 'group' | 'c2c', peerId: string): void {
   refreshIndex();
 }
 
+
+/**
+ * ★ 2026-11-23（主人定）：**链接单独落盘** —— 一条含链接的记录写一个文件，
+ * 方便"一次性批量下载"：模型不用把一长串 URL 逐个抄进命令行（抄错还费 token）。
+ *
+ * 位置：`msg-history/<scope>_<peerId>/downloadlink/<日期>-<三位序号>.txt`
+ * 格式：`#` 开头是注释（时间/发送者/条数），之后**一行一个 URL**
+ *   —— `wget -i 文件` 原生支持这种格式；curl 用户 grep -v "^#" 即可。
+ * 保留：7 天（按文件名日期前缀清理）。
+ */
+function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: string; t: number; n?: string; x?: string }): string | undefined {
+  const urls = extractUrls(String(rec.x ?? ''));
+  if (!urls.length) return undefined;
+  // 幂等：同一条消息只落一次（入站拼提示先调一次，台账写入时再调一次）
+  const id = String(rec.id ?? '');
+  if (id) {
+    const hit = LINKED.get(id);
+    if (hit) return hit;
+  }
+  try {
+    const dir = join(dirOf(scope, peerId), LINK_DIR);
+    ensureDir(dir);
+    const day = dayOf(rec.t);
+    let seq = 1;
+    try {
+      for (const f of readdirSync(dir)) {
+        const m = /^(\d{4}-\d{2}-\d{2})-(\d{3,})\.txt$/.exec(f);
+        if (m && m[1] === day) seq = Math.max(seq, Number(m[2]) + 1);
+      }
+    } catch { /* 目录读不到就从 1 开始 */ }
+    const name = day + '-' + String(seq).padStart(3, '0') + '.txt';
+    const head = [
+      '# ' + new Date(rec.t).toISOString() + '  发送者=' + (rec.n || '未知') + '  链接数=' + urls.length,
+      '# 一行一个 URL，# 开头为注释（wget -i 可直接使用）',
+    ];
+    const fp = join(dir, name);
+    writeFileSync(fp, head.concat(urls).join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8');
+    // ★ 2026-11-23（主人要求）：**再生成一个跨平台下载脚本** —— 模型只需执行
+    //   `node "<同名>-dl.mjs"`（Windows / Linux / macOS 通用），不用读 txt、不用抄 URL。
+    try {
+      writeFileSync(join(dir, name.replace(/\.txt$/, '-dl.mjs')), DOWNLOAD_SCRIPT, 'utf8');
+    } catch { /* 脚本写失败不影响 txt */ }
+    pruneDownloadLinks(dir, rec.t);
+    if (id) {
+      LINKED.set(id, fp);
+      if (LINKED.size > 2000) {
+        const first = LINKED.keys().next();
+        if (!first.done) LINKED.delete(first.value);
+      }
+    }
+    return fp;
+  } catch { /* 落盘失败不影响台账 */ }
+  return undefined;
+}
+
+/**
+ * ★ 2026-11-23（主人要求）：**入站时就把链接落盘并拿到路径**，
+ * 好在消息正文里告诉模型「链接存在这个文件里」，它读文件即可批量下载。
+ */
+export function exportLinksForMessage(
+  scope: 'group' | 'c2c',
+  peerId: string,
+  rec: { id?: string; t: number; n?: string; x?: string },
+): string | undefined {
+  if (!historyRoot || !peerId) return undefined;
+  return writeDownloadLinks(scope, peerId, rec);
+}
+
+/** 删掉 LINK_KEEP_DAYS 天前的链接文件（按文件名日期前缀判断） */
+function pruneDownloadLinks(dir: string, now: number): void {
+const cutoff = dayOf(now - LINK_KEEP_DAYS * 86400000);
+try {
+  for (const f of readdirSync(dir)) {
+    const m = /^(\d{4}-\d{2}-\d{2})-(\d{3,})\.txt$/.exec(f);
+    if (m && String(m[1]) < cutoff) {
+      try { rmSync(join(dir, f), { force: true }); } catch { /* ignore */ }
+    }
+  }
+} catch { /* ignore */ }
+}
+
 /** 记一条（写入当天文件） */
 export function appendMsgHistory(
   scope: 'group' | 'c2c',
@@ -352,7 +515,7 @@ export function appendMsgHistory(
     n: String(rec.n ?? ''),
     t: Number(rec.t ?? now),
     k: (rec.k ?? 'text') as MsgKind,
-    x: String(rec.x ?? '').replace(/\s+/gu, ' ').trim().slice(0, TEXT_MAX),
+    x: clipKeepUrls(String(rec.x ?? ''), TEXT_MAX),
     ...(rec.me ? { me: true } : {}),
     ...(rec.f && rec.f.length ? { f: rec.f.map((v) => String(v).toLowerCase()).filter(Boolean).slice(0, 4) } : {}),
   };
@@ -363,6 +526,10 @@ export function appendMsgHistory(
     // ★ 2026-11-14：这里原来是 appendFileSync —— 实测 1465µs/次，而每条群消息都会走一遍。
     //   换成常开 WriteStream 后 4µs（差 366 倍）。
     appendLine(fp, JSON.stringify(row));
+    // ★ 含链接的记录另存一份（一行一个 URL），便于批量下载
+    writeDownloadLinks(scope, peerId, { t: row.t, n: row.n, x: String(rec.x ?? '') });
+    // ★ 含链接的记录另存一份（一行一个 URL），便于批量下载
+    writeDownloadLinks(scope, peerId, { t: row.t, n: row.n, x: String(rec.x ?? '') });
     // ★ 增量更新当天缓存：否则"写一条 → 下次查询判定 mtime 变了 → 重扫 1000 行"，
     //   群消息密集时等于每次查询都重扫一遍，缓存就白加了。
     // ★ 2026-11-15（CodeRabbit 抓到）：如果还没有缓存，**先载入一次**再增量加 ——
