@@ -4448,3 +4448,66 @@ return (head + body + tail).trim();
 - `outboundLastCtxFallback`（默认 false）：出站扩展没给 target 时是否回落「最近活跃会话」（默认 fail-closed，防串台）。
 - 面板侧：`client/qqbot-settings.js` 的字段要**手写**一份（不会自动从 schema 生成），并记得在
   `index.ts` 的 `sync()` 里加 live 同步，否则「面板改了要重启才生效」。
+
+## §32 合并转发（聊天记录）的链接：别让 44 个 URL 把上下文吃光（2026-11-23 主人实测）
+
+### 现象
+群里发一条「聊天记录」（合并转发），台账里只剩第一个 URL 的前半截：
+
+```
+"x":"[群聊的聊天记录] === 消息 1 === [发送者] 七草荠 [附件1] 类型:图片 文件名:… URL:https://…fileid=EhR7ZlWUaHJD"
+```
+
+**根因**：`msg-history.ts` 里 `TEXT_MAX = 200`，`x` 字段一律 `slice(0, 200)`。
+而一条 44 个附件的聊天记录原文约 8,800 字符，200 字连第一个 URL 都装不下。
+
+### QQ 侧现状（2026-11-23 抓官方文档核对）
+- 「群消息事件」页明确写了 `message_type`：`0=文本 / 3=卡片 / 101=并行消息 / **102=聊天记录** / 103=引用`
+- 但「消息类型概览」页还停在 `0/3/103`，**没有 101/102**
+- SDK（`@tencent-connect/qqbot-nodejs@1.0.4`）的 `RawMsgElement` 只有 `msg_idx/content/attachments`，
+  **没有 `message_type`、没有递归的 `msg_elements`、没有 `forward_id`**
+- ⇒ **拿不到结构化聊天记录**，只有 `content` 里那段渲染好的长文本（`[群聊的聊天记录] === 消息 N === [发送者] … [附件1] … URL:…`）
+
+所以判断"是不是聊天记录"只能靠字符串特征，别指望 `message_type === 102`。
+
+### 方案（三步）
+1. **入站瘦身**（`inbound.ts` 的 `buildUserContent`）：`URL:https://…` → `URL:(见链接文件)`，
+   元信息（发送者/文件名/尺寸/大小）全保留；
+2. **链接落盘**（`msg-history.ts` 的 `writeDownloadLinks`）：
+   `msg-history/<scope>_<openid>/downloadlink/<日期>-<三位序号>.txt`
+   —— `#` 开头注释（时间/发送者/条数），之后**一行一个 URL**（`wget -i` 原生支持这种格式）；
+3. **生成下载脚本**：同名 `-dl.mjs`，模型只需执行一行
+
+   ```
+   node "…\2026-11-23-006-dl.mjs"                  # 默认下到脚本旁的同名文件夹
+   node "…\2026-11-23-006-dl.mjs" "D:\要放的地方"   # 也可指定目录（相对/绝对都行）
+   ```
+
+**为什么用 node 脚本而不是 wget/curl**：Windows 没有 wget；`curl` 不支持 `-i` 读 URL 列表
+（只有 `-K` 配置文件，格式还得是 `url = "…"`）。node 三平台都有，且内置 fetch/fs。
+
+### 五个坑
+1. **台账不能瘦身**：`x` 字段是 `group_msg_search` 和引用归属（`normQuoteText`）的依据，
+   完整保留；瘦身只针对**发给模型的文本**。`clipKeepUrls()` 负责"带 URL 时放宽到 20,000 且不切断 URL"。
+2. **幂等**：入站拼正文时调一次 `exportLinksForMessage`，台账写入时又调一次 ⇒ 用 `LINKED`
+   （messageId → 路径）去重，否则同一条消息会生成两个文件。
+3. **下载脚本是字符串数组拼的**（`DOWNLOAD_SCRIPT` 常量，每行一个字符串元素）——
+   改的时候务必保持 `"…",` 的数组格式，直接插裸代码会 TS1137/TS1109。
+4. **`appendLine` 是常开异步流**：测试脚本里调完 `appendMsgHistory` 立刻读 jsonl 会读不到
+   （要等 flush），但 `downloadlink` 里的文件是同步 `writeFileSync` 写的，能立刻看到。
+5. **PowerShell 转义**：用 `@'…'@`（单引号 here-string）写含 `"` 和 `` ` `` 的脚本内容；
+   双引号 here-string 会把 `` ` `` 当转义符吃掉。
+
+### 验证方法
+```powershell
+# 造一条 20 链接的假聊天记录
+node -e "const m=require('./dist/features/msg-history.js');m.initMsgHistory('<dataRoot>');…"
+# 看生成的 txt（应为 2 行注释 + N 行 URL）与 -dl.mjs
+# 直接跑脚本：node "<…>-dl.mjs" "<目标目录>"  → 应输出 done: N ok, 0 fail
+```
+
+### 实测数据
+一条 44 个附件的聊天记录：
+- 原文 8,800+ 字符 → 瘦身后约 260 字符（**省约 3,000 token/条**）
+- `node "…-dl.mjs"` → **44/44 成功、10.76MB、3.2 秒**
+- 触发条件：链接数 ≥ 3（普通发一两个链接不受影响）
