@@ -100,12 +100,19 @@ function clipKeepUrls(text: string, max = TEXT_MAX): string {
   if (t.length <= limit) return t;
   // 超长：保留到"最后一个能完整放下的 URL"为止，避免切出半截链接
   let cut = limit;
+  let fitted = false;
   for (const u of urls) {
     const at = t.indexOf(u);
     if (at < 0) continue;
     const end = at + u.length;
-    if (end <= limit) cut = end;
-    else break;
+    if (end <= limit) {
+      cut = end;
+      fitted = true;
+      continue;
+    }
+    // 这个 URL 跨过上限：前面一个完整 URL 都没有时，退到它的起点（宁可短，也不能切半截）
+    if (!fitted && at < cut) cut = at;
+    break;
   }
   return t.slice(0, cut) + ' …';
 }
@@ -429,14 +436,14 @@ export function markSession(scope: 'group' | 'c2c', peerId: string): void {
  *   —— `wget -i 文件` 原生支持这种格式；curl 用户 grep -v "^#" 即可。
  * 保留：7 天（按文件名日期前缀清理）。
  */
-function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: string; t: number; n?: string; x?: string }): string | undefined {
+function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: string; t: number; n?: string; x?: string }): { fp: string; script: boolean } | undefined {
   const urls = extractUrls(String(rec.x ?? ''));
   if (!urls.length) return undefined;
   // 幂等：同一条消息只落一次（入站拼提示先调一次，台账写入时再调一次）
   const id = String(rec.id ?? '');
   if (id) {
     const hit = LINKED.get(id);
-    if (hit) return hit;
+    if (hit) return { fp: hit, script: existsSync(hit.replace(/\.txt$/, '-dl.mjs')) };
   }
   try {
     const dir = join(dirOf(scope, peerId), LINK_DIR);
@@ -458,9 +465,11 @@ function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: 
     writeFileSync(fp, head.concat(urls).join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8');
     // ★ 2026-11-23（主人要求）：**再生成一个跨平台下载脚本** —— 模型只需执行
     //   `node "<同名>-dl.mjs"`（Windows / Linux / macOS 通用），不用读 txt、不用抄 URL。
+    let script = false;
     try {
       writeFileSync(join(dir, name.replace(/\.txt$/, '-dl.mjs')), DOWNLOAD_SCRIPT, 'utf8');
-    } catch { /* 脚本写失败不影响 txt */ }
+      script = true;
+    } catch { /* 脚本写失败不影响 txt，但要如实告诉调用方 */ }
     pruneDownloadLinks(dir, rec.t);
     if (id) {
       LINKED.set(id, fp);
@@ -469,7 +478,7 @@ function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: 
         if (!first.done) LINKED.delete(first.value);
       }
     }
-    return fp;
+    return { fp, script };
   } catch { /* 落盘失败不影响台账 */ }
   return undefined;
 }
@@ -482,22 +491,31 @@ export function exportLinksForMessage(
   scope: 'group' | 'c2c',
   peerId: string,
   rec: { id?: string; t: number; n?: string; x?: string },
-): string | undefined {
+): { fp: string; script: boolean } | undefined {
   if (!historyRoot || !peerId) return undefined;
   return writeDownloadLinks(scope, peerId, rec);
 }
 
 /** 删掉 LINK_KEEP_DAYS 天前的链接文件（按文件名日期前缀判断） */
 function pruneDownloadLinks(dir: string, now: number): void {
-const cutoff = dayOf(now - LINK_KEEP_DAYS * 86400000);
-try {
-  for (const f of readdirSync(dir)) {
-    const m = /^(\d{4}-\d{2}-\d{2})-(\d{3,})\.txt$/.exec(f);
-    if (m && String(m[1]) < cutoff) {
+  const cutoff = dayOf(now - LINK_KEEP_DAYS * 86400000);
+  try {
+    for (const f of readdirSync(dir)) {
+      const m = /^(\d{4}-\d{2}-\d{2})-(\d{3,})\.txt$/.exec(f);
+      if (!m || String(m[1]) >= cutoff) continue;
       try { rmSync(join(dir, f), { force: true }); } catch { /* ignore */ }
+      // ★ CodeRabbit：配套的 -dl.mjs 一起删，否则脚本会无限累积
+      try { rmSync(join(dir, f.replace(/\.txt$/, '-dl.mjs')), { force: true }); } catch { /* ignore */ }
     }
-  }
-} catch { /* ignore */ }
+    // 清掉「txt 已不在」的孤儿脚本
+    for (const f of readdirSync(dir)) {
+      const m = /^(\d{4}-\d{2}-\d{2})-(\d{3,})-dl\.mjs$/.exec(f);
+      if (!m || String(m[1]) >= cutoff) continue;
+      if (!existsSync(join(dir, f.replace(/-dl\.mjs$/, '.txt')))) {
+        try { rmSync(join(dir, f), { force: true }); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 /** 记一条（写入当天文件） */
@@ -527,7 +545,7 @@ export function appendMsgHistory(
     //   换成常开 WriteStream 后 4µs（差 366 倍）。
     appendLine(fp, JSON.stringify(row));
     // ★ 含链接的记录另存一份（一行一个 URL），便于批量下载
-    writeDownloadLinks(scope, peerId, { t: row.t, n: row.n, x: String(rec.x ?? '') });
+    writeDownloadLinks(scope, peerId, { id: row.id, t: row.t, n: row.n, x: String(rec.x ?? '') });
     // ★ 含链接的记录另存一份（一行一个 URL），便于批量下载
     writeDownloadLinks(scope, peerId, { t: row.t, n: row.n, x: String(rec.x ?? '') });
     // ★ 增量更新当天缓存：否则"写一条 → 下次查询判定 mtime 变了 → 重扫 1000 行"，

@@ -1288,12 +1288,19 @@ function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger:
           x: text,
         });
         if (fp) {
-          // 元信息（发送者/文件名/类型）保留，只把 URL 本体换成占位
-          kept = text.replace(/URL:https?:\/\/[^\s]+/g, 'URL:(见链接文件)');
+          // ★ CodeRabbit：**逐个精确替换**已提取到的 URL 本体（边界与 extractUrls 一致），
+          //   不要用 [^\s]+ —— 那会把 URL 后面的中文分号/尺寸等元信息一起吃掉。
+          let slim = text;
+          for (const u of allUrls) slim = slim.split('URL:' + u).join('URL:(见链接文件)');
+          kept = slim;
           parts.push(kept);
-          parts.push('[本条含 ' + allUrls.length + ' 个链接，已一行一个存到 ' + fp + ']');
-          parts.push('[下载直接执行：node "' + fp.replace(/\.txt$/, '-dl.mjs') + '"（三平台通用，不用读文件、别抄 URL）]');
-          parts.push('[想放到别处就在命令后面再加一个目录参数：node "…-dl.mjs" "目标目录"；不传则下到脚本旁边的同名文件夹]');
+          parts.push('[本条含 ' + allUrls.length + ' 个链接，已一行一个存到 ' + fp.fp + ']');
+          if (fp.script) {
+            parts.push('[下载直接执行：node "' + fp.fp.replace(/\.txt$/, '-dl.mjs') + '"（三平台通用，不用读文件、别抄 URL）]');
+            parts.push('[想放到别处就在命令后面再加一个目录参数：node "…-dl.mjs" "目标目录"；不传则下到脚本旁边的同名文件夹]');
+          } else {
+            parts.push('[下载脚本没生成成功，请直接读上面那个文件里的链接自行下载]');
+          }
           kept = '';
         }
       }

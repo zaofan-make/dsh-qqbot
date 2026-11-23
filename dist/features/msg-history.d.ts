@@ -63,7 +63,10 @@ export declare function exportLinksForMessage(scope: 'group' | 'c2c', peerId: st
     t: number;
     n?: string;
     x?: string;
-}): string | undefined;
+}): {
+    fp: string;
+    script: boolean;
+} | undefined;
 /** 记一条（写入当天文件） */
 export declare function appendMsgHistory(scope: 'group' | 'c2c', peerId: string, rec: Partial<HistoryRec> & {
     id: string;
