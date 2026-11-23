@@ -383,12 +383,16 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             : {}),
         ...(typeof opts.apiCall === 'function'
             ? {
-                api: (path) => 
-                // ★ CodeRabbit：apiCall 的契约是 (method, path, body) —— 只传 path 会把路径当成 method
-                opts.apiCall('GET', String(path ?? '')).catch(() => ({
-                    ok: false,
-                    err: { code: 'THROWN', human: 'api 调用异常' },
-                })),
+                // ★ CodeRabbit：apiCall 契约是 (method, path, body)；用 async+try/catch 才能同时接住
+                //   同步抛错和 Promise 拒绝（只挂 .catch 接不住同步抛）
+                api: async (path) => {
+                    try {
+                        return await opts.apiCall('GET', String(path ?? ''));
+                    }
+                    catch (err) {
+                        return { ok: false, err: { code: 'THROWN', human: err instanceof Error ? err.message : String(err) } };
+                    }
+                },
             }
             : {}),
         // ★ 2026-11-24（主人要求补齐"契约承诺但没实现"）：出站扩展此前只有 send/sendMedia 两个动作，
@@ -398,15 +402,9 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             return self.send(String(text ?? ''));
         },
         markdown(text) {
-            const s = opts.sender;
-            const tg = (opts.target ?? self.target ?? null);
-            if (s && typeof s.sendMarkdown === 'function' && tg) {
-                // ★ CodeRabbit：真实签名是 sendMarkdown(target, text) —— 别把 target 序列化后塞进正文位
-                return Promise.resolve()
-                    .then(() => s.sendMarkdown(tg, String(text ?? '')))
-                    .then(() => true)
-                    .catch(() => false);
-            }
+            // ★ CodeRabbit：直接复用 self.send —— 它内部就**优先走 sendMarkdown**，
+            //   且自带"先被动后主动"（被动 msgId 失效时会摘掉 msgId 重发）。
+            //   自己再实现一遍只会丢掉主动兜底：msgId 一死就永远发不出去。
             return self.send(String(text ?? ''));
         },
         image(url) {
@@ -436,18 +434,27 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             // （出站 ctx 没有"当前扩展文件"的稳定标识，先按全局共享，扩展自己用 key 隔离）
             const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
             const file = join(dir, 'outbound.json');
+            // ★ CodeRabbit：用无原型对象 + 只认自有属性 —— 否则 load('constructor') 会拿到继承的函数、
+            //   save('__proto__', {...}) 会改原型（JSON.stringify 还不存它，save 却返回 true）
             const readAll = () => {
+                const out = Object.create(null);
                 try {
                     const v = JSON.parse(readFileSync(file, 'utf8'));
-                    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+                    if (!v || typeof v !== 'object' || Array.isArray(v))
+                        return out;
+                    for (const k of Object.keys(v))
+                        out[k] = v[k];
                 }
-                catch {
-                    return {};
-                }
+                catch { /* 空或坏文件 → 空表 */ }
+                return out;
             };
             return {
                 // ★ CodeRabbit：接口是 load(k) / save(k, v) —— 按 key 存取，不是整个文件当值
-                load: (k) => readAll()[String(k ?? '')],
+                load: (k) => {
+                    const all = readAll();
+                    const key = String(k ?? '');
+                    return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : undefined;
+                },
                 save: (k, v) => {
                     const key = String(k ?? '');
                     if (!key)
@@ -455,7 +462,8 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
                     try {
                         mkdirSync(dir, { recursive: true });
                         const all = readAll();
-                        all[key] = v ?? null;
+                        // 用 defineProperty 写自有属性：'__proto__' 也只当普通键，不动原型
+                        Object.defineProperty(all, key, { value: v ?? null, enumerable: true, configurable: true, writable: true });
                         // ★ CodeRabbit：先写临时文件再 rename，避免中途失败把旧数据截断成空
                         const tmp = file + '.tmp-' + process.pid;
                         writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
