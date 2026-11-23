@@ -315,6 +315,7 @@ export class OutboundBuffer {
     onBlockSent;
     refLookup;
     stripFn;
+    extCaps;
     buffer = '';
     /** 缓冲过大只告警一次（见 append 的注释） */
     warnedBig = false;
@@ -338,7 +339,13 @@ export class OutboundBuffer {
      * 分块到达时时间头可能被切成两半，逐块清洗会把正文切坏。
      * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
      */
-    stripFn) {
+    stripFn, 
+    /**
+     * ★ 2026-11-24（CodeRabbit #87）：回退路径也要带出站扩展的 caps
+     *   （appendWake / appendSilent / apiCall）—— 否则流式降级后扩展 `annihilate()` 掉正文，
+     *   依然没法通知模型，跟 send() 路径行为不一致。
+     */
+    extCaps) {
         this.record = record;
         this.bot = bot;
         this.limit = limit;
@@ -349,6 +356,7 @@ export class OutboundBuffer {
         this.onBlockSent = onBlockSent;
         this.refLookup = refLookup;
         this.stripFn = stripFn;
+        this.extCaps = extCaps;
         this.writer = streamingEnabled
             ? new StreamingWriter({
                 bot,
@@ -402,7 +410,7 @@ export class OutboundBuffer {
             const outText = this.stripFn ? this.stripFn(this.buffer) : this.buffer;
             if (!outText.trim())
                 return; // 洗完全是空（只剩时间头/占位符）→ 这条不发
-            await sendRichOutbound(this.bot, this.record.replyTarget, outText, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup, undefined, { source: 'assistant/message' });
+            await sendRichOutbound(this.bot, this.record.replyTarget, outText, this.limit, this.cwd, (m) => this.logger.error(m), this.resolveTarget, this.chunkTarget, this.onBlockSent, this.refLookup, undefined, { source: 'assistant/message', ...(this.extCaps ?? {}) });
         }
         catch (err) {
             this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

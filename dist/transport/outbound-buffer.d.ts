@@ -134,6 +134,12 @@ export declare class OutboundBuffer {
      * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
      */
     private readonly stripFn?;
+    /**
+     * ★ 2026-11-24（CodeRabbit #87）：回退路径也要带出站扩展的 caps
+     *   （appendWake / appendSilent / apiCall）—— 否则流式降级后扩展 `annihilate()` 掉正文，
+     *   依然没法通知模型，跟 send() 路径行为不一致。
+     */
+    private readonly extCaps?;
     private buffer;
     /** 缓冲过大只告警一次（见 append 的注释） */
     private warnedBig;
@@ -157,7 +163,17 @@ export declare class OutboundBuffer {
      * 分块到达时时间头可能被切成两半，逐块清洗会把正文切坏。
      * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
      */
-    stripFn?: ((text: string) => string) | undefined);
+    stripFn?: ((text: string) => string) | undefined, 
+    /**
+     * ★ 2026-11-24（CodeRabbit #87）：回退路径也要带出站扩展的 caps
+     *   （appendWake / appendSilent / apiCall）—— 否则流式降级后扩展 `annihilate()` 掉正文，
+     *   依然没法通知模型，跟 send() 路径行为不一致。
+     */
+    extCaps?: {
+        appendWake?: unknown;
+        appendSilent?: unknown;
+        apiCall?: unknown;
+    } | undefined);
     /**
      * 追加文本增量。
      *

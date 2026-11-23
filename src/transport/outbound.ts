@@ -123,7 +123,7 @@ const ADAPTIVE_RECENT_MS = 5 * 60_000;
 function outboundExtCaps(
   record: unknown,
   manager?: { groupAdmin?: unknown; mediaApi?: unknown },
-): { appendWake: (text: string) => Promise<boolean>; appendSilent: (text: string) => Promise<boolean>; api: (path: string) => Promise<unknown> } {
+): { appendWake: (text: string) => Promise<boolean>; appendSilent: (text: string) => Promise<boolean>; apiCall: (m: string, p: string, b?: unknown) => Promise<unknown> } {
   const agent = (record as { agent?: { followup?: (m: unknown) => void; inject?: (m: unknown) => void } } | undefined)?.agent;
   const ga = (manager?.groupAdmin ?? manager?.mediaApi) as
     | { apiCall?: (m: string, p: string, b?: unknown) => Promise<unknown> }
@@ -154,11 +154,13 @@ function outboundExtCaps(
       }
     },
     // ★ 2026-11-24：官方 API 调用（带 token 缓存由 apiCall 内部负责）
-    api: async (path: string): Promise<unknown> => {
+    // ★ CodeRabbit：这里必须叫 apiCall —— makeOutboundCtx 读的是 opts.apiCall（(method, path, body) 契约），
+    //   叫 api 的话 ctx.api 永远是 undefined。
+    apiCall: async (method: string, path: string, body?: unknown): Promise<unknown> => {
       const p = String(path ?? '').trim();
       if (!p || !ga || typeof ga.apiCall !== 'function') return { ok: false, err: { code: 'NO_API', human: '拿不到 apiCall' } };
       try {
-        return await ga.apiCall('GET', p);
+        return await ga.apiCall(String(method || 'GET'), p, body);
       } catch (err) {
         return { ok: false, err: { code: 'THROWN', human: err instanceof Error ? err.message : String(err) } };
       }
@@ -623,6 +625,9 @@ class OutboundRouter {
         this.refLookupFor(record),
         // ★ 2026-11-19 issue #72：缓冲路径直发 sendRichOutbound，绕过了 send() 那道清洗，必须自己洗
         (t) => this.processOutboundText(t),
+        // ★ CodeRabbit #87：回退路径也要带出站扩展能力（appendWake/appendSilent/apiCall），
+        //   否则流式降级后扩展 annihilate() 掉正文依然没法通知模型
+        { ...outboundExtCaps(record, this.manager as never) },
       );
       this.buffers.set(sessionId, buffer);
     }

@@ -35,7 +35,7 @@
  *   · `last()`                 最近一次出站的 ctx（含 target，便于"往刚才那个会话发"）
  *   · `active()`               当前是否正在跑出站链
  */
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { scanExtFiles } from './ext-packs.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -383,7 +383,9 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             : {}),
         ...(typeof opts.apiCall === 'function'
             ? {
-                api: (path) => opts.apiCall(String(path ?? '')).catch(() => ({
+                api: (path) => 
+                // ★ CodeRabbit：apiCall 的契约是 (method, path, body) —— 只传 path 会把路径当成 method
+                opts.apiCall('GET', String(path ?? '')).catch(() => ({
                     ok: false,
                     err: { code: 'THROWN', human: 'api 调用异常' },
                 })),
@@ -399,8 +401,9 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             const s = opts.sender;
             const tg = (opts.target ?? self.target ?? null);
             if (s && typeof s.sendMarkdown === 'function' && tg) {
+                // ★ CodeRabbit：真实签名是 sendMarkdown(target, text) —— 别把 target 序列化后塞进正文位
                 return Promise.resolve()
-                    .then(() => s.sendMarkdown(String(text ?? ''), JSON.stringify(tg)))
+                    .then(() => s.sendMarkdown(tg, String(text ?? '')))
                     .then(() => true)
                     .catch(() => false);
             }
@@ -410,12 +413,17 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             return self.sendMedia({ url: String(url ?? '') });
         },
         media(kind, source, text) {
-            void kind; // 出站通道靠 src 形态判 url/localPath，kind 仅作扩展侧语义
+            // ★ CodeRabbit：kind 必须一路带到发送通道，否则 video/voice/file 全被当图片发
             const src = String(source ?? '');
             if (!src)
                 return Promise.resolve(false);
+            const k = String(kind || 'image').toLowerCase();
             const isUrl = /^https?:\/\//i.test(src) || src.startsWith('qqbot-media://');
-            return self.sendMedia({ ...(isUrl ? { url: src } : { path: src }), ...(text ? { text: String(text) } : {}) });
+            return self.sendMedia({
+                kind: k,
+                ...(isUrl ? { url: src } : { path: src }),
+                ...(text ? { text: String(text) } : {}),
+            });
         },
         identity: {
             owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
@@ -428,19 +436,30 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             // （出站 ctx 没有"当前扩展文件"的稳定标识，先按全局共享，扩展自己用 key 隔离）
             const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
             const file = join(dir, 'outbound.json');
+            const readAll = () => {
+                try {
+                    const v = JSON.parse(readFileSync(file, 'utf8'));
+                    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+                }
+                catch {
+                    return {};
+                }
+            };
             return {
-                load: () => {
-                    try {
-                        return JSON.parse(readFileSync(file, 'utf8'));
-                    }
-                    catch {
-                        return undefined;
-                    }
-                },
-                save: (v) => {
+                // ★ CodeRabbit：接口是 load(k) / save(k, v) —— 按 key 存取，不是整个文件当值
+                load: (k) => readAll()[String(k ?? '')],
+                save: (k, v) => {
+                    const key = String(k ?? '');
+                    if (!key)
+                        return false;
                     try {
                         mkdirSync(dir, { recursive: true });
-                        writeFileSync(file, JSON.stringify(v ?? null, null, 2), 'utf8');
+                        const all = readAll();
+                        all[key] = v ?? null;
+                        // ★ CodeRabbit：先写临时文件再 rename，避免中途失败把旧数据截断成空
+                        const tmp = file + '.tmp-' + process.pid;
+                        writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
+                        renameSync(tmp, file);
                         return true;
                     }
                     catch {

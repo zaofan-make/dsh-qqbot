@@ -35,7 +35,7 @@
  *   · `last()`                 最近一次出站的 ctx（含 target，便于"往刚才那个会话发"）
  *   · `active()`               当前是否正在跑出站链
  */
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { scanExtFiles } from './ext-packs.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -629,7 +629,8 @@ export function makeOutboundCtx(
     ...(typeof opts.apiCall === 'function'
       ? {
           api: (path: string): Promise<unknown> =>
-            (opts.apiCall as (p: string) => Promise<unknown>)(String(path ?? '')).catch(() => ({
+            // ★ CodeRabbit：apiCall 的契约是 (method, path, body) —— 只传 path 会把路径当成 method
+            (opts.apiCall as (m: string, p: string) => Promise<unknown>)('GET', String(path ?? '')).catch(() => ({
               ok: false,
               err: { code: 'THROWN', human: 'api 调用异常' },
             })),
@@ -642,11 +643,12 @@ export function makeOutboundCtx(
       return self.send(String(text ?? ''));
     },
     markdown(text: string): Promise<boolean> {
-      const s = opts.sender as { sendMarkdown?: (t: unknown, c: string) => Promise<unknown> } | null;
+      const s = opts.sender as { sendMarkdown?: (tg: unknown, text: string) => Promise<unknown> } | null;
       const tg = (opts.target ?? self.target ?? null) as Record<string, unknown> | null;
       if (s && typeof s.sendMarkdown === 'function' && tg) {
+        // ★ CodeRabbit：真实签名是 sendMarkdown(target, text) —— 别把 target 序列化后塞进正文位
         return Promise.resolve()
-          .then(() => s.sendMarkdown!(String(text ?? ''), JSON.stringify(tg)))
+          .then(() => s.sendMarkdown!(tg, String(text ?? '')))
           .then(() => true)
           .catch(() => false);
       }
@@ -656,11 +658,16 @@ export function makeOutboundCtx(
       return self.sendMedia({ url: String(url ?? '') });
     },
     media(kind: string, source: string, text?: string): Promise<boolean> {
-      void kind; // 出站通道靠 src 形态判 url/localPath，kind 仅作扩展侧语义
+      // ★ CodeRabbit：kind 必须一路带到发送通道，否则 video/voice/file 全被当图片发
       const src = String(source ?? '');
       if (!src) return Promise.resolve(false);
+      const k = String(kind || 'image').toLowerCase();
       const isUrl = /^https?:\/\//i.test(src) || src.startsWith('qqbot-media://');
-      return self.sendMedia({ ...(isUrl ? { url: src } : { path: src }), ...(text ? { text: String(text) } : {}) });
+      return self.sendMedia({
+        kind: k,
+        ...(isUrl ? { url: src } : { path: src }),
+        ...(text ? { text: String(text) } : {}),
+      } as never);
     },
     identity: {
       owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
@@ -673,14 +680,26 @@ export function makeOutboundCtx(
       // （出站 ctx 没有"当前扩展文件"的稳定标识，先按全局共享，扩展自己用 key 隔离）
       const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
       const file = join(dir, 'outbound.json');
+      const readAll = (): Record<string, unknown> => {
+        try {
+          const v = JSON.parse(readFileSync(file, 'utf8'));
+          return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+        } catch { return {}; }
+      };
       return {
-        load: (): unknown => {
-          try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; }
-        },
-        save: (v: unknown): boolean => {
+        // ★ CodeRabbit：接口是 load(k) / save(k, v) —— 按 key 存取，不是整个文件当值
+        load: (k: string): unknown => readAll()[String(k ?? '')],
+        save: (k: string, v: unknown): boolean => {
+          const key = String(k ?? '');
+          if (!key) return false;
           try {
             mkdirSync(dir, { recursive: true });
-            writeFileSync(file, JSON.stringify(v ?? null, null, 2), 'utf8');
+            const all = readAll();
+            all[key] = v ?? null;
+            // ★ CodeRabbit：先写临时文件再 rename，避免中途失败把旧数据截断成空
+            const tmp = file + '.tmp-' + process.pid;
+            writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
+            renameSync(tmp, file);
             return true;
           } catch { return false; }
         },
