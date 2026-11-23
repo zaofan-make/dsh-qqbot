@@ -1234,7 +1234,10 @@ export async function apply(ctx, opts) {
                 try {
                     const agent = exec.agent;
                     if (agent && typeof agent.cancel === 'function') {
-                        agent.cancel({ kind: 'user' }, { keepInbox: true });
+                        // ★ 2026-11-23（主人实测）：原来用 `{kind:'user'}` —— 宿主会把它当成**用户主动取消**，
+                        //   界面显示"已停止"，并且此后该会话的入站容易被标成"(插话)"（与别的会话在思考的时间重合，
+                        //   看起来像串会话）。语义上我们只是"插件判定本轮不开口"，用 hook 取消才准确。
+                        agent.cancel({ kind: 'hook', reason: 'reply_gate: 本轮静默' }, { keepInbox: true });
                     }
                 }
                 catch {
