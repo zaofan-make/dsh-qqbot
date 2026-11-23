@@ -4511,3 +4511,50 @@ node -e "const m=require('./dist/features/msg-history.js');m.initMsgHistory('<da
 - 原文 8,800+ 字符 → 瘦身后约 260 字符（**省约 3,000 token/条**）
 - `node "…-dl.mjs"` → **44/44 成功、10.76MB、3.2 秒**
 - 触发条件：链接数 ≥ 3（普通发一两个链接不受影响）
+
+## §33 契约承诺了但没实现的能力：一次全量审计（2026-11-24，社区补丁触发）
+
+### 起因
+社区（Bemly/dsh-plug）打了个补丁，指出 `ctx.appendWake` **类型里有、注释承诺了、构造处从来没挂**。
+顺着查了一圈，出站扩展的能力缺口不止一个。
+
+### 审计方法
+写脚本对比「接口声明的字段」vs「构造对象实际赋值的键」：
+- `OutboundCtx` ↔ `makeOutboundCtx` 的对象字面量
+- `ExtCapabilities` ↔ `buildCapabilities` 的返回对象
+
+⚠️ **正则坑**：简写属性（`    appId,` 只有名字没有冒号）会被 `^\s+\w+\s*[?:(]` 漏掉，
+导致 `appId/appSecret/owners` 被误报成"没实现"——实际它们一直都在（`ext-capabilities.ts:564/565/939`）。
+**核对前先人工看一遍那几行**，别直接信脚本输出。
+
+### 真正缺的（本次补齐）
+`OutboundCtx` 上这 9 个能力，出站扩展里此前**全是 undefined**：
+
+| 能力 | 实现方式 |
+|---|---|
+| `appendWake` | 挂载点传：`record.agent.followup`（走正常回合，dsh 先补人设） |
+| `appendSilent` | 挂载点传：`record.agent.inject`（只落上下文、不唤醒） |
+| `api` | 挂载点传：`manager.groupAdmin ?? manager.mediaApi` 的 `apiCall` |
+| `emit` | 就地实现：转 `self.send` |
+| `markdown` | 就地实现：`sender.sendMarkdown`（失败回落 `send`） |
+| `image` | 就地实现：`self.sendMedia({ url })` |
+| `media` | 就地实现：按 src 形态判 url/localPath → `sendMedia` |
+| `identity` | 就地实现：`{ owners, peer }`（从 `opts` / `target` 取） |
+| `store` | 就地实现：`<dataRoot>/.qqbot-extensions/data/outbound.json` |
+
+### 关键教训
+1. **`?` 可选 ≠ 可以不实现**：`OutboundCtx` 上这些字段标了 `?`、注释写"缺就降级"，
+   结果一个都没接 ⇒ 扩展作者只能靠 `send`/`sendMedia` 硬撑，逼得人家去打补丁改 dist。
+2. **注释承诺必须落到构造处**：`ext-outbound.ts` 顶部写着"由挂载点喂进来"，
+   但挂载点只传了 `{ source }`。这类"注释与实现脱节"只能靠审计脚本 + 人工核对发现。
+3. **TDZ 坑**：在 `const self: OutboundCtx = { ... }` 的对象字面量里，
+   **立即求值的属性**（如 `identity: { peer: self.target }`）会报 "used before declaration"，
+   必须用外层已算好的局部变量（`t`）；**方法体**里引用 `self` 没问题（延迟执行）。
+4. **出站扩展的 `store` 是全局共享一份**（`outbound.json`）：出站 ctx 没有"当前扩展文件"的稳定标识，
+   扩展自己用 key 隔离。要按扩展分文件得先给 `state.extension` 加稳定 id。
+
+### 验证
+```js
+const ctx = makeOutboundCtx('hi', { appendWake, appendSilent, apiCall, target, owners, dataRoot });
+// 九个能力全为 function/object；不传时 appendWake/appendSilent/api 为 undefined（正确降级）
+```

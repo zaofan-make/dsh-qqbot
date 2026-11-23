@@ -35,7 +35,7 @@
  *   · `last()`                 最近一次出站的 ctx（含 target，便于"往刚才那个会话发"）
  *   · `active()`               当前是否正在跑出站链
  */
-import { statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { scanExtFiles } from './ext-packs.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -353,6 +353,102 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
         apiCall: opts.apiCall,
         kernel: opts.kernel,
         logger,
+        // ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：由挂载点提供，缺则 undefined；异常一律 fail-soft
+        ...(typeof opts.appendWake === 'function'
+            ? {
+                appendWake: async (text) => {
+                    try {
+                        const r = await opts.appendWake(String(text ?? ''));
+                        return r !== false;
+                    }
+                    catch {
+                        return false;
+                    }
+                },
+            }
+            : {}),
+        // ★ 2026-11-24：静默注入 / 官方 API —— 由挂载点喂进来，缺则 undefined
+        ...(typeof opts.appendSilent === 'function'
+            ? {
+                appendSilent: async (text) => {
+                    try {
+                        const r = await opts.appendSilent(String(text ?? ''));
+                        return r !== false;
+                    }
+                    catch {
+                        return false;
+                    }
+                },
+            }
+            : {}),
+        ...(typeof opts.apiCall === 'function'
+            ? {
+                api: (path) => opts.apiCall(String(path ?? '')).catch(() => ({
+                    ok: false,
+                    err: { code: 'THROWN', human: 'api 调用异常' },
+                })),
+            }
+            : {}),
+        // ★ 2026-11-24（主人要求补齐"契约承诺但没实现"）：出站扩展此前只有 send/sendMedia 两个动作，
+        //   其余能力类型上留了口却一个都没接。这里按"能用现有通道实现的就地实现"补齐：
+        //   emit/markdown/image/media 走 send/sendMedia；store 落 dataRoot；identity 从 opts 取。
+        emit(text) {
+            return self.send(String(text ?? ''));
+        },
+        markdown(text) {
+            const s = opts.sender;
+            const tg = (opts.target ?? self.target ?? null);
+            if (s && typeof s.sendMarkdown === 'function' && tg) {
+                return Promise.resolve()
+                    .then(() => s.sendMarkdown(String(text ?? ''), JSON.stringify(tg)))
+                    .then(() => true)
+                    .catch(() => false);
+            }
+            return self.send(String(text ?? ''));
+        },
+        image(url) {
+            return self.sendMedia({ url: String(url ?? '') });
+        },
+        media(kind, source, text) {
+            void kind; // 出站通道靠 src 形态判 url/localPath，kind 仅作扩展侧语义
+            const src = String(source ?? '');
+            if (!src)
+                return Promise.resolve(false);
+            const isUrl = /^https?:\/\//i.test(src) || src.startsWith('qqbot-media://');
+            return self.sendMedia({ ...(isUrl ? { url: src } : { path: src }), ...(text ? { text: String(text) } : {}) });
+        },
+        identity: {
+            owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
+            ...(t
+                ? { peer: { scope: String(t.scope ?? ''), peerId: String(t.peerId ?? '') } }
+                : {}),
+        },
+        store: (() => {
+            // 出站扩展的 KV：落在 <dataRoot>/.qqbot-extensions/data/outbound.json
+            // （出站 ctx 没有"当前扩展文件"的稳定标识，先按全局共享，扩展自己用 key 隔离）
+            const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
+            const file = join(dir, 'outbound.json');
+            return {
+                load: () => {
+                    try {
+                        return JSON.parse(readFileSync(file, 'utf8'));
+                    }
+                    catch {
+                        return undefined;
+                    }
+                },
+                save: (v) => {
+                    try {
+                        mkdirSync(dir, { recursive: true });
+                        writeFileSync(file, JSON.stringify(v ?? null, null, 2), 'utf8');
+                        return true;
+                    }
+                    catch {
+                        return false;
+                    }
+                },
+            };
+        })(),
         rewrite(newText) {
             if (state.killed)
                 return false;

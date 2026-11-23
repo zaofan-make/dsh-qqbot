@@ -105,7 +105,15 @@ export interface OutboundCtx {
     };
     api?: (path: string) => Promise<unknown>;
     appendSilent?: (text: string) => unknown;
-    appendWake?: (text: string) => unknown;
+    /**
+     * 唤醒模型处理一条新消息（走正常回合，dsh 会先补人设）。
+     *
+     * ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：这个能力类型里早就有，但 `makeOutboundCtx`
+     *   从来没挂上 ⇒ 扩展里 `typeof ctx.appendWake === 'function'` 恒为 false，
+     *   `annihilate()` 掉正文后**无法告知模型**，消息静默蒸发、turn/end 还报 completed。
+     *   现在由挂载点喂进来；拿不到就是 undefined，调用方自己判空。
+     */
+    appendWake?: (text: string) => Promise<boolean>;
 }
 /** 出站中间件签名：与 inbound 的 `(ctx, next)` 对称 */
 export type OutboundMiddleware = (ctx: OutboundCtx, next: () => Promise<void>) => unknown;
@@ -183,6 +191,17 @@ export interface RunOutboundOptions {
     logger?: Logger;
     /** ★ 2026-10-16：'send'（正文发送前，默认）或 'turnEnd'（回合结束，可做配图） */
     phase?: 'send' | 'turnEnd';
+    /**
+     * ★ 2026-11-24（社区补丁指出）：挂载点喂进来的"唤醒模型"能力 ——
+     *   扩展 `annihilate()` 掉正文后，靠它告诉模型"这条被拦了，重写一版"。
+     *   缺了就降级成 undefined，扩展自己判空。
+     */
+    appendWake?: (text: string) => unknown;
+    /**
+     * ★ 2026-11-24：静默注入（只落上下文、不唤醒）—— 与能力包的 `appendSilent` 同义。
+     *   由挂载点喂进来，缺了就 undefined。
+     */
+    appendSilent?: (text: string) => unknown;
 }
 export declare function outboundExtensionsDir(dataRoot: string): string;
 /** 配置出站扩展的数据根与日志器（插件启动时调一次；热刷时复用） */

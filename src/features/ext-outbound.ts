@@ -35,7 +35,7 @@
  *   · `last()`                 最近一次出站的 ctx（含 target，便于"往刚才那个会话发"）
  *   · `active()`               当前是否正在跑出站链
  */
-import { statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { scanExtFiles } from './ext-packs.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -141,7 +141,15 @@ export interface OutboundCtx {
   identity?: { user?: unknown; owners?: string[]; peer?: unknown };
   api?: (path: string) => Promise<unknown>;
   appendSilent?: (text: string) => unknown;
-  appendWake?: (text: string) => unknown;
+  /**
+   * 唤醒模型处理一条新消息（走正常回合，dsh 会先补人设）。
+   *
+   * ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：这个能力类型里早就有，但 `makeOutboundCtx`
+   *   从来没挂上 ⇒ 扩展里 `typeof ctx.appendWake === 'function'` 恒为 false，
+   *   `annihilate()` 掉正文后**无法告知模型**，消息静默蒸发、turn/end 还报 completed。
+   *   现在由挂载点喂进来；拿不到就是 undefined，调用方自己判空。
+   */
+  appendWake?: (text: string) => Promise<boolean>;
 }
 
 /** 出站中间件签名：与 inbound 的 `(ctx, next)` 对称 */
@@ -225,6 +233,17 @@ export interface RunOutboundOptions {
   logger?: Logger;
   /** ★ 2026-10-16：'send'（正文发送前，默认）或 'turnEnd'（回合结束，可做配图） */
   phase?: 'send' | 'turnEnd';
+  /**
+   * ★ 2026-11-24（社区补丁指出）：挂载点喂进来的"唤醒模型"能力 ——
+   *   扩展 `annihilate()` 掉正文后，靠它告诉模型"这条被拦了，重写一版"。
+   *   缺了就降级成 undefined，扩展自己判空。
+   */
+  appendWake?: (text: string) => unknown;
+  /**
+   * ★ 2026-11-24：静默注入（只落上下文、不唤醒）—— 与能力包的 `appendSilent` 同义。
+   *   由挂载点喂进来，缺了就 undefined。
+   */
+  appendSilent?: (text: string) => unknown;
 }
 
 export function outboundExtensionsDir(dataRoot: string): string {
@@ -581,6 +600,92 @@ export function makeOutboundCtx(
     apiCall: opts.apiCall,
     kernel: opts.kernel,
     logger,
+    // ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：由挂载点提供，缺则 undefined；异常一律 fail-soft
+    ...(typeof opts.appendWake === 'function'
+      ? {
+          appendWake: async (text: string): Promise<boolean> => {
+            try {
+              const r = await (opts.appendWake as (x: string) => unknown)(String(text ?? ''));
+              return r !== false;
+            } catch {
+              return false;
+            }
+          },
+        }
+      : {}),
+    // ★ 2026-11-24：静默注入 / 官方 API —— 由挂载点喂进来，缺则 undefined
+    ...(typeof opts.appendSilent === 'function'
+      ? {
+          appendSilent: async (text: string): Promise<boolean> => {
+            try {
+              const r = await (opts.appendSilent as (x: string) => unknown)(String(text ?? ''));
+              return r !== false;
+            } catch {
+              return false;
+            }
+          },
+        }
+      : {}),
+    ...(typeof opts.apiCall === 'function'
+      ? {
+          api: (path: string): Promise<unknown> =>
+            (opts.apiCall as (p: string) => Promise<unknown>)(String(path ?? '')).catch(() => ({
+              ok: false,
+              err: { code: 'THROWN', human: 'api 调用异常' },
+            })),
+        }
+      : {}),
+    // ★ 2026-11-24（主人要求补齐"契约承诺但没实现"）：出站扩展此前只有 send/sendMedia 两个动作，
+    //   其余能力类型上留了口却一个都没接。这里按"能用现有通道实现的就地实现"补齐：
+    //   emit/markdown/image/media 走 send/sendMedia；store 落 dataRoot；identity 从 opts 取。
+    emit(text: string): Promise<boolean> {
+      return self.send(String(text ?? ''));
+    },
+    markdown(text: string): Promise<boolean> {
+      const s = opts.sender as { sendMarkdown?: (t: unknown, c: string) => Promise<unknown> } | null;
+      const tg = (opts.target ?? self.target ?? null) as Record<string, unknown> | null;
+      if (s && typeof s.sendMarkdown === 'function' && tg) {
+        return Promise.resolve()
+          .then(() => s.sendMarkdown!(String(text ?? ''), JSON.stringify(tg)))
+          .then(() => true)
+          .catch(() => false);
+      }
+      return self.send(String(text ?? ''));
+    },
+    image(url: string): Promise<boolean> {
+      return self.sendMedia({ url: String(url ?? '') });
+    },
+    media(kind: string, source: string, text?: string): Promise<boolean> {
+      void kind; // 出站通道靠 src 形态判 url/localPath，kind 仅作扩展侧语义
+      const src = String(source ?? '');
+      if (!src) return Promise.resolve(false);
+      const isUrl = /^https?:\/\//i.test(src) || src.startsWith('qqbot-media://');
+      return self.sendMedia({ ...(isUrl ? { url: src } : { path: src }), ...(text ? { text: String(text) } : {}) });
+    },
+    identity: {
+      owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
+      ...(t
+        ? { peer: { scope: String(t.scope ?? ''), peerId: String(t.peerId ?? '') } }
+        : {}),
+    },
+    store: (() => {
+      // 出站扩展的 KV：落在 <dataRoot>/.qqbot-extensions/data/outbound.json
+      // （出站 ctx 没有"当前扩展文件"的稳定标识，先按全局共享，扩展自己用 key 隔离）
+      const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
+      const file = join(dir, 'outbound.json');
+      return {
+        load: (): unknown => {
+          try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return undefined; }
+        },
+        save: (v: unknown): boolean => {
+          try {
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(file, JSON.stringify(v ?? null, null, 2), 'utf8');
+            return true;
+          } catch { return false; }
+        },
+      };
+    })(),
     rewrite(newText: string): boolean {
       if (state.killed) return false;
       state.text = String(newText ?? '');
