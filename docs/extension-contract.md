@@ -8,8 +8,8 @@
 
 ## 0. 一句话
 
-**五套扩展点，一套能力包。** 你在哪一套里写代码，拿到的能力面都一样 ——
-不用记五套 API，也不用"自己接生"发消息/存数据/调官方接口这些事。
+**六套扩展点，一套能力包。** 你在哪一套里写代码，拿到的能力面都一样 ——
+不用记六套 API，也不用"自己接生"发消息/存数据/调官方接口这些事。
 
 ```
                     ┌─────────────── 统一能力包（makeExtCaps）───────────────┐
@@ -22,13 +22,16 @@
                     └───────────────────────────────────────────────────────┘
 ```
 
+第六套是 **`outbound/`（出站扩展）** —— 它在"消息要发出去"时跑，能力面同样是这套能力包，
+但另有三个**只有它有**的东西：`rewrite` / `annihilate` / `transform`（改/杀正文），详见 §6。
+
 `inbound` 那一组为什么只有它有值：**只有它跑在"一条消息正在进站"的时刻**，
 "消灭/改写/覆盖 @ 判定"这些动作在别处没有对象。别的四套拿到的 `caps.inbound` 是
 `undefined` —— **这是语义，不是缺失**。
 
 ---
 
-## 1. 扩展点总览：五套代码扩展 + 一套 UI 扩展
+## 1. 扩展点总览：六套代码扩展 + 一套 UI 扩展
 
 全部位于 **`{数据根}/.qqbot-extensions/`** 下（数据根 = 工作目录里的 `dshqqbot/`）：
 
@@ -38,9 +41,10 @@
 | `commands/*.mjs` | 用户敲 `/你的命令` 时 | `{ name, handler(ctx) }` | handler 的 `ctx`（能力包平铺） |
 | `botplay/*.mjs` | 卡片按钮被点时 | `{ name, events: {...} }` | `env` |
 | `hooks/*.mjs` | **插件启动时跑一次** | `export default async (env) => {}` | `env`（含 `env.caps`） |
+| `outbound/*.mjs` | **每条消息要发出去之前 / 发完之后** | `export default async (ctx, next) => {}` + 可选 `onSent(result)` | `ctx`（能力包平铺 + 三个正文动作） |
 | `inbound/*.mjs` | **每一条入站消息** | `export async function onInbound(ctx,next)` / `onDecide(ctx,next)`（或 `export default`） | 挂点的 `ctx` |
 
-扫描规则（五套一致）：**只看目录下的直接子文件**，`.js` / `.mjs` / `.cjs`，按文件名排序；
+扫描规则（六套一致）：**只看目录下的直接子文件**，`.js` / `.mjs` / `.cjs`，按文件名排序；
 子目录不扫描（可放私有模块）。改完文件调 `tools_reload`（或 `/tools-reload`）**即时生效**；
 扩展命令需要重启宿主。
 
@@ -68,7 +72,7 @@
 
 
 
-前五套是「代码模块」，`ui/` 是**静态资源**（html/css/js），由面板加载到 **Shadow DOM** 里跑。
+前六套是「代码模块」，`ui/` 是**静态资源**（html/css/js），由面板加载到 **Shadow DOM** 里跑。
 它不参与 `import()`，所以放错位置只会被静默跳过，不会报错。
 
 **两个源，按 slot 分**（放错源就不显示）：
@@ -189,7 +193,7 @@ dock 那张 —— 五个子标签，右边三个演示了 dock 独有的能力�
 
 ---
 
-## 2. 统一能力包（五套代码扩展都有）
+## 2. 统一能力包（六套代码扩展都有）
 
 > `ui/` 卡片拿到的是**子集**，见 §1 末尾「卡片里能用的东西」——浏览器里没有 kernel、
 > 没有 sender，服务端能力一律走 `/api/ext/dispatch?p=/__cap` 白名单 RPC。
@@ -685,7 +689,188 @@ export async function onInbound(ctx, next) {
 
 ---
 
-## 6. 我能写哪一套？怎么选
+## 6. 出站扩展：九个能力 + 三条路径
+
+> 目录：`{数据根}/.qqbot-extensions/outbound/*.mjs`（**第六套**扩展点）
+> 什么时候跑：**每一条消息要发出去之前**（`onOutbound`）、**发完之后**（`onSent`）
+
+### 6.1 你的导出
+
+```js
+export const name = 'my-outbound';                 // 展示名（按文件名升序执行）
+export default async function onOutbound(ctx, next) {
+  // 改正文：ctx.rewrite('新内容')
+  // 杀正文：ctx.annihilate('原因')   ← 之后不要再调 next()
+  // 补一条：await ctx.send('...') / ctx.sendMedia({url})
+  return next();                                   // 放行
+}
+export async function onSent(result) { /* 可选：发送回执 */ }
+```
+
+`next()` 是**必须**调（或 `annihilate`）。既不调 `next()` 也不 `annihilate` 时，插件会替它放行并记一条 warn。
+
+### 6.2 `ctx` 上有什么
+
+| 字段 | 说明 |
+|---|---|
+| `text` / `kind` / `source` | 本条正文 / 类型（`text`\|`markdown`\|`media`\|`card`\|`forward`\|`other`）/ 宿主事件 |
+| `segments` | 解析后的媒体段（`parseOutbound` 结果，拿不到时是空数组） |
+| `target` | `{ scope?, peerId?, msgId? }`，**这条出站**的回复目标 |
+| `phase` | `'send'`（正文发送前）或 `'turnEnd'`（回合结束，可做配图） |
+| `turnId` / `chunkIndex` / `isLastChunk` | 同回合分块信息（`isLastChunk` 用来做"只配一次图"） |
+| `sender` / `dataRoot` / `owners` / `kernel` / `logger` / `apiCall` | 基础设施 |
+
+**动作**：`rewrite(text)` / `transform(fn)` / `annihilate(reason)` / `background(task)` / `send(text, opts)` / `sendMedia(input)` / `note(msg)`
+
+### 6.3 九个能力（v1.13.25 起全部可用）
+
+| 能力 | 语义 | 缺省时 |
+|---|---|---|
+| `appendWake(text)` | 唤醒模型处理一条新消息（**走正常回合，dsh 会先补人设**）→ `Promise<boolean>`，**只有明确返回 `true` 才算成功** | `undefined`（挂载点拿不到 agent 时） |
+| `appendSilent(text)` | 只落上下文、**不唤醒**（不产生回合、不烧 token） | 同上 |
+| `api(path)` | 官方 API（`GET`），返回 `{ok, data}` 或 `{ok:false, err:{code,human}}` | `undefined`（没配 apiCall） |
+| `emit(text)` | 发一条**纯文本**：优先 `sendText`，宿主没有就降级 `markdown` | 始终可用 |
+| `markdown(text)` | 发 markdown（复用 `send` 的"先被动后主动"，被动 msgId 失效会自动摘掉重发） | 始终可用 |
+| `image(src)` | 发图：`image(url)` 或 `image({url}\|{localPath})` | 始终可用 |
+| `media(kind, src, text?)` | 发媒体：`kind` = `image`/`voice`/`video`/`file`，`src` 按 http(s) 判定走 `url` 还是 `localPath`；**`text` 会在媒体发成功后补发一条配文** | 始终可用 |
+| `identity` | `{ user: {openid:'',name:'',isOwner:false}, owners: string[], peer?: {scope,peerId} }` —— ⚠️ **出站没有"当前发送者"，`user` 恒为空壳、`isOwner` 恒 `false`**，别拿它当权限判据 | 始终是对象 |
+| `store` | KV，**按扩展分文件**（见 6.4） | `undefined`（没配 `dataRoot`） |
+
+> `store` 没配 `dataRoot` 时是 **`undefined`**，用之前先判空：`if (ctx.store) ctx.store.save(...)`，否则 TypeError。
+
+### 6.4 `store` 的语义（踩过坑，写细一点）
+
+```js
+ctx.store.load()            // 整表（普通对象）；没有文件时 undefined
+ctx.store.load('k')         // 单键
+ctx.store.save({a:1,b:2})   // 整表覆盖
+ctx.store.save('k', v)      // 单键写
+```
+
+- **按扩展分文件**：`{dataRoot}/.qqbot-extensions/data/outbound-<安全名>-<8位sha1>.json`
+  （纯字符替换会把 `扩展甲`/`扩展乙` 都压成 `_`，所以拼了哈希）
+- 扩展名靠 **`AsyncLocalStorage`** 传递 ⇒ `ctx.background()`、`transform` 执行、`onSent` 里都能拿到**自己**的文件
+- **坏文件不会被当空表覆盖**：读失败时 `save` 返回 `false`、原文件不动
+- **原子写**：先写 `.tmp-<pid>` 再 `renameSync`
+- 根表上 `toJSON` 若是**函数**会被拒写（否则 `JSON.stringify` 会把整表换成它返回的值）
+
+### 6.5 三条路径，能力都一样
+
+| 路径 | 什么时候 | 说明 |
+|---|---|---|
+| `onOutbound`（`phase='send'`） | 正文发送前 | 能改/杀正文 |
+| `onOutbound`（`phase='turnEnd'`） | 回合结束 | 最后一块正文；做配图/收尾 |
+| `onSent(result)` | **真的发完之后** | 回执，见下 |
+
+`onSent(result)` 的 `result`：
+
+```ts
+{ ok: boolean, text: string, target?, error?: string, failedBlocks: number, killed: boolean }
+```
+
+- `ok=false` + `killed=true` 表示**被某个扩展 `annihilate` 掉了**，`error` 里是原因
+- 调用是 **fire-and-forget**（并行 + 单条超时），扩展报错/超时**不影响**已经发出去的消息
+- ⚠️ `onSent` 只拿到 `result`，**不给你 `ctx`** —— 想在回执里用 `store`，请在 `onOutbound` 阶段把 `ctx` 存进模块变量（同进程有效）
+
+---
+
+## 7. 按钮交互：`onInteraction`（命令/工具都能收）
+
+> 2026-11-24 真机实测补登。**扩展命令和扩展工具走同一条回调路径**，`ctx` 字段完全一致。
+
+### 7.1 怎么收到回调
+
+```js
+export default {
+  name: ['我的命令', 'alias'],
+  async handler(ctx) { /* 发卡 */ },
+  async onInteraction(ctx, info) {
+    // info.cardId / info.buttonId / info.buttonLabel / info.clickedBefore / info.event
+    return '点完之后回给点击者的一句话';   // 返回字符串 → 插件发回给点击者
+  },
+}
+```
+
+扩展**工具**同理：`export async function onInteraction(ctx, info)`。
+
+### 7.2 发卡 + 登记（缺一不可）
+
+```js
+const cardId = `我的命令-${Date.now().toString(36)}`;
+const buttonId = 'go';                       // ★ 绝不能带冒号
+
+const keyboard = {
+  content: {
+    rows: [{ buttons: [{
+      id: buttonId,
+      render_data: { label: '点我', visited_label: '点过了', style: 1 },
+      action: { type: 1, permission: { type: 2 },
+                data: `ext:我的命令:${cardId}:${buttonId}`,   // ★ 恰好 3 段
+                unsupport_tips: '请升级QQ客户端后重试' },
+    }] }],
+  },
+};
+
+await ctx.api(`/v2/groups/${gid}/messages`, {
+  method: 'POST',
+  body: { msg_type: 2, markdown: { content: '正文' }, keyboard },
+});
+
+// ★ 不登记 → 插件不会派发回调，你会以为按钮坏了
+ctx.registerInteractionCard({ cardId, buttonIds: [buttonId], expireAt: Date.now() + 600_000 });
+```
+
+**四条硬规则**（都是真机踩出来的）：
+
+1. **按钮 `id` 不能带冒号** —— 插件把 `button_data` 拆成 `ext:<工具名>:<卡id>:<按钮id>`，要求**恰好 3 段**；带冒号会 split 出 4 段被静默丢弃（现象：点了只弹"操作成功"）
+2. **`工具名` 必须与文件名、`name[0]` 三者一致**，否则插件查表查不到
+3. **键盘总行数 ≤ 5、每行 ≤ 5 个按钮** —— 超了 QQ 直接拒（`code 40034029`），而且会**静默退化成纯文本**（现象：文字发出来了、按钮没了）
+4. **必须 `registerInteractionCard`** —— 插件靠它决定"这个按钮事件归谁"
+
+### 7.3 回调 `ctx` 是**整个能力包平铺**，身份在 `performer`
+
+2026-11-24 真机 dump 的实际字段：
+
+```
+actorOpenid, api, appId, appSecret, appendSilent, appendWake, at, canAppendSilent,
+card, clickedBefore, dataRoot, file, image, kernel, kick, log, markQqTurn, markdown,
+markdownCard, media, owners, peer, peerSessionId, performer, prevSegment,
+registerInteractionCard, registerRoute, restart, store, text, user, video, voice, wakeTo
+```
+
+**关键**：
+
+```js
+ctx.actor      // ← null！按钮回调里没有 actor
+ctx.performer  // ← { openid, name, isOwner }  身份在这里
+```
+
+取点击者：
+
+```js
+const perf = ctx?.performer ?? ctx?.caps?.performer ?? {};
+const openid = perf.openid || info?.event?.group_member_openid || info?.event?.user_openid;
+const isOwner = perf.isOwner === true;    // 已按 owners 算好
+```
+
+`info.event` 里也有原始 openid（`group_member_openid` / `user_openid` / `group_openid`），可作兜底。
+
+> ⚠️ 回调 ctx **没有 `caps` 键**（能力直接平铺在顶层），所以到处写 `ctx?.caps ?? ctx` 最保险。
+
+### 7.4 让回调"用一次就失效"
+
+插件判断"这个按钮事件归谁"靠**卡表**（`{dataRoot}/.qqbot/ext-tool-cards.json`）。把卡从表里删掉，后续点击**根本不会派发**到你的 `onInteraction` —— 这才是真正的"消灭回调"，不是靠状态判断装出来的：
+
+```js
+// 从卡表移除（自己维护一份，或用插件给的注销 API）
+table.cards = table.cards.filter(c => !(c.toolName === TOOL && c.cardId === cardId));
+```
+
+再点第三次：因为查表未命中，插件 `return false`（不消费），**不会有任何反应** —— 这正是期望行为。
+
+---
+
+## 8. 我能写哪一套？怎么选
 
 ```
 有人敲命令才做事            → commands/
@@ -693,6 +878,7 @@ LLM 该主动调用才做事        → tools/
 要等人点卡片按钮            → botplay/
 启动就得跑一次（恢复任务/起定时器/预取） → hooks/
 要影响"每条消息进不进、长什么样、叫不叫醒她" → inbound/
+要影响"每条消息发出去长什么样、要不要补发、发成了没有" → outbound/
 ```
 
 写之前建议先读 `examples/` 下对应目录的示例（插件首次启动会**自动铺一份**到你的扩展目录；
@@ -701,8 +887,10 @@ LLM 该主动调用才做事        → tools/
 
 ---
 
-## 7. 变更记录（契约相关）
+## 9. 变更记录（契约相关）
 
+- **2026-11-24**：新增 §6 **出站扩展**（第六套）—— 九个能力（appendWake/appendSilent/api/emit/markdown/image/media/identity/store）全部补齐并写进契约；含 store 的按扩展分文件/原子写/坏文件保护、三条路径（send / turnEnd / onSent）、onSent 回执语义。
+- **2026-11-24**：新增 §7 **按钮交互 onInteraction** —— 真机实测补登：扩展命令与工具走同一条回调路径；回调 ctx 是**能力包平铺**（无 caps 键）；点击者身份在 **ctx.performer**（不是 ctx.actor，后者是 null）；按钮 data 必须 `ext:<工具名>:<卡id>:<按钮id>` 恰好 3 段且按钮 id 不能带冒号；键盘 5 行×5 列硬上限；必须 registerInteractionCard 才会派发；删卡表 = 消灭回调。
 - **2026-11-16**：补登**工具的条件可见性** `enabled(env)`（此前只在源码里，契约没写）。含 `env.provider` 的两个真相源、返回 `false`/抛错的语义（fail-closed）、以及"注册按会话走所以是热开关"。
 - **v1.9.2**：入站扩展（第五套）**能力面对齐** —— 直接复用统一能力包（此前只有一套私有小 ctx，
   `store` / `api()` / `markdown` / `appendSilent` 等一项都没有）；**入站操控那一组也进了包**（`caps.inbound`）。
