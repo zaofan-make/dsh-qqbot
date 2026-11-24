@@ -89,6 +89,7 @@ export interface OutboundCtx {
     }): Promise<boolean>;
     /** 审计/诊断一行（走 logger.debug + 落盘审计，最坏也只是丢日志，绝不抛） */
     note(msg: string): void;
+    /** 发一条**纯文本**（优先 sendText，宿主没有就降级 markdown）。⚠️ 出站版**不支持** `emit(text, at)` 的 @ 参数 */
     emit?: (text: string) => unknown;
     markdown?: (text: string) => unknown;
     /** 发图：`image(url)` 或 `image({url}|{localPath})`（与 media 同口径判 url/本地路径） */
@@ -322,6 +323,7 @@ export declare function sendViaOutboundChannel(payload: {
     kind?: string;
 }, opts?: RunOutboundOptions, sendOpts?: {
     adaptive?: boolean;
+    preferText?: boolean;
 }): Promise<boolean>;
 /**
  * 其他扩展获取"出站操控器"的入口（`globalThis[OUTBOUND_API_KEY]`）。

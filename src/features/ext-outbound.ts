@@ -153,6 +153,7 @@ export interface OutboundCtx {
   note(msg: string): void;
 
   // ── 与前五套同款的统一能力（缺就降级，绝不抛）─────────────────
+  /** 发一条**纯文本**（优先 sendText，宿主没有就降级 markdown）。⚠️ 出站版**不支持** `emit(text, at)` 的 @ 参数 */
   emit?: (text: string) => unknown;
   markdown?: (text: string) => unknown;
   /** 发图：`image(url)` 或 `image({url}|{localPath})`（与 media 同口径判 url/本地路径） */
@@ -809,18 +810,13 @@ export function makeOutboundCtx(
     //   其余能力类型上留了口却一个都没接。这里按"能用现有通道实现的就地实现"补齐：
     //   emit/markdown/image/media 走 send/sendMedia；store 落 dataRoot；identity 从 opts 取。
     emit(text: string): Promise<boolean> {
-      // ★ 子代理复核 m6：原来和 markdown() 完全一样（都走 self.send → 优先 sendMarkdown），
-      //   等于"emit 偷偷发 markdown"。emit 的语义是"发一条纯文本"，这里直接走 sendText。
-      const s = opts.sender as { sendText?: (tg: unknown, text: string) => Promise<unknown> } | null;
-      const tg = (opts.target ?? self.target ?? null) as Record<string, unknown> | null;
-      const body = String(text ?? '');
-      if (s && typeof s.sendText === 'function' && tg) {
-        return Promise.resolve()
-          .then(() => s.sendText!(tg, body))
-          .then(() => true)
-          .catch(() => self.send(body));
-      }
-      return self.send(body);
+      // ★ 2026-11-24（子代理复核 Major）：**走统一入口**，只多传一个 preferText。
+      //   上一版在 ctx 里自己调 sender.sendText：① 绕过了 sendViaOutboundChannel 的空串校验
+      //   ⇒ `emit('')` 会真的发出一条空消息还返回 true；② 生产 sender 根本没有 sendText，
+      //   那段分支是死代码（测试还因此假通过）。现在：空串由统一入口拒掉，
+      //   有 sendText 用 sendText，没有就降级 sendMarkdown。
+      const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: ownTarget }, { preferText: true });
     },
     markdown(text: string): Promise<boolean> {
       // ★ CodeRabbit：直接复用 self.send —— 它内部就**优先走 sendMarkdown**，
@@ -1115,7 +1111,7 @@ export async function runOutboundTurnEnd(
 export async function sendViaOutboundChannel(
   payload: { text?: string; path?: string; url?: string; kind?: string },
   opts: RunOutboundOptions = {},
-  sendOpts: { adaptive?: boolean } = {},
+  sendOpts: { adaptive?: boolean; preferText?: boolean } = {},
 ): Promise<boolean> {
   const ownerObj = (opts.sender ?? lastCtx?.sender ?? null) as object | null;
   const allowFallback = ownerObj ? fallbackByOwner.get(ownerObj) === true : false;
@@ -1164,6 +1160,12 @@ export async function sendViaOutboundChannel(
       if (isMedia) {
         if (typeof sender.sendMedia !== 'function') return false;
         await sender.sendMedia(tg, mediaKind, mediaSource);
+        return true;
+      }
+      // ★ 2026-11-24（子代理复核 Major）：preferText 让"纯文本"语义走同一条入口；
+      //   生产 sender 没有 sendText ⇒ 自动降级到下面的 sendMarkdown。
+      if (sendOpts.preferText && typeof sender.sendText === 'function') {
+        await sender.sendText(tg, String(payload.text ?? ''));
         return true;
       }
       if (typeof sender.sendMarkdown === 'function') {

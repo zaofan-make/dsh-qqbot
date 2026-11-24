@@ -71,31 +71,39 @@ export default async (ctx, next) => { ctx.store.save('who', 'yi'); return next()
     expect(all.every((f) => !f.includes('shared'))).toBe(true);
   });
 
-  it('background 里的 store 也写对文件（ALS 继承）', async () => {
+  it('background 里的 store 也写对文件（ALS 继承，有下游扩展时才具判别力）', async () => {
+    // ★ 子代理复核 m1：单扩展时后台任务常在中间件返回前就跑完，那时 state.extension 还是自己，
+    //   就算实现回退成"只读 state.extension"这条测试也照样绿。所以必须加一个下游扩展 + 延迟。
     writeExt('bg.mjs', `export const name = '后台写';
 export default async (ctx, next) => {
-  ctx.background(() => ctx.store.save('fromBg', 'yes'));
+  ctx.background(async () => {
+    await new Promise((r) => setTimeout(r, 60));   // 等下游扩展占用 state.extension
+    ctx.store.save('fromBg', 'yes');
+  });
+  return next();
+}`);
+    writeExt('downstream.mjs', `export const name = '下游';
+export default async (ctx, next) => {
+  ctx.store.save('downstream', 'yes');
   return next();
 }`);
     await loadOutboundExtensions({ dataRoot: root, logger });
     await runOutboundChain('正文', { dataRoot: root, logger, sender: bot, target: { scope: 'group', peerId: 'G1' } });
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 250));
 
     const all = files();
-    expect(all.length).toBe(1);
-    expect(all[0]).not.toContain('shared');
-    expect(readFile(all[0])).toContain('fromBg');
+    expect(all.length).toBe(2); // 后台写 + 下游，各一份
+    expect(all.some((f) => f.includes('shared'))).toBe(false);
+    const bgFile = all.find((f) => readFile(f).includes('fromBg'));
+    expect(bgFile).toBeTruthy();
+    // 关键断言：fromBg 不能出现在下游的文件里
+    const downFile = all.find((f) => readFile(f).includes('downstream'));
+    expect(downFile).toBeTruthy();
+    expect(readFile(downFile!)).not.toContain('fromBg');
   });
 
   it('onSent 里的 store 也写对文件（子代理复核抓到的漏点）', async () => {
-    writeExt('sent.mjs', `export const name = '回执写';
-export default async (ctx, next) => next();
-export async function onSent() {
-  // onSent 拿不到 ctx，用 globalThis 上挂的探针写 store
-  const probe = globalThis.__qqbotOnSentProbe;
-  if (probe) probe();
-}`);
-    // 用一个扩展里拿到的 ctx.store 在 onSent 阶段写（模拟真实用法：扩展闭包持有 ctx）
+    // 模拟真实用法：扩展在中间件里抓住 ctx，onSent 阶段用它的 store 写
     writeExt('sent2.mjs', `export const name = '回执写2';
 let held = null;
 export default async (ctx, next) => { held = ctx; return next(); }
@@ -173,7 +181,32 @@ describe('能力语义', () => {
     expect(await falseHook.appendWake!('t')).toBe(false);
   });
 
-  it('emit 走纯文本通道，markdown 走 markdown 通道', async () => {
+  it('emit：有 sendText 走 sendText，没有就降级 markdown（生产就是后者）', async () => {
+    // ① 宿主有 sendText
+    const calls1: string[] = [];
+    const withText = makeOutboundCtx('x', {
+      dataRoot: root,
+      target: { scope: 'group', peerId: 'G1' },
+      sender: {
+        sendText: async () => { calls1.push('text'); return {}; },
+        sendMarkdown: async () => { calls1.push('markdown'); return {}; },
+      },
+    });
+    await withText.emit!('纯文本');
+    expect(calls1).toEqual(['text']);
+
+    // ② 生产 sender（只有 sendMarkdown）→ 必须降级，而不是死代码
+    const calls2: string[] = [];
+    const prodLike = makeOutboundCtx('x', {
+      dataRoot: root,
+      target: { scope: 'group', peerId: 'G1' },
+      sender: { sendMarkdown: async () => { calls2.push('markdown'); return {}; } },
+    });
+    await prodLike.emit!('纯文本');
+    expect(calls2).toEqual(['markdown']);
+  });
+
+  it('emit 空串不发（走统一入口的空校验）', async () => {
     const calls: string[] = [];
     const ctx = makeOutboundCtx('x', {
       dataRoot: root,
@@ -183,9 +216,8 @@ describe('能力语义', () => {
         sendMarkdown: async () => { calls.push('markdown'); return {}; },
       },
     });
-    await ctx.emit!('纯文本');
-    await ctx.markdown!('**加粗**');
-    expect(calls).toEqual(['text', 'markdown']);
+    expect(await ctx.emit!('')).toBe(false);
+    expect(calls).toEqual([]); // 一条都不该发
   });
 
   it('image 认本地路径与对象形态', async () => {
