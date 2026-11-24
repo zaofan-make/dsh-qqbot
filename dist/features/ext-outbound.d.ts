@@ -1,5 +1,4 @@
 import type { Logger } from '../types.js';
-/** 出站扩展子目录名（与 inbound / hooks / tools / botplay 并列的第六套） */
 export declare const EXT_OUTBOUND_SUBDIR = "outbound";
 /** 其他扩展取"出站操控器"的全局键（Symbol.for ⇒ 跨模块实例单例，同 ext-inbound 的 HANDLER_KEY 手法） */
 export declare const OUTBOUND_API_KEY: unique symbol;
@@ -85,18 +84,33 @@ export interface OutboundCtx {
         text?: string;
     }): Promise<boolean>;
     /** 额外发一条文本（**先被动后主动**）；返回是否成功 */
+    /** 发一条文本（先被动后主动）。要纯文本语义（不走 markdown）请用 `emit`，或传 `preferText: true` */
     send(text: string, opts?: {
         adaptive?: boolean;
+        preferText?: boolean;
     }): Promise<boolean>;
     /** 审计/诊断一行（走 logger.debug + 落盘审计，最坏也只是丢日志，绝不抛） */
     note(msg: string): void;
+    /** 发一条**纯文本**（优先 sendText，宿主没有就降级 markdown）。⚠️ 出站版**不支持** `emit(text, at)` 的 @ 参数 */
     emit?: (text: string) => unknown;
     markdown?: (text: string) => unknown;
-    image?: (url: string) => unknown;
+    /** 发图：`image(url)` 或 `image({url}|{localPath})`（与 media 同口径判 url/本地路径） */
+    image?: (src: string | {
+        url?: string;
+        localPath?: string;
+    }) => unknown;
     media?: (kind: string, source: string, text?: string) => unknown;
+    /**
+     * 出站扩展的 KV。**兼容两种写法**（子代理审查 M1：此前只实现 keyed 形态，
+     * 照文档写 `save(obj)` 会把 key 存成 "[object Object]" 并静默返回 true）：
+     * - `load()` → 整对象；`load('k')` → 单键
+     * - `save(obj)` → 整表覆盖；`save('k', v)` → 单键
+     *
+     * 按扩展名分文件（`outbound-<name>.json`）；坏文件不会被当成空表覆盖（读失败 → 写入返回 false）。
+     */
     store?: {
-        load: (k: string) => unknown;
-        save: (k: string, v: unknown) => unknown;
+        load: (k?: string) => unknown;
+        save: (k: string | Record<string, unknown>, v?: unknown) => boolean;
     };
     identity?: {
         user?: unknown;
@@ -105,7 +119,15 @@ export interface OutboundCtx {
     };
     api?: (path: string) => Promise<unknown>;
     appendSilent?: (text: string) => unknown;
-    appendWake?: (text: string) => unknown;
+    /**
+     * 唤醒模型处理一条新消息（走正常回合，dsh 会先补人设）。
+     *
+     * ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：这个能力类型里早就有，但 `makeOutboundCtx`
+     *   从来没挂上 ⇒ 扩展里 `typeof ctx.appendWake === 'function'` 恒为 false，
+     *   `annihilate()` 掉正文后**无法告知模型**，消息静默蒸发、turn/end 还报 completed。
+     *   现在由挂载点喂进来；拿不到就是 undefined，调用方自己判空。
+     */
+    appendWake?: (text: string) => Promise<boolean>;
 }
 /** 出站中间件签名：与 inbound 的 `(ctx, next)` 对称 */
 export type OutboundMiddleware = (ctx: OutboundCtx, next: () => Promise<void>) => unknown;
@@ -183,6 +205,17 @@ export interface RunOutboundOptions {
     logger?: Logger;
     /** ★ 2026-10-16：'send'（正文发送前，默认）或 'turnEnd'（回合结束，可做配图） */
     phase?: 'send' | 'turnEnd';
+    /**
+     * ★ 2026-11-24（社区补丁指出）：挂载点喂进来的"唤醒模型"能力 ——
+     *   扩展 `annihilate()` 掉正文后，靠它告诉模型"这条被拦了，重写一版"。
+     *   缺了就降级成 undefined，扩展自己判空。
+     */
+    appendWake?: (text: string) => unknown;
+    /**
+     * ★ 2026-11-24：静默注入（只落上下文、不唤醒）—— 与能力包的 `appendSilent` 同义。
+     *   由挂载点喂进来，缺了就 undefined。
+     */
+    appendSilent?: (text: string) => unknown;
 }
 export declare function outboundExtensionsDir(dataRoot: string): string;
 /** 配置出站扩展的数据根与日志器（插件启动时调一次；热刷时复用） */
@@ -292,6 +325,7 @@ export declare function sendViaOutboundChannel(payload: {
     kind?: string;
 }, opts?: RunOutboundOptions, sendOpts?: {
     adaptive?: boolean;
+    preferText?: boolean;
 }): Promise<boolean>;
 /**
  * 其他扩展获取"出站操控器"的入口（`globalThis[OUTBOUND_API_KEY]`）。

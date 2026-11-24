@@ -35,7 +35,9 @@
  *   · `last()`                 最近一次出站的 ctx（含 target，便于"往刚才那个会话发"）
  *   · `active()`               当前是否正在跑出站链
  */
-import { statSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { scanExtFiles } from './ext-packs.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -45,6 +47,24 @@ import type { Logger } from '../types.js';
 const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
 
 /** 出站扩展子目录名（与 inbound / hooks / tools / botplay 并列的第六套） */
+/**
+ * ★ CodeRabbit #87（第 5 轮）：**当前正在执行的出站扩展名**。
+ *
+ * 为什么不用 `state.extension`：它是共享可变状态，只在中间件同步执行期有效；
+ * `ctx.background()` 不阻塞链，后台任务真正跑的时候它早被恢复/被下一个扩展占了 ⇒
+ * `ctx.store` 会写错文件。AsyncLocalStorage 跟着异步调用链走（`Promise.resolve().then`
+ * 会自动继承），并发也安全 —— 与 `reasoning-bus.ts` 的 ownerStore 同一个套路。
+ */
+const extAls = new AsyncLocalStorage<OutboundExtension>();
+/** 当前异步上下文里的扩展对象（不在任何扩展里时是 undefined） */
+function currentExt(): OutboundExtension | undefined {
+  return extAls.getStore();
+}
+/** 当前异步上下文里的扩展名（不在任何扩展里时是空串） */
+function currentExtName(): string {
+  return extAls.getStore()?.name ?? '';
+}
+
 export const EXT_OUTBOUND_SUBDIR = 'outbound';
 
 /** 其他扩展取"出站操控器"的全局键（Symbol.for ⇒ 跨模块实例单例，同 ext-inbound 的 HANDLER_KEY 手法） */
@@ -128,20 +148,42 @@ export interface OutboundCtx {
   /** 额外发一条媒体（**先被动后主动**）；返回是否成功 */
   sendMedia(input: { path?: string; url?: string; text?: string }): Promise<boolean>;
   /** 额外发一条文本（**先被动后主动**）；返回是否成功 */
-  send(text: string, opts?: { adaptive?: boolean }): Promise<boolean>;
+  /** 发一条文本（先被动后主动）。要纯文本语义（不走 markdown）请用 `emit`，或传 `preferText: true` */
+  send(text: string, opts?: { adaptive?: boolean; preferText?: boolean }): Promise<boolean>;
   /** 审计/诊断一行（走 logger.debug + 落盘审计，最坏也只是丢日志，绝不抛） */
   note(msg: string): void;
 
   // ── 与前五套同款的统一能力（缺就降级，绝不抛）─────────────────
+  /** 发一条**纯文本**（优先 sendText，宿主没有就降级 markdown）。⚠️ 出站版**不支持** `emit(text, at)` 的 @ 参数 */
   emit?: (text: string) => unknown;
   markdown?: (text: string) => unknown;
-  image?: (url: string) => unknown;
+  /** 发图：`image(url)` 或 `image({url}|{localPath})`（与 media 同口径判 url/本地路径） */
+  image?: (src: string | { url?: string; localPath?: string }) => unknown;
   media?: (kind: string, source: string, text?: string) => unknown;
-  store?: { load: (k: string) => unknown; save: (k: string, v: unknown) => unknown };
+  /**
+   * 出站扩展的 KV。**兼容两种写法**（子代理审查 M1：此前只实现 keyed 形态，
+   * 照文档写 `save(obj)` 会把 key 存成 "[object Object]" 并静默返回 true）：
+   * - `load()` → 整对象；`load('k')` → 单键
+   * - `save(obj)` → 整表覆盖；`save('k', v)` → 单键
+   *
+   * 按扩展名分文件（`outbound-<name>.json`）；坏文件不会被当成空表覆盖（读失败 → 写入返回 false）。
+   */
+  store?: {
+    load: (k?: string) => unknown;
+    save: (k: string | Record<string, unknown>, v?: unknown) => boolean;
+  };
   identity?: { user?: unknown; owners?: string[]; peer?: unknown };
   api?: (path: string) => Promise<unknown>;
   appendSilent?: (text: string) => unknown;
-  appendWake?: (text: string) => unknown;
+  /**
+   * 唤醒模型处理一条新消息（走正常回合，dsh 会先补人设）。
+   *
+   * ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：这个能力类型里早就有，但 `makeOutboundCtx`
+   *   从来没挂上 ⇒ 扩展里 `typeof ctx.appendWake === 'function'` 恒为 false，
+   *   `annihilate()` 掉正文后**无法告知模型**，消息静默蒸发、turn/end 还报 completed。
+   *   现在由挂载点喂进来；拿不到就是 undefined，调用方自己判空。
+   */
+  appendWake?: (text: string) => Promise<boolean>;
 }
 
 /** 出站中间件签名：与 inbound 的 `(ctx, next)` 对称 */
@@ -225,6 +267,17 @@ export interface RunOutboundOptions {
   logger?: Logger;
   /** ★ 2026-10-16：'send'（正文发送前，默认）或 'turnEnd'（回合结束，可做配图） */
   phase?: 'send' | 'turnEnd';
+  /**
+   * ★ 2026-11-24（社区补丁指出）：挂载点喂进来的"唤醒模型"能力 ——
+   *   扩展 `annihilate()` 掉正文后，靠它告诉模型"这条被拦了，重写一版"。
+   *   缺了就降级成 undefined，扩展自己判空。
+   */
+  appendWake?: (text: string) => unknown;
+  /**
+   * ★ 2026-11-24：静默注入（只落上下文、不唤醒）—— 与能力包的 `appendSilent` 同义。
+   *   由挂载点喂进来，缺了就 undefined。
+   */
+  appendSilent?: (text: string) => unknown;
 }
 
 export function outboundExtensionsDir(dataRoot: string): string {
@@ -459,7 +512,12 @@ export async function notifyOutboundSent(result: OutboundSentResult, owner?: unk
   await Promise.allSettled(
     exts.filter((e) => typeof e.onSent === 'function').map(async (ext) => {
       try {
-        await withTimeoutSingle(Promise.resolve(ext.onSent!(result)), NOTIFY_TIMEOUT_MS);
+        // ★ 2026-11-24（子代理复核 Major）：这里**必须**包 ALS —— 发送完成后链早已退出，
+        //   不包的话 `ctx.store` 会落进 shared 文件（实测两个扩展互相覆盖）。
+        await withTimeoutSingle(
+          extAls.run(ext, () => Promise.resolve(ext.onSent!(result))),
+          NOTIFY_TIMEOUT_MS,
+        );
       } catch { /* 扩展自己炸了/超时，不影响别人，也不影响发送结果 */ }
     }),
   );
@@ -565,6 +623,133 @@ export function makeOutboundCtx(
 ): OutboundCtx {
   const logger = opts.logger ?? ({ info() {}, warn() {}, debug() {}, error() {} } as unknown as Logger);
   const t = (opts.target ?? null) as OutboundCtx['target'];
+  /**
+   * 造一份绑定到具体扩展名的 store。
+   *
+   * ★ CodeRabbit #87（第 5 轮）：
+   *   - 文件名用 `outbound-<安全名>-<8位hash>.json`：纯替换会把 `扩展甲`/`扩展乙` 都压成 `_`（互相覆盖），
+   *     加 8 位哈希保证唯一，同时保留可读前缀。
+   *   - `save(obj)` 整表写也要先 `readAll().ok` —— 坏文件时不能覆盖。
+   */
+  // ★ 子代理复核 m2：getter 每次访问都新建对象 + 重算 sha1（实测 17.6µs/次），
+  //   而且 `ctx.store !== ctx.store` 这种引用不稳定会让扩展的写法很别扭。按扩展名缓存。
+  const storeCache = new Map<string, NonNullable<OutboundCtx['store']>>();
+  const storeForCached = (extensionName: string): NonNullable<OutboundCtx['store']> => {
+    let s = storeCache.get(extensionName);
+    if (!s) {
+      s = storeFor(extensionName);
+      storeCache.set(extensionName, s);
+    }
+    return s;
+  };
+  const storeFor = (extensionName: string): NonNullable<OutboundCtx['store']> => {
+    const raw = String(extensionName || 'shared');
+    const safe = raw.replace(/[^\w.-]+/g, '_').slice(0, 40) || 'x';
+    const hash = createHash('sha1').update(raw, 'utf8').digest('hex').slice(0, 8);
+    const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
+    const file = join(dir, 'outbound-' + safe + '-' + hash + '.json');
+
+    // ★ 子代理复核 m1：多一个 `existed` —— 用来区分"文件不存在"（load() 应返回 undefined，
+    //   与 caps.store 一致）和"文件存在但是空表"（返回 {}）。
+    const readAll = (): { ok: boolean; existed: boolean; data: Record<string, unknown> } => {
+      const out: Record<string, unknown> = Object.create(null);
+      if (!opts.dataRoot) return { ok: false, existed: false, data: out };
+      let raw2 = '';
+      try {
+        raw2 = readFileSync(file, 'utf8');
+      } catch (e) {
+        const code = (e as { code?: string } | undefined)?.code;
+        return { ok: code === 'ENOENT', existed: false, data: out };
+      }
+      try {
+        const v = JSON.parse(raw2);
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, existed: true, data: out };
+        for (const k of Object.keys(v as Record<string, unknown>)) {
+          Object.defineProperty(out, k, {
+            value: (v as Record<string, unknown>)[k],
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
+        }
+        return { ok: true, existed: true, data: out };
+      } catch {
+        return { ok: false, existed: true, data: out };
+      }
+    };
+
+    const writeAll = (all: Record<string, unknown>): boolean => {
+      if (!opts.dataRoot) return false;
+      // ★ CodeRabbit 第 6 轮：根表上可调用的 `toJSON` 会被 JSON.stringify 当钩子调用，
+      //   把整表换成它返回的值（比如 []）—— 数据直接没了还返回 true。拒绝写入，保留旧文件。
+      //   非函数值（普通字符串等）当键名照常允许。
+      if (typeof (all as { toJSON?: unknown }).toJSON === 'function') return false;
+      try {
+        mkdirSync(dir, { recursive: true });
+        const tmp = file + '.tmp-' + process.pid;
+        writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
+        renameSync(tmp, file);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    return {
+      load: (k?: string): unknown => {
+        const r = readAll();
+        if (!r.ok) return undefined;
+        if (k === undefined) {
+          // ★ 子代理复核 m1：① 没文件 → undefined（与 caps.store 一致，别让扩展把 {} 当"有数据"）
+          //                  ② 返回**普通对象** —— 原来直接返回 Object.create(null) 的，
+          //                     扩展写 data.hasOwnProperty(x) / data.toString() 会直接 TypeError
+          if (!r.existed) return undefined;
+          const plain: Record<string, unknown> = {};
+          for (const kk of Object.keys(r.data)) {
+            Object.defineProperty(plain, kk, {
+              value: r.data[kk],
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
+          }
+          return plain;
+        }
+        const key = String(k);
+        return Object.prototype.hasOwnProperty.call(r.data, key) ? r.data[key] : undefined;
+      },
+      save: (k: string | Record<string, unknown>, v?: unknown): boolean => {
+        // ★ 整表写（`save(obj)`）也要拒绝覆盖坏文件
+        if (k && typeof k === 'object') {
+          // 顺序：先验旧文件（坏文件不覆盖）→ 再复制（getter 抛错也不冒泡）→ 最后写
+          if (!readAll().ok) return false;
+          const all: Record<string, unknown> = Object.create(null);
+          try {
+            for (const kk of Object.keys(k as Record<string, unknown>)) {
+              Object.defineProperty(all, kk, {
+                // ★ CodeRabbit 第 6 轮：取值可能触发 getter 抛错 —— 必须在 try 里，
+                //   否则调用方拿不到 false，异常直接冒到出站链。
+                value: (k as Record<string, unknown>)[kk],
+                enumerable: true,
+                configurable: true,
+                writable: true,
+              });
+            }
+          } catch {
+            return false;
+          }
+          return writeAll(all);
+        }
+        const key = String(k ?? '');
+        if (!key) return false;
+        const r = readAll();
+        if (!r.ok) return false;
+        Object.defineProperty(r.data, key, { value: v ?? null, enumerable: true, configurable: true, writable: true });
+        return writeAll(r.data);
+      },
+    };
+  };
+
   const self: OutboundCtx = {
     text: state.text,
     segments: Array.isArray(opts.segments) ? opts.segments : [],
@@ -581,6 +766,122 @@ export function makeOutboundCtx(
     apiCall: opts.apiCall,
     kernel: opts.kernel,
     logger,
+    // ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出）：由挂载点提供，缺则 undefined；异常一律 fail-soft
+    ...(typeof opts.appendWake === 'function'
+      ? {
+          appendWake: async (text: string): Promise<boolean> => {
+            try {
+              const r = await (opts.appendWake as (x: string) => unknown)(String(text ?? ''));
+              // ★ 子代理复核 m6：原来 `r !== false` 会把 undefined/void 当成成功。
+              //   挂载点喂进来的是 Promise<boolean>，所以这里要求**明确 true**。
+              return r === true;
+            } catch {
+              return false;
+            }
+          },
+        }
+      : {}),
+    // ★ 2026-11-24：静默注入 / 官方 API —— 由挂载点喂进来，缺则 undefined
+    ...(typeof opts.appendSilent === 'function'
+      ? {
+          appendSilent: async (text: string): Promise<boolean> => {
+            try {
+              const r = await (opts.appendSilent as (x: string) => unknown)(String(text ?? ''));
+              return r === true;
+            } catch {
+              return false;
+            }
+          },
+        }
+      : {}),
+    ...(typeof opts.apiCall === 'function'
+      ? {
+          // ★ CodeRabbit：apiCall 契约是 (method, path, body)；用 async+try/catch 才能同时接住
+          //   同步抛错和 Promise 拒绝（只挂 .catch 接不住同步抛）
+          api: async (path: string): Promise<unknown> => {
+            try {
+              return await (opts.apiCall as (m: string, p: string) => Promise<unknown>)('GET', String(path ?? ''));
+            } catch (err) {
+              return { ok: false, err: { code: 'THROWN', human: err instanceof Error ? err.message : String(err) } };
+            }
+          },
+        }
+      : {}),
+    // ★ 2026-11-24（主人要求补齐"契约承诺但没实现"）：出站扩展此前只有 send/sendMedia 两个动作，
+    //   其余能力类型上留了口却一个都没接。这里按"能用现有通道实现的就地实现"补齐：
+    //   emit/markdown/image/media 走 send/sendMedia；store 落 dataRoot；identity 从 opts 取。
+    emit(text: string): Promise<boolean> {
+      // ★ 2026-11-24（子代理复核 Major）：**走统一入口**，只多传一个 preferText。
+      //   上一版在 ctx 里自己调 sender.sendText：① 绕过了 sendViaOutboundChannel 的空串校验
+      //   ⇒ `emit('')` 会真的发出一条空消息还返回 true；② 生产 sender 根本没有 sendText，
+      //   那段分支是死代码（测试还因此假通过）。现在：空串由统一入口拒掉，
+      //   有 sendText 用 sendText，没有就降级 sendMarkdown。
+      const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: ownTarget }, { preferText: true });
+    },
+    markdown(text: string): Promise<boolean> {
+      // ★ CodeRabbit：直接复用 self.send —— 它内部就**优先走 sendMarkdown**，
+      //   且自带"先被动后主动"（被动 msgId 失效时会摘掉 msgId 重发）。
+      //   自己再实现一遍只会丢掉主动兜底：msgId 一死就永远发不出去。
+      return self.send(String(text ?? ''));
+    },
+    image(src: string | { url?: string; localPath?: string }): Promise<boolean> {
+      // ★ 子代理审查 M5：原来无条件 `{ url: src }` —— 本地路径和 `{localPath}` 对象都会变成畸形参数，
+      //   失败还被 catch 吞成 false（无日志）。现在按 url/本地路径两种形态分别发。
+      const s =
+        src && typeof src === 'object'
+          ? String((src as { url?: string }).url ?? (src as { localPath?: string }).localPath ?? '')
+          : String(src ?? '');
+      if (!s) return Promise.resolve(false);
+      const isUrl = /^https?:\/\//i.test(s) || s.startsWith('qqbot-media://');
+      return self.sendMedia({ kind: 'image', ...(isUrl ? { url: s } : { path: s }) } as never);
+    },
+    media(kind: string, source: string, text?: string): Promise<boolean> {
+      // ★ CodeRabbit：kind 必须一路带到发送通道，否则 video/voice/file 全被当图片发
+      const src = String(source ?? '');
+      if (!src) return Promise.resolve(false);
+      const k = String(kind || 'image').toLowerCase();
+      const isUrl = /^https?:\/\//i.test(src) || src.startsWith('qqbot-media://');
+      const sent = self.sendMedia({
+        kind: k,
+        ...(isUrl ? { url: src } : { path: src }),
+      } as never);
+      // ★ 子代理审查 M4：第三个参数以前是**假参数**（塞进 payload 但没人读）。
+      //   现在媒体发出去后补一条配文；媒体失败就不补（避免只发文字）。
+      if (!text) return sent;
+      return sent.then(async (ok) => {
+        // ★ 子代理复核 m4：配文属纯文本，走 emit（preferText）而不是 send（会优先 markdown）
+        if (ok) await self.emit!(String(text));
+        return ok;
+      });
+    },
+    identity: {
+      // ★ 子代理复核 m5：出站 ctx **没有"当前发送者"的概念**，但原来 identity.user 是 undefined、
+      //   identity 本身恒为真值 ⇒ 扩展写 `if (ctx.identity) ctx.identity.user.x` 直接 TypeError。
+      //   这里给一个明确的空值对象：字段都在、值都是"没有"。
+      user: { openid: '', name: '', isOwner: false },
+      owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
+      ...(t
+        ? { peer: { scope: String(t.scope ?? ''), peerId: String(t.peerId ?? '') } }
+        : {}),
+    },
+    /**
+     * 出站扩展的 KV。**兼容两种写法**（M1）：`load()` 整对象 / `load(k)` 单键；
+     * `save(obj)` 整表 / `save(k,v)` 单键。
+     *
+     * ★ CodeRabbit #87（第 5 轮）：改成 **getter** —— 每次访问按"当前正在执行的扩展"算文件名。
+     *   原来在对象字面量里立即求值、闭包里读 `state.extension`，而 `ctx.background()` 不阻塞链，
+     *   后台任务真正跑的时候 `state.extension` 早就被恢复/被下一个扩展占用了 ⇒ 会写错文件。
+     *   现在访问时才取：扩展名由 AsyncLocalStorage 传递（`background` / `transform` / `onSent`
+     *   都会继承或显式包一层），**不是**靠临时改 state.extension。
+     */
+    get store() {
+      // ★ 子代理复核 m4：没有 dataRoot 就别给 store —— 原来会给一个"能拿到但永远存不上"的对象，
+      //   扩展以为存成功了（save 返回 false 却容易被忽略）。直接 undefined，让 `if (ctx.store)` 就能判断。
+      if (!opts.dataRoot) return undefined;
+      // ★ 优先 ALS（后台任务里也能拿到正确的扩展名），其次才是同步执行期的 state
+      return storeForCached(currentExtName() || state.extension?.name || 'shared');
+    },
     rewrite(newText: string): boolean {
       if (state.killed) return false;
       state.text = String(newText ?? '');
@@ -589,7 +890,10 @@ export function makeOutboundCtx(
     },
     transform(fn): boolean {
       if (state.killed || self.phase !== 'send') return false;
-      (state.transforms ??= []).push({ fn, extension: state.extension });
+      // ★ CodeRabbit 第 6 轮：用 ALS 里的扩展，而不是共享的 state.extension ——
+      //   扩展调 next() 之后才登记变换时，state.extension 已指向下游扩展，
+      //   记错归属会导致"变换抛错却熔断下游"。
+      (state.transforms ??= []).push({ fn, extension: currentExt() ?? state.extension });
       return true;
     },
     annihilate(reason: string): boolean {
@@ -598,17 +902,19 @@ export function makeOutboundCtx(
       return true;
     },
     async sendMedia(input): Promise<boolean> {
-      // ★ 2026-11-23（BnnBot-Suite 实测反馈）：fail-closed 之后，出站链里的 ctx.send/sendMedia
-      //   若 opts.target 为空会被**全部拒发** —— 典型症状是"多段回复只发出第一段"
-      //   （拆分气泡类扩展逐段调 ctx.send，第一段走正常出站有 target，后续段没有）。
-      //   这里用「本 ctx 的 target → 最近一次出站 ctx 的 target」兜底；
-      //   真正的"扩展主动发消息"（caps.send）仍保持 fail-closed，不放宽。
-      const fallbackTarget = (opts.target ?? self.target ?? lastCtx?.target ?? undefined) as unknown;
-      return sendViaOutboundChannel({ ...input }, { ...opts, target: fallbackTarget });
+      // ★ 2026-11-24（CodeRabbit 第 6 轮 / CWE-200）：**只能用本 ctx 自己的 target**。
+      //   上一版加了 `lastCtx?.target` 兜底 —— 那是**模块级、跨会话**的：扩展在后台任务里发消息时，
+      //   若别的会话刚更新过 lastCtx，消息就发到别人那儿去了；而且它绕过 outboundLastCtxFallback 开关。
+      //   `self.target` 就是"这条出站"的目标（= opts.target），足够覆盖多段回复；
+      //   两者都空说明这条出站本就没有明确目标 ⇒ 交给 sendViaOutboundChannel 的 fail-closed 拒发。
+      //   ⚠️ 例外：配置 `outboundLastCtxFallback` 打开时，sendViaOutboundChannel 内部仍会回落到 lastCtx
+      //      （那是**全局开关**的语义，不属于 ctx 私自放宽）。
+      const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ ...input }, { ...opts, target: ownTarget });
     },
     async send(text, o): Promise<boolean> {
-      const fallbackTarget = (opts.target ?? self.target ?? lastCtx?.target ?? undefined) as unknown;
-      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: fallbackTarget }, o);
+      const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: ownTarget }, o);
     },
     /**
      * ★★ 丢后台（2026-10-16 主人定的架构）★★
@@ -617,6 +923,8 @@ export function makeOutboundCtx(
      *   任何异常都吞掉：后台任务的失败绝不允许影响任何人。
      */
     background(task: () => unknown): void {
+      // ★ CodeRabbit #87（第 5 轮）：后台任务靠 AsyncLocalStorage 继承扩展名（见 currentExtName），
+      //   **不要**在这里临时改 state.extension —— 那是共享可变状态，两个扩展的后台任务会互相覆盖。
       try {
         void Promise.resolve()
           .then(task)
@@ -709,7 +1017,8 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
       const previousExtension = state.extension;
       state.extension = ext;
       try {
-        await ext.middleware(ctx, onceNext);
+        // ★ 用 ALS 标记"这段异步调用链属于哪个扩展"——ctx.store / background 都靠它
+        await extAls.run(ext, () => ext.middleware(ctx, onceNext));
         if (!called && !state.killed) {
           // 既没调 next 也没消灭 ⇒ 替它放行（与 inbound 的"rescue"同语义），并记一笔
           logger.warn(`[ext-outbound] ${ext.name} 既没调 next() 也没 annihilate()，已替它放行`);
@@ -733,7 +1042,9 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
       for (const { fn, extension } of state.transforms) {
         if (extension && (breaker.get(extension.name) ?? 0) >= BREAKER_LIMIT) continue;
         try {
-          messages = messages.flatMap((message) => {
+          // ★ CodeRabbit 第 6 轮：变换是**链尾**才执行的，那时早已退出该扩展的 ALS 作用域 ⇒
+          //   变换里调 ctx.store 会读到 shared 文件。这里用"登记它的扩展"重新建作用域。
+          const runTransform = (message: OutboundMessage): unknown => {
             const out = fn(message) as unknown;
             // ★ 2026-11-15（issue #62）：**返回值必须校验**。
             //   扩展很容易把变换写成 `async (m) => ...`（想读个文件/查个词库），
@@ -753,7 +1064,10 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
               if (typeof text !== 'string') return false;
               return true;
             });
-          });
+          };
+          messages = messages.flatMap((message) =>
+            (extension ? extAls.run(extension, () => runTransform(message)) : runTransform(message)) as OutboundMessage[],
+          );
         } catch (err) {
           if (extension) noteBreaker(extension.name, logger);
           logger.warn(`[ext-outbound] ${extension?.name ?? 'transform'} 内容变换失败，保留本次变换前的消息: ${err instanceof Error ? err.message : String(err)}`);
@@ -799,7 +1113,7 @@ export async function runOutboundTurnEnd(
 export async function sendViaOutboundChannel(
   payload: { text?: string; path?: string; url?: string; kind?: string },
   opts: RunOutboundOptions = {},
-  sendOpts: { adaptive?: boolean } = {},
+  sendOpts: { adaptive?: boolean; preferText?: boolean } = {},
 ): Promise<boolean> {
   const ownerObj = (opts.sender ?? lastCtx?.sender ?? null) as object | null;
   const allowFallback = ownerObj ? fallbackByOwner.get(ownerObj) === true : false;
@@ -826,7 +1140,9 @@ export async function sendViaOutboundChannel(
   }
 
   const body = String(payload.text ?? payload.path ?? payload.url ?? '');
-  if (!body) return false;
+  // ★ 子代理复核 m1：只判 `!body` 挡不住纯空白（`emit('   ')` 会真的发一条空格消息）。
+  //   用 trim 判空，但**内容本身不 trim**（路径里可能有合法空格）。
+  if (!body.trim()) return false;
 
   // ── 先被动：用 target 自带 msgId ──
   const passive = target;
@@ -848,6 +1164,12 @@ export async function sendViaOutboundChannel(
       if (isMedia) {
         if (typeof sender.sendMedia !== 'function') return false;
         await sender.sendMedia(tg, mediaKind, mediaSource);
+        return true;
+      }
+      // ★ 2026-11-24（子代理复核 Major）：preferText 让"纯文本"语义走同一条入口；
+      //   生产 sender 没有 sendText ⇒ 自动降级到下面的 sendMarkdown。
+      if (sendOpts.preferText && typeof sender.sendText === 'function') {
+        await sender.sendText(tg, String(payload.text ?? ''));
         return true;
       }
       if (typeof sender.sendMarkdown === 'function') {

@@ -164,6 +164,10 @@ export async function sendRichOutbound(
     apiCall?: unknown;
     /** 插件 logger */
     logger?: unknown;
+    // ★ 2026-11-24（子代理审查 M7）：出站扩展的这三个能力以前靠「多塞几个键」侥幸透传，
+    //   类型层没声明 —— 任何一次"显式挑字段"的重构都会让它们静默失效，且编译期零提示。
+    appendWake?: (text: string) => unknown;
+    appendSilent?: (text: string) => unknown;
   },
 ): Promise<void> {
   let peers = outboundSends.get(bot);
@@ -434,6 +438,12 @@ export class OutboundBuffer {
      * 好在流式只在 c2c + 有 msgId 时开，群里走的是下面这条静态路径。
      */
     private readonly stripFn?: (text: string) => string,
+    /**
+     * ★ 2026-11-24（CodeRabbit #87）：回退路径也要带出站扩展的 caps
+     *   （appendWake / appendSilent / apiCall）—— 否则流式降级后扩展 `annihilate()` 掉正文，
+     *   依然没法通知模型，跟 send() 路径行为不一致。
+     */
+    private readonly extCaps?: Parameters<typeof sendRichOutbound>[11],
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({
@@ -501,7 +511,7 @@ export class OutboundBuffer {
         this.onBlockSent,
         this.refLookup,
         undefined,
-        { source: 'assistant/message' },
+        { source: 'assistant/message', ...(this.extCaps ?? {}) }, // ★ CodeRabbit #87：与 send() 路径一致
       );
     } catch (err) {
       this.logger.error(`im-qqbot: flush failed: ${err instanceof Error ? err.message : String(err)}`);

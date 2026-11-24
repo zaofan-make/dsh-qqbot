@@ -4511,3 +4511,124 @@ node -e "const m=require('./dist/features/msg-history.js');m.initMsgHistory('<da
 - 原文 8,800+ 字符 → 瘦身后约 260 字符（**省约 3,000 token/条**）
 - `node "…-dl.mjs"` → **44/44 成功、10.76MB、3.2 秒**
 - 触发条件：链接数 ≥ 3（普通发一两个链接不受影响）
+
+## §33 契约承诺了但没实现的能力：一次全量审计（2026-11-24，社区补丁触发）
+
+### 起因
+社区（Bemly/dsh-plug）打了个补丁，指出 `ctx.appendWake` **类型里有、注释承诺了、构造处从来没挂**。
+顺着查了一圈，出站扩展的能力缺口不止一个。
+
+### 审计方法
+写脚本对比「接口声明的字段」vs「构造对象实际赋值的键」：
+- `OutboundCtx` ↔ `makeOutboundCtx` 的对象字面量
+- `ExtCapabilities` ↔ `buildCapabilities` 的返回对象
+
+⚠️ **正则坑**：简写属性（`    appId,` 只有名字没有冒号）会被 `^\s+\w+\s*[?:(]` 漏掉，
+导致 `appId/appSecret/owners` 被误报成"没实现"——实际它们一直都在（`ext-capabilities.ts:564/565/939`）。
+**核对前先人工看一遍那几行**，别直接信脚本输出。
+
+### 真正缺的（本次补齐）
+`OutboundCtx` 上这 9 个能力，出站扩展里此前**全是 undefined**：
+
+| 能力 | 实现方式 |
+|---|---|
+| `appendWake` | 挂载点传：`record.agent.followup`（走正常回合，dsh 先补人设） |
+| `appendSilent` | 挂载点传：`record.agent.inject`（只落上下文、不唤醒） |
+| `api` | 挂载点传：`manager.groupAdmin ?? manager.mediaApi` 的 `apiCall` |
+| `emit` | 就地实现：转 `self.send` |
+| `markdown` | 就地实现：`sender.sendMarkdown`（失败回落 `send`） |
+| `image` | 就地实现：`self.sendMedia({ url })` |
+| `media` | 就地实现：按 src 形态判 url/localPath → `sendMedia` |
+| `identity` | 就地实现：`{ owners, peer }`（从 `opts` / `target` 取） |
+| `store` | 就地实现：`<dataRoot>/.qqbot-extensions/data/outbound-<安全名>-<8位hash>.json`（**按扩展分文件**） |
+
+### 关键教训
+1. **`?` 可选 ≠ 可以不实现**：`OutboundCtx` 上这些字段标了 `?`、注释写"缺就降级"，
+   结果一个都没接 ⇒ 扩展作者只能靠 `send`/`sendMedia` 硬撑，逼得人家去打补丁改 dist。
+2. **注释承诺必须落到构造处**：`ext-outbound.ts` 顶部写着"由挂载点喂进来"，
+   但挂载点只传了 `{ source }`。这类"注释与实现脱节"只能靠审计脚本 + 人工核对发现。
+3. **TDZ 坑**：在 `const self: OutboundCtx = { ... }` 的对象字面量里，
+   **立即求值的属性**（如 `identity: { peer: self.target }`）会报 "used before declaration"，
+   必须用外层已算好的局部变量（`t`）；**方法体**里引用 `self` 没问题（延迟执行）。
+4. **出站扩展的 `store` 按扩展分文件**（`outbound-<安全名>-<8位hash>.json`）：
+   扩展名经 `[^\w.-]+` 替换后可能碰撞（`扩展甲`/`扩展乙` 都变 `_`），所以拼 8 位 sha1 保证唯一； 扩展名靠 `AsyncLocalStorage` 传递（`ctx.background()` 的后台任务也能拿到自己的名字），**不是**全局共享一份。
+
+### 验证
+```js
+const ctx = makeOutboundCtx('hi', { appendWake, appendSilent, apiCall, target, owners, dataRoot });
+// 九个能力全为 function/object；不传时 appendWake/appendSilent/api 为 undefined（正确降级）
+```
+
+### §33 补充：子代理审查揪出的 2 Critical + 6 Major（2026-11-24）
+
+主人要求"改完让子代理加载审查技能再过一遍"，结果子代理（`self-review-method`）找出 8 条真问题，
+其中 **2 条 Critical 是我自己造的**。
+
+#### C1. 补丁脚本打了 ✓，实际一个字节没改（最该记住的教训）
+`7ac0040` 的提交信息写着"turnEnd 补上 caps"，但 `src/transport/outbound.ts` 根本没被修改 ——
+我的 node 补丁脚本里那段 `b.slice(0, idx) + patched + b.slice(idx + 500)` 静默失败，
+日志却打印了 `④ turnEnd 补 caps ✓`。
+
+**规则**：**脚本的"✓"不是证据，`git diff --stat` 才是。**
+凡是脚本改代码，提交前必须核对「预期改动的文件是否真的出现在 diff 里」。
+这次如果我多看一眼 `git show --stat`，就不会写出那句谎报。
+
+#### C2. `apiCall` 裸方法引用丢 this
+`middleware-setup.ts` 两处都传 `client.apiCall`（没 bind）⇒ 调用时 `this` 丢失 ⇒
+`{"ok":false,"err":{"code":"THROWN","human":"this.call is not a function"}}`。
+同项目 `outbound.ts` 另一处本来就是 `.bind(ga)` —— 说明本该 bind，只是两处漏了。
+**规则**：把类方法当回调传出去时，一律 `.bind(instance)`。
+
+#### Major 汇总
+| # | 问题 | 修法 |
+|---|---|---|
+| M1 | `store` 只实现 keyed 形态，文档写的是 `save(obj)` | 兼容双形态：`load()` 整对象 / `load(k)` 单键 |
+| M2 | 坏文件被当空表，下次 save 冲掉全库 | 区分 ENOENT 与解析失败，后者写入返回 false |
+| M3 | `store` 全局共用一份文件 | 按 `state.extension.name` 分文件 |
+| M4 | `media` 的第三个参数 `text` 是假参数 | 媒体发成功后补发配文 |
+| M5 | `image()` 只认 http URL | 按 url/localPath 两种形态分别发 |
+| M7 | 三个能力靠"多塞键"透传，类型没声明 | 写进 `extHook` / `extCaps` 类型 |
+
+#### 子代理审查值得注意的两点方法论
+1. **它跑探针验证，不只看代码**：C1 是它真的调 `sendRichOutbound` 喂 turnEnd 形态的 caps、
+   打印出 `appendWake: undefined` 才定的性；C2 是复刻 `GroupAdminClient` 跑出 `this.call is not a function`。
+   **静态读码能发现"像是有问题"，跑一遍才知道"确实有问题"。**
+2. **它做了对照实验**：为确认 `outbound-transform.test.ts:223` 那条红的不是本 PR 引入，
+   它在 `main` 上临时 worktree 跑同一命令（`1 failed | 29 passed` vs HEAD `1 failed | 47 passed`），
+   同一条断言 —— 这种"基线对照"值得学。
+
+### §33 再补：第 5 轮四条 + 两个"想清楚才改对"的例子（2026-11-24）
+
+#### 例子 A：`store` 后台写错文件 —— 第一版修法是错的，想清楚才换对
+兔子指出：`store` 闭包里读 `state.extension`，而 `ctx.background()` 不阻塞链，
+后台任务真跑时那个字段早被恢复/被下一个扩展占了 ⇒ 写错文件。
+
+**我第一版**：在 `background` 里临时把 `state.extension` 设回发起时的值，跑完再恢复。
+**问题**：`state.extension` 是**共享可变状态**，两个扩展的后台任务并发时会互相覆盖 —— 只是把坑挪了个位置。
+
+**最终**：`AsyncLocalStorage`（`extNameAls`）。扩展名跟着**异步调用链**走：
+```ts
+await extNameAls.run(ext.name, () => ext.middleware(ctx, onceNext));
+// store getter:
+get store() { return storeFor(currentExtName() || state.extension?.name || 'shared'); }
+```
+`Promise.resolve().then(task)` 会**自动继承** ALS 上下文 ⇒ background 里也拿得到，且并发安全。
+项目里 `reasoning-bus.ts` 的 `ownerStore` 就是这个套路，直接照抄。
+
+**通用教训**：遇到"异步上下文丢失"类问题，先看项目里有没有 ALS 先例，别自己发明"临时改全局变量"。
+
+#### 例子 B：`splice(i, 2, ...)` 删多了
+第 4 轮我把 `apiCall: (manager.groupAdmin...)?.apiCall ?? (...).mediaApi?.apiCall,` 两行替换成 bind 版，
+用的 `splice(i, 2, ...)` —— 但这两行**后面紧跟** `kernel: pluginCtx,`，它没被算进去却被 `2` 覆盖掉了。
+兔子第 5 轮抓到：入站扩展读 `ctx.kernel` 变 undefined。
+
+**规则**：`splice(起, 删几个, ...)` 的"删几个"必须**逐行数**，尤其当替换目标是"跨行表达式 + 紧跟的兄弟字段"时。
+改完 grep 一下被删位置前后的关键字段还在不在。
+
+#### 四条修复速记
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | store 后台写错文件 | AsyncLocalStorage 存扩展名 |
+| 2 | 中文名替换后碰撞（都变 `_`） | 文件名 `安全名-8位sha1` |
+| 3 | `save(obj)` 整表写不检查坏文件 | 整表分支也先 `readAll().ok` |
+| 4 | `kernel: pluginCtx` 被 splice 误删 | 补回 |

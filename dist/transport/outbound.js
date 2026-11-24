@@ -62,6 +62,64 @@ const ADAPTIVE_MAX_PASSIVE = 5;
 /** 适配主动: 「最近收到消息」判据(距上次入站活动 N ms 内才算; 过期旧 msg_id 不再被动引用, 防引用失效丢消息) */
 const ADAPTIVE_RECENT_MS = 5 * 60_000;
 /**
+ * ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出，已吸收）：出站扩展的 caps 原来只有 `{ source, ...outboundExtCaps(_record, this.manager as never) }`，
+ *   `ctx.appendWake` 从来没实现 —— 扩展 `annihilate()` 掉正文后**没有任何办法告知模型**，
+ *   消息静默蒸发、turn/end 还报 completed（anti-similar-style 这类查重扩展因此形同虚设）。
+ *
+ *   这里用 `record.agent.followup` 实现 appendWake（与 caps.appendWake 同一条路：
+ *   走正常回合，dsh 会先补人设，天然安全）。拿不到 agent 就返回 false，绝不抛。
+ */
+function outboundExtCaps(record, manager) {
+    const agent = record?.agent;
+    const ga = (manager?.groupAdmin ?? manager?.mediaApi);
+    return {
+        appendWake: async (text) => {
+            const t = String(text ?? '').trim();
+            if (!t)
+                return false;
+            if (!agent || typeof agent.followup !== 'function')
+                return false;
+            try {
+                // createUserMessage 自带稳定 id（签名禁止外部传 id），不会让 dsh-session 校验 corrupt
+                agent.followup(createUserMessage({ content: [{ type: 'text', text: t }], source: { kind: 'user' } }));
+                return true;
+            }
+            catch {
+                return false;
+            }
+        },
+        // ★ 2026-11-24：静默注入（只落上下文、不唤醒）—— 与 caps.appendSilent 同义
+        appendSilent: async (text) => {
+            const s = String(text ?? '').trim();
+            if (!s)
+                return false;
+            if (!agent || typeof agent.inject !== 'function')
+                return false;
+            try {
+                agent.inject(createUserMessage({ content: [{ type: 'text', text: s }], source: { kind: 'user' } }));
+                return true;
+            }
+            catch {
+                return false;
+            }
+        },
+        // ★ 2026-11-24：官方 API 调用（带 token 缓存由 apiCall 内部负责）
+        // ★ CodeRabbit：这里必须叫 apiCall —— makeOutboundCtx 读的是 opts.apiCall（(method, path, body) 契约），
+        //   叫 api 的话 ctx.api 永远是 undefined。
+        apiCall: async (method, path, body) => {
+            const p = String(path ?? '').trim();
+            if (!p || !ga || typeof ga.apiCall !== 'function')
+                return { ok: false, err: { code: 'NO_API', human: '拿不到 apiCall' } };
+            try {
+                return await ga.apiCall(String(method || 'GET'), p, body);
+            }
+            catch (err) {
+                return { ok: false, err: { code: 'THROWN', human: err instanceof Error ? err.message : String(err) } };
+            }
+        },
+    };
+}
+/**
  * 出站路由器：持有会话级状态，按事件类型分发到处理器
  */
 class OutboundRouter {
@@ -296,6 +354,9 @@ class OutboundRouter {
                     logger: this.logger,
                     turnId: sessionKey,
                     source: 'assistant/message',
+                    // ★ 2026-11-24（子代理审查 C1）：turnEnd 也要能 appendWake/appendSilent/api ——
+                    //   否则扩展在 turnEnd 里写 ctx.appendWake 会 TypeError，连熔断 5 次整个扩展被停用。
+                    ...outboundExtCaps(record, this.manager),
                 });
             }
             catch (err) {
@@ -491,7 +552,10 @@ class OutboundRouter {
         if (buffer === undefined) {
             buffer = new OutboundBuffer(record, this.bot, this.config.textChunkLimit, this.logger, this.shouldStream(record), this.config.cwd, () => this.resolveTarget(record), this.chunkTargetFn(record), undefined, this.refLookupFor(record), 
             // ★ 2026-11-19 issue #72：缓冲路径直发 sendRichOutbound，绕过了 send() 那道清洗，必须自己洗
-            (t) => this.processOutboundText(t));
+            (t) => this.processOutboundText(t), 
+            // ★ CodeRabbit #87：回退路径也要带出站扩展能力（appendWake/appendSilent/apiCall），
+            //   否则流式降级后扩展 annihilate() 掉正文依然没法通知模型
+            { ...outboundExtCaps(record, this.manager) });
             this.buffers.set(sessionId, buffer);
         }
         buffer.append(event.text);
@@ -846,7 +910,7 @@ class OutboundRouter {
                     if (!t.trim())
                         return;
                     if (t.indexOf('qqbot-media://') < 0) {
-                        await sendRichOutbound(this.bot, _record.replyTarget, t, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+                        await sendRichOutbound(this.bot, _record.replyTarget, t, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source, ...outboundExtCaps(_record, this.manager) });
                         return;
                     }
                     try {
@@ -856,7 +920,7 @@ class OutboundRouter {
                         this.logger.error('im-qqbot: markdown(含图) 失败，回落普通文本: ' + (err instanceof Error ? err.message : String(err)));
                         // 2026-10-30/31：回落时绝不把 qqbot-media 引用或原始 markdown 当文本发出去 ——
                         //   本地图 → [MEDIA:image|路径]；qqbot-media/http 图 → [图片：说明]。
-                        await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(t)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+                        await sendRichOutbound(this.bot, _record.replyTarget, stripMarkdownImagesForPlainText(localMarkdownImagesToMediaMarkers(t)), this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source, ...outboundExtCaps(_record, this.manager) });
                     }
                 };
                 let _mediaBuf = [];
@@ -886,7 +950,7 @@ class OutboundRouter {
                             .map((s) => `[MEDIA:${String(s.kind ?? 'image')}|${String(s.source ?? '')}]`)
                             .join('');
                         pending = [];
-                        await sendRichOutbound(this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+                        await sendRichOutbound(this.bot, _record.replyTarget, mediaOnly, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source, ...outboundExtCaps(_record, this.manager) });
                     };
                     for (const seg of buf) {
                         if (!isRaw(seg)) {
@@ -916,7 +980,7 @@ class OutboundRouter {
                 await _flushMedia();
                 return;
             }
-            await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source });
+            await sendRichOutbound(this.bot, _record.replyTarget, outText, this.config.textChunkLimit, this.config.cwd, (m) => this.logger.error(m), () => this.resolveTarget(_record), this.chunkTargetFn(_record), undefined, this.refLookupFor(_record), this.onSendErrorFor(_record), { source, ...outboundExtCaps(_record, this.manager) });
         }
         catch (err) {
             this.logger.error(`im-qqbot: ${tag} failed: ${err instanceof Error ? err.message : String(err)}`);

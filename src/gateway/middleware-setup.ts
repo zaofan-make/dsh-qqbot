@@ -238,7 +238,17 @@ export async function setupMiddlewares(
     sender: ctx?.bot,
     replyTarget: ctx?.replyTarget,
     appSecret: config.appSecret,
-    apiCall: (manager.groupAdmin as { apiCall?: unknown } | undefined)?.apiCall,
+    // ★ 2026-11-24（子代理审查 C2）：**必须 bind** —— 裸方法引用会让 this 丢失，
+    //   调用时抛 `this.call is not a function`（实测 ctx.api 在 turnEnd 路径 100% 失败）。
+    apiCall: (() => {
+      const ga = manager.groupAdmin as { apiCall?: unknown } | undefined;
+      if (ga && typeof ga.apiCall === 'function') return (ga.apiCall as (...x: unknown[]) => unknown).bind(ga);
+      const ma = (manager as unknown as { mediaApi?: { apiCall?: unknown } }).mediaApi;
+      if (ma && typeof ma.apiCall === 'function') return (ma.apiCall as (...x: unknown[]) => unknown).bind(ma);
+      return undefined;
+    })(),
+    // ★ CodeRabbit #87（第 5 轮）：上一轮替换 apiCall 时把 `kernel: pluginCtx` 一起删了 ——
+    //   入站扩展读 ctx.kernel 会拿到 undefined（依赖它注册服务/事件的扩展静默失效）。
     kernel: pluginCtx,
     // 「这条消息所属会话的宿主 agent」：与命令层 / commands/inject.ts **同一口径**
     // （会话 id 由 scope + peerId 确定性派生 ⇒ "这条消息将去哪" 与 "解析到的 agent" 必然是同一个）
@@ -282,8 +292,15 @@ export async function setupMiddlewares(
     //   ⚠️ **不能只取 groupAdmin**：它带 `config.groupAdmin.enabled` 开关，没开就是 undefined，
     //      而"发条消息"根本不需要群管理权限。`mediaApi` 是素材上传用的轻量客户端，
     //      与群管理开关无关（见 SessionManager.mediaApi 的注释），拿它兜底。
-    apiCall: (manager.groupAdmin as { apiCall?: unknown } | undefined)?.apiCall
-      ?? (manager as unknown as { mediaApi?: { apiCall?: unknown } }).mediaApi?.apiCall,
+    // ★ 2026-11-24（子代理审查 C2）：**必须 bind** —— 裸方法引用会让 this 丢失，
+    //   实测 ctx.api 在 turnEnd 路径 100% 抛 `this.call is not a function`。
+    apiCall: (() => {
+      const ga = manager.groupAdmin as { apiCall?: unknown } | undefined;
+      if (ga && typeof ga.apiCall === 'function') return (ga.apiCall as (...x: unknown[]) => unknown).bind(ga);
+      const ma = (manager as unknown as { mediaApi?: { apiCall?: unknown } }).mediaApi;
+      if (ma && typeof ma.apiCall === 'function') return (ma.apiCall as (...x: unknown[]) => unknown).bind(ma);
+      return undefined;
+    })(),
   });
     installOutboundApi();
     const ro = await reloadOutboundExtensions();
