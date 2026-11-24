@@ -92,11 +92,23 @@ export interface OutboundCtx {
     note(msg: string): void;
     emit?: (text: string) => unknown;
     markdown?: (text: string) => unknown;
-    image?: (url: string) => unknown;
+    /** 发图：`image(url)` 或 `image({url}|{localPath})`（与 media 同口径判 url/本地路径） */
+    image?: (src: string | {
+        url?: string;
+        localPath?: string;
+    }) => unknown;
     media?: (kind: string, source: string, text?: string) => unknown;
+    /**
+     * 出站扩展的 KV。**兼容两种写法**（子代理审查 M1：此前只实现 keyed 形态，
+     * 照文档写 `save(obj)` 会把 key 存成 "[object Object]" 并静默返回 true）：
+     * - `load()` → 整对象；`load('k')` → 单键
+     * - `save(obj)` → 整表覆盖；`save('k', v)` → 单键
+     *
+     * 按扩展名分文件（`outbound-<name>.json`）；坏文件不会被当成空表覆盖（读失败 → 写入返回 false）。
+     */
     store?: {
-        load: (k: string) => unknown;
-        save: (k: string, v: unknown) => unknown;
+        load: (k?: string) => unknown;
+        save: (k: string | Record<string, unknown>, v?: unknown) => boolean;
     };
     identity?: {
         user?: unknown;

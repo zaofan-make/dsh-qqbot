@@ -108,6 +108,8 @@ extHook?: {
     apiCall?: unknown;
     /** 插件 logger */
     logger?: unknown;
+    appendWake?: (text: string) => unknown;
+    appendSilent?: (text: string) => unknown;
 }): Promise<void>;
 export declare class OutboundBuffer {
     private readonly record;
@@ -169,11 +171,7 @@ export declare class OutboundBuffer {
      *   （appendWake / appendSilent / apiCall）—— 否则流式降级后扩展 `annihilate()` 掉正文，
      *   依然没法通知模型，跟 send() 路径行为不一致。
      */
-    extCaps?: {
-        appendWake?: unknown;
-        appendSilent?: unknown;
-        apiCall?: unknown;
-    } | undefined);
+    extCaps?: Parameters<typeof sendRichOutbound>[11]);
     /**
      * 追加文本增量。
      *

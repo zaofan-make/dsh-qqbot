@@ -194,8 +194,17 @@ pluginCtx) {
         sender: ctx?.bot,
         replyTarget: ctx?.replyTarget,
         appSecret: config.appSecret,
-        apiCall: manager.groupAdmin?.apiCall,
-        kernel: pluginCtx,
+        // ★ 2026-11-24（子代理审查 C2）：**必须 bind** —— 裸方法引用会让 this 丢失，
+        //   调用时抛 `this.call is not a function`（实测 ctx.api 在 turnEnd 路径 100% 失败）。
+        apiCall: (() => {
+            const ga = manager.groupAdmin;
+            if (ga && typeof ga.apiCall === 'function')
+                return ga.apiCall.bind(ga);
+            const ma = manager.mediaApi;
+            if (ma && typeof ma.apiCall === 'function')
+                return ma.apiCall.bind(ma);
+            return undefined;
+        })(),
         // 「这条消息所属会话的宿主 agent」：与命令层 / commands/inject.ts **同一口径**
         // （会话 id 由 scope + peerId 确定性派生 ⇒ "这条消息将去哪" 与 "解析到的 agent" 必然是同一个）
         resolveAgent: (c) => {
@@ -241,8 +250,17 @@ pluginCtx) {
             //   ⚠️ **不能只取 groupAdmin**：它带 `config.groupAdmin.enabled` 开关，没开就是 undefined，
             //      而"发条消息"根本不需要群管理权限。`mediaApi` 是素材上传用的轻量客户端，
             //      与群管理开关无关（见 SessionManager.mediaApi 的注释），拿它兜底。
-            apiCall: manager.groupAdmin?.apiCall
-                ?? manager.mediaApi?.apiCall,
+            // ★ 2026-11-24（子代理审查 C2）：**必须 bind** —— 裸方法引用会让 this 丢失，
+            //   实测 ctx.api 在 turnEnd 路径 100% 抛 `this.call is not a function`。
+            apiCall: (() => {
+                const ga = manager.groupAdmin;
+                if (ga && typeof ga.apiCall === 'function')
+                    return ga.apiCall.bind(ga);
+                const ma = manager.mediaApi;
+                if (ma && typeof ma.apiCall === 'function')
+                    return ma.apiCall.bind(ma);
+                return undefined;
+            })(),
         });
         installOutboundApi();
         const ro = await reloadOutboundExtensions();

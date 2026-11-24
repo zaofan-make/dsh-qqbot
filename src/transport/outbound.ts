@@ -406,6 +406,9 @@ class OutboundRouter {
           logger: this.logger,
           turnId: sessionKey,
           source: 'assistant/message',
+          // ★ 2026-11-24（子代理审查 C1）：turnEnd 也要能 appendWake/appendSilent/api ——
+          //   否则扩展在 turnEnd 里写 ctx.appendWake 会 TypeError，连熔断 5 次整个扩展被停用。
+          ...outboundExtCaps(record, this.manager as never),
         });
       } catch (err) {
         this.logger.warn(

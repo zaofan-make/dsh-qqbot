@@ -135,9 +135,21 @@ export interface OutboundCtx {
   // ── 与前五套同款的统一能力（缺就降级，绝不抛）─────────────────
   emit?: (text: string) => unknown;
   markdown?: (text: string) => unknown;
-  image?: (url: string) => unknown;
+  /** 发图：`image(url)` 或 `image({url}|{localPath})`（与 media 同口径判 url/本地路径） */
+  image?: (src: string | { url?: string; localPath?: string }) => unknown;
   media?: (kind: string, source: string, text?: string) => unknown;
-  store?: { load: (k: string) => unknown; save: (k: string, v: unknown) => unknown };
+  /**
+   * 出站扩展的 KV。**兼容两种写法**（子代理审查 M1：此前只实现 keyed 形态，
+   * 照文档写 `save(obj)` 会把 key 存成 "[object Object]" 并静默返回 true）：
+   * - `load()` → 整对象；`load('k')` → 单键
+   * - `save(obj)` → 整表覆盖；`save('k', v)` → 单键
+   *
+   * 按扩展名分文件（`outbound-<name>.json`）；坏文件不会被当成空表覆盖（读失败 → 写入返回 false）。
+   */
+  store?: {
+    load: (k?: string) => unknown;
+    save: (k: string | Record<string, unknown>, v?: unknown) => boolean;
+  };
   identity?: { user?: unknown; owners?: string[]; peer?: unknown };
   api?: (path: string) => Promise<unknown>;
   appendSilent?: (text: string) => unknown;
@@ -651,8 +663,16 @@ export function makeOutboundCtx(
       //   自己再实现一遍只会丢掉主动兜底：msgId 一死就永远发不出去。
       return self.send(String(text ?? ''));
     },
-    image(url: string): Promise<boolean> {
-      return self.sendMedia({ url: String(url ?? '') });
+    image(src: string | { url?: string; localPath?: string }): Promise<boolean> {
+      // ★ 子代理审查 M5：原来无条件 `{ url: src }` —— 本地路径和 `{localPath}` 对象都会变成畸形参数，
+      //   失败还被 catch 吞成 false（无日志）。现在按 url/本地路径两种形态分别发。
+      const s =
+        src && typeof src === 'object'
+          ? String((src as { url?: string }).url ?? (src as { localPath?: string }).localPath ?? '')
+          : String(src ?? '');
+      if (!s) return Promise.resolve(false);
+      const isUrl = /^https?:\/\//i.test(s) || s.startsWith('qqbot-media://');
+      return self.sendMedia({ kind: 'image', ...(isUrl ? { url: s } : { path: s }) } as never);
     },
     media(kind: string, source: string, text?: string): Promise<boolean> {
       // ★ CodeRabbit：kind 必须一路带到发送通道，否则 video/voice/file 全被当图片发
@@ -660,11 +680,17 @@ export function makeOutboundCtx(
       if (!src) return Promise.resolve(false);
       const k = String(kind || 'image').toLowerCase();
       const isUrl = /^https?:\/\//i.test(src) || src.startsWith('qqbot-media://');
-      return self.sendMedia({
+      const sent = self.sendMedia({
         kind: k,
         ...(isUrl ? { url: src } : { path: src }),
-        ...(text ? { text: String(text) } : {}),
       } as never);
+      // ★ 子代理审查 M4：第三个参数以前是**假参数**（塞进 payload 但没人读）。
+      //   现在媒体发出去后补一条配文；媒体失败就不补（避免只发文字）。
+      if (!text) return sent;
+      return sent.then(async (ok) => {
+        if (ok) await self.send(String(text));
+        return ok;
+      });
     },
     identity: {
       owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
@@ -673,42 +699,83 @@ export function makeOutboundCtx(
         : {}),
     },
     store: (() => {
-      // 出站扩展的 KV：落在 <dataRoot>/.qqbot-extensions/data/outbound.json
-      // （出站 ctx 没有"当前扩展文件"的稳定标识，先按全局共享，扩展自己用 key 隔离）
-      const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
-      const file = join(dir, 'outbound.json');
-      // ★ CodeRabbit：用无原型对象 + 只认自有属性 —— 否则 load('constructor') 会拿到继承的函数、
-      //   save('__proto__', {...}) 会改原型（JSON.stringify 还不存它，save 却返回 true）
-      const readAll = (): Record<string, unknown> => {
+      // ★ 子代理审查 M3：**按扩展分文件** —— `state.extension` 每次进中间件前就设好了（transform 登记就靠它），
+      //   原来"没有稳定标识"的判断不成立，全局共用一份会让两个出站扩展互相覆盖。
+      const storeFile = (): string => {
+        const ext = state.extension;
+        const nm = ext && ext.name ? String(ext.name).replace(/[^\w.-]+/g, '_') : 'shared';
+        return join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data', 'outbound-' + nm + '.json');
+      };
+      // ★ M2：区分「文件不存在（正常空表）」与「文件坏了（读失败）」—— 后者绝不能当空表，
+      //   否则下一次 save 会用空表把全库冲掉。
+      const readAll = (): { ok: boolean; data: Record<string, unknown> } => {
         const out: Record<string, unknown> = Object.create(null);
+        if (!opts.dataRoot) return { ok: false, data: out };
+        let raw = '';
         try {
-          const v = JSON.parse(readFileSync(file, 'utf8'));
-          if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
-          for (const k of Object.keys(v as Record<string, unknown>)) out[k] = (v as Record<string, unknown>)[k];
-        } catch { /* 空或坏文件 → 空表 */ }
-        return out;
+          raw = readFileSync(storeFile(), 'utf8');
+        } catch (e) {
+          const code = (e as { code?: string } | undefined)?.code;
+          return { ok: code === 'ENOENT', data: out };
+        }
+        try {
+          const v = JSON.parse(raw);
+          if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, data: out };
+          for (const k of Object.keys(v as Record<string, unknown>)) {
+            Object.defineProperty(out, k, {
+              value: (v as Record<string, unknown>)[k],
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
+          }
+          return { ok: true, data: out };
+        } catch {
+          return { ok: false, data: out };
+        }
+      };
+      const writeAll = (all: Record<string, unknown>): boolean => {
+        if (!opts.dataRoot) return false;
+        const file = storeFile();
+        try {
+          mkdirSync(join(String(opts.dataRoot), '.qqbot-extensions', 'data'), { recursive: true });
+          const tmp = file + '.tmp-' + process.pid;
+          writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
+          renameSync(tmp, file);
+          return true;
+        } catch {
+          return false;
+        }
       };
       return {
-        // ★ CodeRabbit：接口是 load(k) / save(k, v) —— 按 key 存取，不是整个文件当值
-        load: (k: string): unknown => {
-          const all = readAll();
-          const key = String(k ?? '');
-          return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : undefined;
+        // ★ M1：兼容 `load()`（整对象，文档写法）与 `load(k)`（单键）
+        load: (k?: string): unknown => {
+          const r = readAll();
+          if (!r.ok) return undefined;
+          if (k === undefined) return r.data;
+          const key = String(k);
+          return Object.prototype.hasOwnProperty.call(r.data, key) ? r.data[key] : undefined;
         },
-        save: (k: string, v: unknown): boolean => {
+        save: (k: string | Record<string, unknown>, v?: unknown): boolean => {
+          // ★ M1：`save(obj)` 整表写（文档写法）
+          if (k && typeof k === 'object') {
+            const all: Record<string, unknown> = Object.create(null);
+            for (const kk of Object.keys(k as Record<string, unknown>)) {
+              Object.defineProperty(all, kk, {
+                value: (k as Record<string, unknown>)[kk],
+                enumerable: true,
+                configurable: true,
+                writable: true,
+              });
+            }
+            return writeAll(all);
+          }
           const key = String(k ?? '');
           if (!key) return false;
-          try {
-            mkdirSync(dir, { recursive: true });
-            const all = readAll();
-            // 用 defineProperty 写自有属性：'__proto__' 也只当普通键，不动原型
-            Object.defineProperty(all, key, { value: v ?? null, enumerable: true, configurable: true, writable: true });
-            // ★ CodeRabbit：先写临时文件再 rename，避免中途失败把旧数据截断成空
-            const tmp = file + '.tmp-' + process.pid;
-            writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
-            renameSync(tmp, file);
-            return true;
-          } catch { return false; }
+          const r = readAll();
+          if (!r.ok) return false; // ★ M2：读失败就别覆盖
+          Object.defineProperty(r.data, key, { value: v ?? null, enumerable: true, configurable: true, writable: true });
+          return writeAll(r.data);
         },
       };
     })(),

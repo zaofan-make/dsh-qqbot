@@ -164,6 +164,10 @@ export async function sendRichOutbound(
     apiCall?: unknown;
     /** 插件 logger */
     logger?: unknown;
+    // ★ 2026-11-24（子代理审查 M7）：出站扩展的这三个能力以前靠「多塞几个键」侥幸透传，
+    //   类型层没声明 —— 任何一次"显式挑字段"的重构都会让它们静默失效，且编译期零提示。
+    appendWake?: (text: string) => unknown;
+    appendSilent?: (text: string) => unknown;
   },
 ): Promise<void> {
   let peers = outboundSends.get(bot);
@@ -439,7 +443,7 @@ export class OutboundBuffer {
      *   （appendWake / appendSilent / apiCall）—— 否则流式降级后扩展 `annihilate()` 掉正文，
      *   依然没法通知模型，跟 send() 路径行为不一致。
      */
-    private readonly extCaps?: { appendWake?: unknown; appendSilent?: unknown; apiCall?: unknown },
+    private readonly extCaps?: Parameters<typeof sendRichOutbound>[11],
   ) {
     this.writer = streamingEnabled
       ? new StreamingWriter({
