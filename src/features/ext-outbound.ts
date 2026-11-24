@@ -510,7 +510,12 @@ export async function notifyOutboundSent(result: OutboundSentResult, owner?: unk
   await Promise.allSettled(
     exts.filter((e) => typeof e.onSent === 'function').map(async (ext) => {
       try {
-        await withTimeoutSingle(Promise.resolve(ext.onSent!(result)), NOTIFY_TIMEOUT_MS);
+        // ★ 2026-11-24（子代理复核 Major）：这里**必须**包 ALS —— 发送完成后链早已退出，
+        //   不包的话 `ctx.store` 会落进 shared 文件（实测两个扩展互相覆盖）。
+        await withTimeoutSingle(
+          extAls.run(ext, () => Promise.resolve(ext.onSent!(result))),
+          NOTIFY_TIMEOUT_MS,
+        );
       } catch { /* 扩展自己炸了/超时，不影响别人，也不影响发送结果 */ }
     }),
   );
@@ -620,10 +625,21 @@ export function makeOutboundCtx(
    * 造一份绑定到具体扩展名的 store。
    *
    * ★ CodeRabbit #87（第 5 轮）：
-   *   - 文件名用 `安全名-哈希`：纯替换会把 `扩展甲`/`扩展乙` 都压成 `_`（互相覆盖），
+   *   - 文件名用 `outbound-<安全名>-<8位hash>.json`：纯替换会把 `扩展甲`/`扩展乙` 都压成 `_`（互相覆盖），
    *     加 8 位哈希保证唯一，同时保留可读前缀。
    *   - `save(obj)` 整表写也要先 `readAll().ok` —— 坏文件时不能覆盖。
    */
+  // ★ 子代理复核 m2：getter 每次访问都新建对象 + 重算 sha1（实测 17.6µs/次），
+  //   而且 `ctx.store !== ctx.store` 这种引用不稳定会让扩展的写法很别扭。按扩展名缓存。
+  const storeCache = new Map<string, NonNullable<OutboundCtx['store']>>();
+  const storeForCached = (extensionName: string): NonNullable<OutboundCtx['store']> => {
+    let s = storeCache.get(extensionName);
+    if (!s) {
+      s = storeFor(extensionName);
+      storeCache.set(extensionName, s);
+    }
+    return s;
+  };
   const storeFor = (extensionName: string): NonNullable<OutboundCtx['store']> => {
     const raw = String(extensionName || 'shared');
     const safe = raw.replace(/[^\w.-]+/g, '_').slice(0, 40) || 'x';
@@ -631,19 +647,21 @@ export function makeOutboundCtx(
     const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
     const file = join(dir, 'outbound-' + safe + '-' + hash + '.json');
 
-    const readAll = (): { ok: boolean; data: Record<string, unknown> } => {
+    // ★ 子代理复核 m1：多一个 `existed` —— 用来区分"文件不存在"（load() 应返回 undefined，
+    //   与 caps.store 一致）和"文件存在但是空表"（返回 {}）。
+    const readAll = (): { ok: boolean; existed: boolean; data: Record<string, unknown> } => {
       const out: Record<string, unknown> = Object.create(null);
-      if (!opts.dataRoot) return { ok: false, data: out };
+      if (!opts.dataRoot) return { ok: false, existed: false, data: out };
       let raw2 = '';
       try {
         raw2 = readFileSync(file, 'utf8');
       } catch (e) {
         const code = (e as { code?: string } | undefined)?.code;
-        return { ok: code === 'ENOENT', data: out };
+        return { ok: code === 'ENOENT', existed: false, data: out };
       }
       try {
         const v = JSON.parse(raw2);
-        if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, data: out };
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, existed: true, data: out };
         for (const k of Object.keys(v as Record<string, unknown>)) {
           Object.defineProperty(out, k, {
             value: (v as Record<string, unknown>)[k],
@@ -652,9 +670,9 @@ export function makeOutboundCtx(
             writable: true,
           });
         }
-        return { ok: true, data: out };
+        return { ok: true, existed: true, data: out };
       } catch {
-        return { ok: false, data: out };
+        return { ok: false, existed: true, data: out };
       }
     };
 
@@ -679,7 +697,22 @@ export function makeOutboundCtx(
       load: (k?: string): unknown => {
         const r = readAll();
         if (!r.ok) return undefined;
-        if (k === undefined) return r.data;
+        if (k === undefined) {
+          // ★ 子代理复核 m1：① 没文件 → undefined（与 caps.store 一致，别让扩展把 {} 当"有数据"）
+          //                  ② 返回**普通对象** —— 原来直接返回 Object.create(null) 的，
+          //                     扩展写 data.hasOwnProperty(x) / data.toString() 会直接 TypeError
+          if (!r.existed) return undefined;
+          const plain: Record<string, unknown> = {};
+          for (const kk of Object.keys(r.data)) {
+            Object.defineProperty(plain, kk, {
+              value: r.data[kk],
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
+          }
+          return plain;
+        }
         const key = String(k);
         return Object.prototype.hasOwnProperty.call(r.data, key) ? r.data[key] : undefined;
       },
@@ -737,7 +770,9 @@ export function makeOutboundCtx(
           appendWake: async (text: string): Promise<boolean> => {
             try {
               const r = await (opts.appendWake as (x: string) => unknown)(String(text ?? ''));
-              return r !== false;
+              // ★ 子代理复核 m6：原来 `r !== false` 会把 undefined/void 当成成功。
+              //   挂载点喂进来的是 Promise<boolean>，所以这里要求**明确 true**。
+              return r === true;
             } catch {
               return false;
             }
@@ -750,7 +785,7 @@ export function makeOutboundCtx(
           appendSilent: async (text: string): Promise<boolean> => {
             try {
               const r = await (opts.appendSilent as (x: string) => unknown)(String(text ?? ''));
-              return r !== false;
+              return r === true;
             } catch {
               return false;
             }
@@ -774,7 +809,18 @@ export function makeOutboundCtx(
     //   其余能力类型上留了口却一个都没接。这里按"能用现有通道实现的就地实现"补齐：
     //   emit/markdown/image/media 走 send/sendMedia；store 落 dataRoot；identity 从 opts 取。
     emit(text: string): Promise<boolean> {
-      return self.send(String(text ?? ''));
+      // ★ 子代理复核 m6：原来和 markdown() 完全一样（都走 self.send → 优先 sendMarkdown），
+      //   等于"emit 偷偷发 markdown"。emit 的语义是"发一条纯文本"，这里直接走 sendText。
+      const s = opts.sender as { sendText?: (tg: unknown, text: string) => Promise<unknown> } | null;
+      const tg = (opts.target ?? self.target ?? null) as Record<string, unknown> | null;
+      const body = String(text ?? '');
+      if (s && typeof s.sendText === 'function' && tg) {
+        return Promise.resolve()
+          .then(() => s.sendText!(tg, body))
+          .then(() => true)
+          .catch(() => self.send(body));
+      }
+      return self.send(body);
     },
     markdown(text: string): Promise<boolean> {
       // ★ CodeRabbit：直接复用 self.send —— 它内部就**优先走 sendMarkdown**，
@@ -812,6 +858,10 @@ export function makeOutboundCtx(
       });
     },
     identity: {
+      // ★ 子代理复核 m5：出站 ctx **没有"当前发送者"的概念**，但原来 identity.user 是 undefined、
+      //   identity 本身恒为真值 ⇒ 扩展写 `if (ctx.identity) ctx.identity.user.x` 直接 TypeError。
+      //   这里给一个明确的空值对象：字段都在、值都是"没有"。
+      user: { openid: '', name: '', isOwner: false },
       owners: Array.isArray(opts.owners) ? opts.owners.map(String) : [],
       ...(t
         ? { peer: { scope: String(t.scope ?? ''), peerId: String(t.peerId ?? '') } }
@@ -824,11 +874,15 @@ export function makeOutboundCtx(
      * ★ CodeRabbit #87（第 5 轮）：改成 **getter** —— 每次访问按"当前正在执行的扩展"算文件名。
      *   原来在对象字面量里立即求值、闭包里读 `state.extension`，而 `ctx.background()` 不阻塞链，
      *   后台任务真正跑的时候 `state.extension` 早就被恢复/被下一个扩展占用了 ⇒ 会写错文件。
-     *   现在访问时才取；配合 `background()` 里的临时还原，后台任务也能拿到自己的那份。
+     *   现在访问时才取：扩展名由 AsyncLocalStorage 传递（`background` / `transform` / `onSent`
+     *   都会继承或显式包一层），**不是**靠临时改 state.extension。
      */
     get store() {
+      // ★ 子代理复核 m4：没有 dataRoot 就别给 store —— 原来会给一个"能拿到但永远存不上"的对象，
+      //   扩展以为存成功了（save 返回 false 却容易被忽略）。直接 undefined，让 `if (ctx.store)` 就能判断。
+      if (!opts.dataRoot) return undefined;
       // ★ 优先 ALS（后台任务里也能拿到正确的扩展名），其次才是同步执行期的 state
-      return storeFor(currentExtName() || state.extension?.name || 'shared');
+      return storeForCached(currentExtName() || state.extension?.name || 'shared');
     },
     rewrite(newText: string): boolean {
       if (state.killed) return false;
@@ -855,6 +909,8 @@ export function makeOutboundCtx(
       //   若别的会话刚更新过 lastCtx，消息就发到别人那儿去了；而且它绕过 outboundLastCtxFallback 开关。
       //   `self.target` 就是"这条出站"的目标（= opts.target），足够覆盖多段回复；
       //   两者都空说明这条出站本就没有明确目标 ⇒ 交给 sendViaOutboundChannel 的 fail-closed 拒发。
+      //   ⚠️ 例外：配置 `outboundLastCtxFallback` 打开时，sendViaOutboundChannel 内部仍会回落到 lastCtx
+      //      （那是**全局开关**的语义，不属于 ctx 私自放宽）。
       const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
       return sendViaOutboundChannel({ ...input }, { ...opts, target: ownTarget });
     },

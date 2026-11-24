@@ -110,9 +110,6 @@ const ADAPTIVE_MAX_PASSIVE = 5;
 const ADAPTIVE_RECENT_MS = 5 * 60_000;
 
 /**
- * 出站路由器：持有会话级状态，按事件类型分发到处理器
- */
-/**
  * ★ 2026-11-24（社区补丁 Bemly/dsh-plug 指出，已吸收）：出站扩展的 caps 原来只有 `{ source, ...outboundExtCaps(_record, this.manager as never) }`，
  *   `ctx.appendWake` 从来没实现 —— 扩展 `annihilate()` 掉正文后**没有任何办法告知模型**，
  *   消息静默蒸发、turn/end 还报 completed（anti-similar-style 这类查重扩展因此形同虚设）。
@@ -168,6 +165,9 @@ function outboundExtCaps(
   };
 }
 
+/**
+ * 出站路由器：持有会话级状态，按事件类型分发到处理器
+ */
 class OutboundRouter {
   private readonly buffers = new Map<string, OutboundBuffer>();
   private readonly pendingSends = new Map<string, Set<Promise<void>>>();
