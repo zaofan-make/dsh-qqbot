@@ -1,7 +1,7 @@
 /**
  * 会话相关命令：/bot-reset /bot-clear /bot-new
  */
-import type { SlashCommand } from '@tencent-connect/qqbot-nodejs';
+import type { SlashCommand, SlashCommandHandlerContext } from '@tencent-connect/qqbot-nodejs';
 import type { CommandDeps } from './types.js';
 import { getScopePeer } from '../shared/index.js';
 import { stripMentions } from '../shared/mention-clean.js';
@@ -9,13 +9,45 @@ import { resolveCommandTarget } from '../features/botplay.js';
 import { sendPresetCard } from '../features/preset-switcher.js';
 import { ownerOnlyAuth } from './auth.js';
 
+/**
+ * 取会话 scope/peer，带兜底。
+ *
+ * `getScopePeer` 直接读 `msg.kind`：当命令在**没有 message 上下文**的场景被调用
+ * （web / dock / 兜底调用）时会抛 TypeError，用户看到的是内部异常而不是人话。
+ * 这里先用 `caps.replyTarget` 兜底，两者都没有才抛明确错误。
+ */
+function scopePeerOf(cmdCtx: SlashCommandHandlerContext): { scope: 'c2c' | 'group'; peerId: string } {
+  try {
+    return getScopePeer(cmdCtx);
+  } catch {
+    const c = cmdCtx as unknown as { caps?: { replyTarget?: unknown }; replyTarget?: unknown };
+    const t = (c?.caps?.replyTarget ?? c?.replyTarget ?? {}) as Record<string, unknown>;
+    const rawScope = String(t.scope ?? '');
+    const peerId = String(t.targetId ?? t.peerId ?? '');
+    // 只接受 SDK 的两种合法 scope，避免把脏值传给 manager（它是 'c2c' | 'group' 联合类型）
+    if ((rawScope === 'group' || rawScope === 'c2c') && peerId) return { scope: rawScope, peerId };
+    throw new Error('命令上下文缺失（既没有 message，也没有 replyTarget）');
+  }
+}
+
+/** `/bot-new` fork 超时：宿主卡住时 startNewSession 可能长时间不返回 → QQ 侧永远等不到回复。 */
+const FORK_TIMEOUT_MS = Math.max(1000, Number(process.env.QQBOT_FORK_TIMEOUT_MS) || 20_000);
+
+/** 超时返回哨兵字符串 'timeout'（不抛）——让用户拿到人话而不是异常。 */
+function forkWithTimeout<T>(promise: Promise<T>): Promise<T | 'timeout'> {
+  return Promise.race([
+    promise,
+    new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), FORK_TIMEOUT_MS)),
+  ]);
+}
+
 /** /bot-reset /bot-clear — 重置当前会话 */
 export function resetCommand({ manager }: CommandDeps): SlashCommand {
   return {
     name: ['bot-reset', 'bot-clear'],
     description: '重置当前会话（清除上下文）',
     handler: (cmdCtx) => {
-      const { scope, peerId } = getScopePeer(cmdCtx);
+      const { scope, peerId } = scopePeerOf(cmdCtx);
       void manager.remove(scope, peerId);
       return '会话已重置 ✓';
     },
@@ -30,9 +62,10 @@ export function newCommand({ manager }: CommandDeps): SlashCommand {
     name: 'bot-new',
     description: '开启新会话(保留旧会话存档, 可回看; 旧档损坏时直接另起新档)',
     handler: async (cmdCtx) => {
-      const { scope, peerId } = getScopePeer(cmdCtx);
+      const { scope, peerId } = scopePeerOf(cmdCtx);
       const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
-      const r = await manager.startNewSession(scope, peerId, false, undefined, { replyTarget: target, senderId: triggererId });
+      const r = await forkWithTimeout(manager.startNewSession(scope, peerId, false, undefined, { replyTarget: target, senderId: triggererId }));
+      if (r === 'timeout') return '开新会话超时（宿主可能卡住），请稍后再试或先随便聊一句再 /bot-new';
       if (r === 'forked') return '已开启新会话 ✓(旧会话已存档)';
       if (r === 'rotated') return '已开启新会话 ✓(原会话档无法加载或不存在, 已直接另起新档; 坏档文件保留在磁盘)';
       return '开新会话失败: ' + (manager.lastCreateError || '请稍后再试(可先聊一句再试 /bot-new)');
@@ -47,7 +80,7 @@ export function newPresetCommand({ manager, config, logger }: CommandDeps): Slas
     description: '以指定人格开新会话: /new <preset>(如 /new code); 不带参=/bot-new; /presets 查看可选人格',
     usage: '/new [preset]',
     handler: async (cmdCtx) => {
-      const { scope, peerId } = getScopePeer(cmdCtx);
+      const { scope, peerId } = scopePeerOf(cmdCtx);
       const { target, triggererId } = resolveCommandTarget(cmdCtx as never);
       // ★ 2026-10-31（群友截图）：`/preset whale-girl @鲸鱼娘` 这种写法，参数里会残留
       //   `<@openid>` ⇒ 与人设 id 精确匹配失败（报“找不到人格「whale-girl @鲸鱼娘（万能ai）」”）。
@@ -93,7 +126,7 @@ export function presetSwitchCommand({ manager, config }: CommandDeps): SlashComm
     description: '热切换当前会话人格: /preset <id>(不丢对话历史, 即时生效); /presets 查看可选',
     usage: '/preset <id>',
     handler: async (cmdCtx) => {
-      const { scope, peerId } = getScopePeer(cmdCtx);
+      const { scope, peerId } = scopePeerOf(cmdCtx);
       // ★ 2026-10-31（群友截图）：`/preset whale-girl @鲸鱼娘` 这种写法，参数里会残留
       //   `<@openid>` ⇒ 与人设 id 精确匹配失败（报“找不到人格「whale-girl @鲸鱼娘（万能ai）」”）。
       //   命令参数一律先剥掉 @ 标记再匹配。
