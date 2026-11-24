@@ -4540,7 +4540,7 @@ node -e "const m=require('./dist/features/msg-history.js');m.initMsgHistory('<da
 | `image` | 就地实现：`self.sendMedia({ url })` |
 | `media` | 就地实现：按 src 形态判 url/localPath → `sendMedia` |
 | `identity` | 就地实现：`{ owners, peer }`（从 `opts` / `target` 取） |
-| `store` | 就地实现：`<dataRoot>/.qqbot-extensions/data/outbound.json` |
+| `store` | 就地实现：`<dataRoot>/.qqbot-extensions/data/outbound-<安全名>-<8位hash>.json`（**按扩展分文件**） |
 
 ### 关键教训
 1. **`?` 可选 ≠ 可以不实现**：`OutboundCtx` 上这些字段标了 `?`、注释写"缺就降级"，
@@ -4550,8 +4550,8 @@ node -e "const m=require('./dist/features/msg-history.js');m.initMsgHistory('<da
 3. **TDZ 坑**：在 `const self: OutboundCtx = { ... }` 的对象字面量里，
    **立即求值的属性**（如 `identity: { peer: self.target }`）会报 "used before declaration"，
    必须用外层已算好的局部变量（`t`）；**方法体**里引用 `self` 没问题（延迟执行）。
-4. **出站扩展的 `store` 是全局共享一份**（`outbound.json`）：出站 ctx 没有"当前扩展文件"的稳定标识，
-   扩展自己用 key 隔离。要按扩展分文件得先给 `state.extension` 加稳定 id。
+4. **出站扩展的 `store` 按扩展分文件**（`outbound-<安全名>-<8位hash>.json`）：
+   扩展名经 `[^\w.-]+` 替换后可能碰撞（`扩展甲`/`扩展乙` 都变 `_`），所以拼 8 位 sha1 保证唯一； 扩展名靠 `AsyncLocalStorage` 传递（`ctx.background()` 的后台任务也能拿到自己的名字），**不是**全局共享一份。
 
 ### 验证
 ```js

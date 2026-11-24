@@ -55,10 +55,14 @@ const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
  * `ctx.store` 会写错文件。AsyncLocalStorage 跟着异步调用链走（`Promise.resolve().then`
  * 会自动继承），并发也安全 —— 与 `reasoning-bus.ts` 的 ownerStore 同一个套路。
  */
-const extNameAls = new AsyncLocalStorage<string>();
+const extAls = new AsyncLocalStorage<OutboundExtension>();
+/** 当前异步上下文里的扩展对象（不在任何扩展里时是 undefined） */
+function currentExt(): OutboundExtension | undefined {
+  return extAls.getStore();
+}
 /** 当前异步上下文里的扩展名（不在任何扩展里时是空串） */
 function currentExtName(): string {
-  return extNameAls.getStore() ?? '';
+  return extAls.getStore()?.name ?? '';
 }
 
 export const EXT_OUTBOUND_SUBDIR = 'outbound';
@@ -656,6 +660,10 @@ export function makeOutboundCtx(
 
     const writeAll = (all: Record<string, unknown>): boolean => {
       if (!opts.dataRoot) return false;
+      // ★ CodeRabbit 第 6 轮：根表上可调用的 `toJSON` 会被 JSON.stringify 当钩子调用，
+      //   把整表换成它返回的值（比如 []）—— 数据直接没了还返回 true。拒绝写入，保留旧文件。
+      //   非函数值（普通字符串等）当键名照常允许。
+      if (typeof (all as { toJSON?: unknown }).toJSON === 'function') return false;
       try {
         mkdirSync(dir, { recursive: true });
         const tmp = file + '.tmp-' + process.pid;
@@ -678,15 +686,22 @@ export function makeOutboundCtx(
       save: (k: string | Record<string, unknown>, v?: unknown): boolean => {
         // ★ 整表写（`save(obj)`）也要拒绝覆盖坏文件
         if (k && typeof k === 'object') {
+          // 顺序：先验旧文件（坏文件不覆盖）→ 再复制（getter 抛错也不冒泡）→ 最后写
           if (!readAll().ok) return false;
           const all: Record<string, unknown> = Object.create(null);
-          for (const kk of Object.keys(k as Record<string, unknown>)) {
-            Object.defineProperty(all, kk, {
-              value: (k as Record<string, unknown>)[kk],
-              enumerable: true,
-              configurable: true,
-              writable: true,
-            });
+          try {
+            for (const kk of Object.keys(k as Record<string, unknown>)) {
+              Object.defineProperty(all, kk, {
+                // ★ CodeRabbit 第 6 轮：取值可能触发 getter 抛错 —— 必须在 try 里，
+                //   否则调用方拿不到 false，异常直接冒到出站链。
+                value: (k as Record<string, unknown>)[kk],
+                enumerable: true,
+                configurable: true,
+                writable: true,
+              });
+            }
+          } catch {
+            return false;
           }
           return writeAll(all);
         }
@@ -823,7 +838,10 @@ export function makeOutboundCtx(
     },
     transform(fn): boolean {
       if (state.killed || self.phase !== 'send') return false;
-      (state.transforms ??= []).push({ fn, extension: state.extension });
+      // ★ CodeRabbit 第 6 轮：用 ALS 里的扩展，而不是共享的 state.extension ——
+      //   扩展调 next() 之后才登记变换时，state.extension 已指向下游扩展，
+      //   记错归属会导致"变换抛错却熔断下游"。
+      (state.transforms ??= []).push({ fn, extension: currentExt() ?? state.extension });
       return true;
     },
     annihilate(reason: string): boolean {
@@ -832,17 +850,17 @@ export function makeOutboundCtx(
       return true;
     },
     async sendMedia(input): Promise<boolean> {
-      // ★ 2026-11-23（BnnBot-Suite 实测反馈）：fail-closed 之后，出站链里的 ctx.send/sendMedia
-      //   若 opts.target 为空会被**全部拒发** —— 典型症状是"多段回复只发出第一段"
-      //   （拆分气泡类扩展逐段调 ctx.send，第一段走正常出站有 target，后续段没有）。
-      //   这里用「本 ctx 的 target → 最近一次出站 ctx 的 target」兜底；
-      //   真正的"扩展主动发消息"（caps.send）仍保持 fail-closed，不放宽。
-      const fallbackTarget = (opts.target ?? self.target ?? lastCtx?.target ?? undefined) as unknown;
-      return sendViaOutboundChannel({ ...input }, { ...opts, target: fallbackTarget });
+      // ★ 2026-11-24（CodeRabbit 第 6 轮 / CWE-200）：**只能用本 ctx 自己的 target**。
+      //   上一版加了 `lastCtx?.target` 兜底 —— 那是**模块级、跨会话**的：扩展在后台任务里发消息时，
+      //   若别的会话刚更新过 lastCtx，消息就发到别人那儿去了；而且它绕过 outboundLastCtxFallback 开关。
+      //   `self.target` 就是"这条出站"的目标（= opts.target），足够覆盖多段回复；
+      //   两者都空说明这条出站本就没有明确目标 ⇒ 交给 sendViaOutboundChannel 的 fail-closed 拒发。
+      const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ ...input }, { ...opts, target: ownTarget });
     },
     async send(text, o): Promise<boolean> {
-      const fallbackTarget = (opts.target ?? self.target ?? lastCtx?.target ?? undefined) as unknown;
-      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: fallbackTarget }, o);
+      const ownTarget = (opts.target ?? self.target ?? undefined) as unknown;
+      return sendViaOutboundChannel({ text: String(text ?? '') }, { ...opts, target: ownTarget }, o);
     },
     /**
      * ★★ 丢后台（2026-10-16 主人定的架构）★★
@@ -946,7 +964,7 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
       state.extension = ext;
       try {
         // ★ 用 ALS 标记"这段异步调用链属于哪个扩展"——ctx.store / background 都靠它
-        await extNameAls.run(ext.name, () => ext.middleware(ctx, onceNext));
+        await extAls.run(ext, () => ext.middleware(ctx, onceNext));
         if (!called && !state.killed) {
           // 既没调 next 也没消灭 ⇒ 替它放行（与 inbound 的"rescue"同语义），并记一笔
           logger.warn(`[ext-outbound] ${ext.name} 既没调 next() 也没 annihilate()，已替它放行`);
@@ -970,7 +988,9 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
       for (const { fn, extension } of state.transforms) {
         if (extension && (breaker.get(extension.name) ?? 0) >= BREAKER_LIMIT) continue;
         try {
-          messages = messages.flatMap((message) => {
+          // ★ CodeRabbit 第 6 轮：变换是**链尾**才执行的，那时早已退出该扩展的 ALS 作用域 ⇒
+          //   变换里调 ctx.store 会读到 shared 文件。这里用"登记它的扩展"重新建作用域。
+          const runTransform = (message: OutboundMessage): unknown => {
             const out = fn(message) as unknown;
             // ★ 2026-11-15（issue #62）：**返回值必须校验**。
             //   扩展很容易把变换写成 `async (m) => ...`（想读个文件/查个词库），
@@ -990,7 +1010,10 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
               if (typeof text !== 'string') return false;
               return true;
             });
-          });
+          };
+          messages = messages.flatMap((message) =>
+            (extension ? extAls.run(extension, () => runTransform(message)) : runTransform(message)) as OutboundMessage[],
+          );
         } catch (err) {
           if (extension) noteBreaker(extension.name, logger);
           logger.warn(`[ext-outbound] ${extension?.name ?? 'transform'} 内容变换失败，保留本次变换前的消息: ${err instanceof Error ? err.message : String(err)}`);
