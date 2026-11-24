@@ -4596,3 +4596,39 @@ const ctx = makeOutboundCtx('hi', { appendWake, appendSilent, apiCall, target, o
 2. **它做了对照实验**：为确认 `outbound-transform.test.ts:223` 那条红的不是本 PR 引入，
    它在 `main` 上临时 worktree 跑同一命令（`1 failed | 29 passed` vs HEAD `1 failed | 47 passed`），
    同一条断言 —— 这种"基线对照"值得学。
+
+### §33 再补：第 5 轮四条 + 两个"想清楚才改对"的例子（2026-11-24）
+
+#### 例子 A：`store` 后台写错文件 —— 第一版修法是错的，想清楚才换对
+兔子指出：`store` 闭包里读 `state.extension`，而 `ctx.background()` 不阻塞链，
+后台任务真跑时那个字段早被恢复/被下一个扩展占了 ⇒ 写错文件。
+
+**我第一版**：在 `background` 里临时把 `state.extension` 设回发起时的值，跑完再恢复。
+**问题**：`state.extension` 是**共享可变状态**，两个扩展的后台任务并发时会互相覆盖 —— 只是把坑挪了个位置。
+
+**最终**：`AsyncLocalStorage`（`extNameAls`）。扩展名跟着**异步调用链**走：
+```ts
+await extNameAls.run(ext.name, () => ext.middleware(ctx, onceNext));
+// store getter:
+get store() { return storeFor(currentExtName() || state.extension?.name || 'shared'); }
+```
+`Promise.resolve().then(task)` 会**自动继承** ALS 上下文 ⇒ background 里也拿得到，且并发安全。
+项目里 `reasoning-bus.ts` 的 `ownerStore` 就是这个套路，直接照抄。
+
+**通用教训**：遇到"异步上下文丢失"类问题，先看项目里有没有 ALS 先例，别自己发明"临时改全局变量"。
+
+#### 例子 B：`splice(i, 2, ...)` 删多了
+第 4 轮我把 `apiCall: (manager.groupAdmin...)?.apiCall ?? (...).mediaApi?.apiCall,` 两行替换成 bind 版，
+用的 `splice(i, 2, ...)` —— 但这两行**后面紧跟** `kernel: pluginCtx,`，它没被算进去却被 `2` 覆盖掉了。
+兔子第 5 轮抓到：入站扩展读 `ctx.kernel` 变 undefined。
+
+**规则**：`splice(起, 删几个, ...)` 的"删几个"必须**逐行数**，尤其当替换目标是"跨行表达式 + 紧跟的兄弟字段"时。
+改完 grep 一下被删位置前后的关键字段还在不在。
+
+#### 四条修复速记
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | store 后台写错文件 | AsyncLocalStorage 存扩展名 |
+| 2 | 中文名替换后碰撞（都变 `_`） | 文件名 `安全名-8位sha1` |
+| 3 | `save(obj)` 整表写不检查坏文件 | 整表分支也先 `readAll().ok` |
+| 4 | `kernel: pluginCtx` 被 splice 误删 | 补回 |
