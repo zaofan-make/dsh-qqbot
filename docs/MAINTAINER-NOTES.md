@@ -4558,3 +4558,41 @@ node -e "const m=require('./dist/features/msg-history.js');m.initMsgHistory('<da
 const ctx = makeOutboundCtx('hi', { appendWake, appendSilent, apiCall, target, owners, dataRoot });
 // 九个能力全为 function/object；不传时 appendWake/appendSilent/api 为 undefined（正确降级）
 ```
+
+### §33 补充：子代理审查揪出的 2 Critical + 6 Major（2026-11-24）
+
+主人要求"改完让子代理加载审查技能再过一遍"，结果子代理（`self-review-method`）找出 8 条真问题，
+其中 **2 条 Critical 是我自己造的**。
+
+#### C1. 补丁脚本打了 ✓，实际一个字节没改（最该记住的教训）
+`7ac0040` 的提交信息写着"turnEnd 补上 caps"，但 `src/transport/outbound.ts` 根本没被修改 ——
+我的 node 补丁脚本里那段 `b.slice(0, idx) + patched + b.slice(idx + 500)` 静默失败，
+日志却打印了 `④ turnEnd 补 caps ✓`。
+
+**规则**：**脚本的"✓"不是证据，`git diff --stat` 才是。**
+凡是脚本改代码，提交前必须核对「预期改动的文件是否真的出现在 diff 里」。
+这次如果我多看一眼 `git show --stat`，就不会写出那句谎报。
+
+#### C2. `apiCall` 裸方法引用丢 this
+`middleware-setup.ts` 两处都传 `client.apiCall`（没 bind）⇒ 调用时 `this` 丢失 ⇒
+`{"ok":false,"err":{"code":"THROWN","human":"this.call is not a function"}}`。
+同项目 `outbound.ts` 另一处本来就是 `.bind(ga)` —— 说明本该 bind，只是两处漏了。
+**规则**：把类方法当回调传出去时，一律 `.bind(instance)`。
+
+#### Major 汇总
+| # | 问题 | 修法 |
+|---|---|---|
+| M1 | `store` 只实现 keyed 形态，文档写的是 `save(obj)` | 兼容双形态：`load()` 整对象 / `load(k)` 单键 |
+| M2 | 坏文件被当空表，下次 save 冲掉全库 | 区分 ENOENT 与解析失败，后者写入返回 false |
+| M3 | `store` 全局共用一份文件 | 按 `state.extension.name` 分文件 |
+| M4 | `media` 的第三个参数 `text` 是假参数 | 媒体发成功后补发配文 |
+| M5 | `image()` 只认 http URL | 按 url/localPath 两种形态分别发 |
+| M7 | 三个能力靠"多塞键"透传，类型没声明 | 写进 `extHook` / `extCaps` 类型 |
+
+#### 子代理审查值得注意的两点方法论
+1. **它跑探针验证，不只看代码**：C1 是它真的调 `sendRichOutbound` 喂 turnEnd 形态的 caps、
+   打印出 `appendWake: undefined` 才定的性；C2 是复刻 `GroupAdminClient` 跑出 `this.call is not a function`。
+   **静态读码能发现"像是有问题"，跑一遍才知道"确实有问题"。**
+2. **它做了对照实验**：为确认 `outbound-transform.test.ts:223` 那条红的不是本 PR 引入，
+   它在 `main` 上临时 worktree 跑同一命令（`1 failed | 29 passed` vs HEAD `1 failed | 47 passed`），
+   同一条断言 —— 这种"基线对照"值得学。
