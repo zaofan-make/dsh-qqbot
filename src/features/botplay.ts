@@ -617,7 +617,10 @@ export class BotplayController {
     clickerId?: string;
     clickedBefore?: number;
   }): BotplayExtContext {
-    const { ev, extFile, cardId, target, state, clickerId } = args;
+    const { ev, extFile, cardId, target, state, clickerId, triggererId } = args;
+    // 点击路径给 clickerId；发卡路径（onInit）只给 triggererId → 两者都认，
+    // 否则模块拿到的 ctx.user 是 undefined，卡片里的「按人记录」类逻辑全部失效。
+    const clicker = clickerId ?? triggererId;
     const dataRoot = (() => { try { return this.dataRootGetter() || ''; } catch { return ''; } })();
     return makeExtContext(
       {
@@ -708,7 +711,7 @@ export class BotplayController {
         peerId: target.targetId,
       },
       cardId,
-      clickerId ? { openid: clickerId, clickedBefore: args.clickedBefore ?? 0 } : undefined,
+      clicker ? { openid: clicker, clickedBefore: args.clickedBefore ?? 0 } : undefined,
     );
   }
 
@@ -821,24 +824,27 @@ export class BotplayController {
       if (cat.key === 'next') { await this.sendCatalog(replyTarget, cat.page + 1); return true; }
       // 事件 id → 直接触发发卡(点击者本人为 triggerer, 权限由事件 perm 决定)
       const ev = this.findEvent(cat.key);
-      if (!ev) { await this.safeReply(replyTarget, '该事件已被删除, 请刷新目录~'); return true; }
+      if (!ev) { await this.safeReply(replyTarget, '该事件已被删除, 请刷新目录~', presserId); return true; }
       await this.trigger(replyTarget, ev.id, presserId);
       return true;
     }
     const parsed = parseBotplayButton(e.data.resolved?.button_data);
     if (!parsed) return false;
 
+    // 点击人 openid（群看 member_openid，c2c 看 user_openid）—— 提前取，
+    // 后面的失效/超时/权限提示要 @ 他，不然群里不知道这条提示在跟谁说话。
+    const presser = e.group_member_openid ?? e.user_openid ?? '';
     const card = this.cards.get(parsed.cardId);
     if (!card) {
       // 卡不存在(重启后内存清空/已失效) → 提示重发
-      await this.safeReply(replyTarget, '这张互动卡片已失效, 请重新发 /botplay 触发~');
+      await this.safeReply(replyTarget, '这张互动卡片已失效, 请重新发 /botplay 触发~', presser);
       return true;
     }
     // 过期校验(2026-10-05: 自定义事件也走一次 onExpire, 让模块知道卡片死了)
     if (Date.now() > card.expireAt) {
       this.cards.delete(parsed.cardId);
       await this.fireExtExpire(card);
-      await this.safeReply(replyTarget, '这张互动卡片已超时失效, 请重新发 /botplay~');
+      await this.safeReply(replyTarget, '这张互动卡片已超时失效, 请重新发 /botplay~', presser);
       return true;
     }
     // 事件仍存在才受理(删除后旧卡失效提示重配); 按钮/权限/名称一律走【发卡时快照】,
@@ -846,20 +852,19 @@ export class BotplayController {
     const ev = this.findEvent(card.eventId);
     if (!ev) {
       this.cards.delete(parsed.cardId);
-      await this.safeReply(replyTarget, '该互动事件已被删除, 请让管理员重新配置~');
+      await this.safeReply(replyTarget, '该互动事件已被删除, 请让管理员重新配置~', presser);
       return true;
     }
     const btn = card.buttons.find((b) => b.id === parsed.buttonId);
     if (!btn) {
-      await this.safeReply(replyTarget, '按钮配置已更新, 请重新触发这张卡片~');
+      await this.safeReply(replyTarget, '按钮配置已更新, 请重新触发这张卡片~', presser);
       return true;
     }
 
     // 点击人权限校验(与发卡 permission 双保险; 按快照 perm, 群看 member_openid, c2c 看 user_openid)
-    const presser = e.group_member_openid ?? e.user_openid ?? '';
     const allowed = this.checkPerm(card.perm, card, presser);
     if (!allowed) {
-      await this.safeReply(replyTarget, '这个按钮只有指定的人能点哦~');
+      await this.safeReply(replyTarget, '这个按钮只有指定的人能点哦~', presser);
       return true;
     }
 
@@ -876,7 +881,7 @@ export class BotplayController {
     if (card.extFile && card.extState) {
       await this.runExtClick(card, btn, presser, replyTarget);
     } else {
-      await this.runBuiltinAction(btn, replyTarget);
+      await this.runBuiltinAction(btn, replyTarget, presser);
     }
 
     // ② LLM 影响三档(按快照; 注入文本带点击人身份: 昵称(openid), 台账/会话历史反查)
@@ -891,7 +896,7 @@ export class BotplayController {
   }
 
   /** 内置三型按钮行为(reply_text / jump_url / command; 普通事件用) */
-  private async runBuiltinAction(btn: BotplayButtonConfig, replyTarget: ReplyTarget): Promise<void> {
+  private async runBuiltinAction(btn: BotplayButtonConfig, replyTarget: ReplyTarget, presser?: string): Promise<void> {
     const actionType = btn.botAction?.type ?? 'reply_text';
     if (actionType === 'reply_text') {
       const text = String(btn.botAction?.text ?? '').trim();
@@ -906,7 +911,7 @@ export class BotplayController {
       // jump_url 是官方 type=0 跳转按钮 → 点击时客户端直接跳, 不会走到回调;
       // 若仍收到回调(降级/不可跳)则提示用户直接点链接。
       const url = String(btn.botAction?.url ?? '').trim();
-      await this.safeReply(replyTarget, url ? `跳转按钮: ${url}(如未自动跳转请手动打开)` : '该按钮是跳转按钮, 请在支持跳转的客户端点击');
+      await this.safeReply(replyTarget, url ? `跳转按钮: ${url}(如未自动跳转请手动打开)` : '该按钮是跳转按钮, 请在支持跳转的客户端点击', presser);
     } else if (actionType === 'command') {
       // command 指令型(Phase2): 点击 → host 直接执行斜杠命令(不经 AI 文本)。
       // 命令名存 botAction.text(不带 /); 由 bootstrap 注入的 executor 执行并把结果发回。
@@ -1147,8 +1152,31 @@ export class BotplayController {
     }
   }
 
-  private async safeReply(target: ReplyTarget, text: string): Promise<void> {
-    try { await this.sender.sendMarkdown(target, text); } catch { /* 回复失败不致命 */ }
+  /**
+   * 卡片异常提示（失效/超时/权限不足）的安全回复。
+   *
+   * `mention`：@ 触发人。卡片失效类提示如果只发正文，群里不知道在说谁；
+   * 单独一行 `<@openid>` + 空行再接正文（与扩展包 lib/card-format.mjs 同一口径）。
+   *
+   * 失败回落：人格切换会重建会话，旧卡片的 `replyTarget.msgId` 可能已过期，
+   * 此时用不带 msgId 的主动发送再试一次，避免提示被静默吞掉。
+   */
+  private async safeReply(target: ReplyTarget, text: string, mention?: string): Promise<void> {
+    const raw = String(text ?? '').trim();
+    if (!raw) return;
+    const uid = String(mention ?? '').trim();
+    const body = (uid && /^[A-Za-z0-9_-]+$/.test(uid)) ? `<@${uid}>\n\n${raw}` : raw;
+    try {
+      await this.sender.sendMarkdown(target, body);
+      return;
+    } catch {
+      /* 落到下面的主动发送 */
+    }
+    try {
+      await this.sender.sendMarkdown({ ...target, msgId: undefined }, body);
+    } catch (err) {
+      this.logger.warn?.(`[botplay] safeReply 失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
