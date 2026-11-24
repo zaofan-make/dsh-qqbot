@@ -14,6 +14,7 @@
 | 笔记 | 对方仓库 | 作者 | 主题 | 整理时间 |
 |---|---|---|---|---|
 | [upstream-gosomea-inbound-delivery-研究笔记.md](./upstream-gosomea-inbound-delivery-研究笔记.md) | [gosomea/dsh-qqbot](https://github.com/gosomea/dsh-qqbot) `@codex/qq-inbound-delivery` | [@gosomea](https://github.com/gosomea) | **投递正确性**：wire 层准入、追加式投递账本、元数据旁挂、五层内容组装、形式化测试 | 2026-11-14 |
+| [upstream-gosomea-inbound-delivery-2026-11-24-增量研究.md](./upstream-gosomea-inbound-delivery-2026-11-24-增量研究.md) | [gosomea/dsh-qqbot](https://github.com/gosomea/dsh-qqbot) `@codex/qq-inbound-delivery` | [@gosomea](https://github.com/gosomea) | **第二轮增量（11-14→11-20，33 提交）**：工具权限双重栅栏（原生权限事件 + 同步 cancel）、撤权穿透后代、斜杠命令准入统一、消息保留期回退脚本、Workbench 前端大改 | 2026-11-24 |
 | [upstream-495258544-persona-研究笔记.md](./upstream-495258544-persona-研究笔记.md) | [495258544/dsh-qqbot](https://github.com/495258544/dsh-qqbot) `@main` | [495258544](https://github.com/495258544) | **人设与上下文正义**：引用归属索引、中文口语疑问句识别、唤醒门禁、按人记忆、她自己的生活 | 2026-11-14 |
 
 ---
@@ -22,7 +23,7 @@
 
 | 维度 | `gosomea` | `495258544` | 我们（`zaofan-make`） |
 |---|---|---|---|
-| 起点 | 基于上游最新（50 ahead / 0 behind） | 较早分叉（59 ahead / **17 behind**） | 长期跟进上游 |
+| 起点 | 基于上游最新（**78 ahead / 4 behind**，2026-11-24 重算；11-14 时是 50/0） | 较早分叉（59 ahead / **17 behind**） | 长期跟进上游 |
 | 主攻 | 投递可靠性、自建 Workbench 客户端 | 引用归属、唤醒门禁、人设记忆 | 人设 + 工具生态 + 多实例 |
 | 测试风格 | 形式化状态机（37 个测试文件） | 实战事故驱动（每条 fix 附场景） | 实机验证 + 单元测试 |
 | 规模 | +18,229 行 | +18,994 行 | — |
