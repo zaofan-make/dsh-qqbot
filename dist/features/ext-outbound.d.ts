@@ -84,8 +84,10 @@ export interface OutboundCtx {
         text?: string;
     }): Promise<boolean>;
     /** 额外发一条文本（**先被动后主动**）；返回是否成功 */
+    /** 发一条文本（先被动后主动）。要纯文本语义（不走 markdown）请用 `emit`，或传 `preferText: true` */
     send(text: string, opts?: {
         adaptive?: boolean;
+        preferText?: boolean;
     }): Promise<boolean>;
     /** 审计/诊断一行（走 logger.debug + 落盘审计，最坏也只是丢日志，绝不抛） */
     note(msg: string): void;

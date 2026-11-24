@@ -599,8 +599,9 @@ export function makeOutboundCtx(initialText, opts = {}, state = { text: initialT
             if (!text)
                 return sent;
             return sent.then(async (ok) => {
+                // ★ 子代理复核 m4：配文属纯文本，走 emit（preferText）而不是 send（会优先 markdown）
                 if (ok)
-                    await self.send(String(text));
+                    await self.emit(String(text));
                 return ok;
             });
         },
@@ -873,7 +874,9 @@ export async function sendViaOutboundChannel(payload, opts = {}, sendOpts = {}) 
         return false;
     }
     const body = String(payload.text ?? payload.path ?? payload.url ?? '');
-    if (!body)
+    // ★ 子代理复核 m1：只判 `!body` 挡不住纯空白（`emit('   ')` 会真的发一条空格消息）。
+    //   用 trim 判空，但**内容本身不 trim**（路径里可能有合法空格）。
+    if (!body.trim())
         return false;
     // ── 先被动：用 target 自带 msgId ──
     const passive = target;

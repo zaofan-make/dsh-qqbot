@@ -148,7 +148,8 @@ export interface OutboundCtx {
   /** 额外发一条媒体（**先被动后主动**）；返回是否成功 */
   sendMedia(input: { path?: string; url?: string; text?: string }): Promise<boolean>;
   /** 额外发一条文本（**先被动后主动**）；返回是否成功 */
-  send(text: string, opts?: { adaptive?: boolean }): Promise<boolean>;
+  /** 发一条文本（先被动后主动）。要纯文本语义（不走 markdown）请用 `emit`，或传 `preferText: true` */
+  send(text: string, opts?: { adaptive?: boolean; preferText?: boolean }): Promise<boolean>;
   /** 审计/诊断一行（走 logger.debug + 落盘审计，最坏也只是丢日志，绝不抛） */
   note(msg: string): void;
 
@@ -849,7 +850,8 @@ export function makeOutboundCtx(
       //   现在媒体发出去后补一条配文；媒体失败就不补（避免只发文字）。
       if (!text) return sent;
       return sent.then(async (ok) => {
-        if (ok) await self.send(String(text));
+        // ★ 子代理复核 m4：配文属纯文本，走 emit（preferText）而不是 send（会优先 markdown）
+        if (ok) await self.emit!(String(text));
         return ok;
       });
     },
@@ -1138,7 +1140,9 @@ export async function sendViaOutboundChannel(
   }
 
   const body = String(payload.text ?? payload.path ?? payload.url ?? '');
-  if (!body) return false;
+  // ★ 子代理复核 m1：只判 `!body` 挡不住纯空白（`emit('   ')` 会真的发一条空格消息）。
+  //   用 trim 判空，但**内容本身不 trim**（路径里可能有合法空格）。
+  if (!body.trim()) return false;
 
   // ── 先被动：用 target 自带 msgId ──
   const passive = target;
