@@ -205,6 +205,9 @@ pluginCtx) {
                 return ma.apiCall.bind(ma);
             return undefined;
         })(),
+        // ★ CodeRabbit #87（第 5 轮）：上一轮替换 apiCall 时把 `kernel: pluginCtx` 一起删了 ——
+        //   入站扩展读 ctx.kernel 会拿到 undefined（依赖它注册服务/事件的扩展静默失效）。
+        kernel: pluginCtx,
         // 「这条消息所属会话的宿主 agent」：与命令层 / commands/inject.ts **同一口径**
         // （会话 id 由 scope + peerId 确定性派生 ⇒ "这条消息将去哪" 与 "解析到的 agent" 必然是同一个）
         resolveAgent: (c) => {

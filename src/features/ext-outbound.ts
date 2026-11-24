@@ -36,6 +36,8 @@
  *   · `active()`               当前是否正在跑出站链
  */
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { scanExtFiles } from './ext-packs.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -45,6 +47,20 @@ import type { Logger } from '../types.js';
 const ALLOWED_EXT = new Set(['.js', '.mjs', '.cjs']);
 
 /** 出站扩展子目录名（与 inbound / hooks / tools / botplay 并列的第六套） */
+/**
+ * ★ CodeRabbit #87（第 5 轮）：**当前正在执行的出站扩展名**。
+ *
+ * 为什么不用 `state.extension`：它是共享可变状态，只在中间件同步执行期有效；
+ * `ctx.background()` 不阻塞链，后台任务真正跑的时候它早被恢复/被下一个扩展占了 ⇒
+ * `ctx.store` 会写错文件。AsyncLocalStorage 跟着异步调用链走（`Promise.resolve().then`
+ * 会自动继承），并发也安全 —— 与 `reasoning-bus.ts` 的 ownerStore 同一个套路。
+ */
+const extNameAls = new AsyncLocalStorage<string>();
+/** 当前异步上下文里的扩展名（不在任何扩展里时是空串） */
+function currentExtName(): string {
+  return extNameAls.getStore() ?? '';
+}
+
 export const EXT_OUTBOUND_SUBDIR = 'outbound';
 
 /** 其他扩展取"出站操控器"的全局键（Symbol.for ⇒ 跨模块实例单例，同 ext-inbound 的 HANDLER_KEY 手法） */
@@ -596,6 +612,94 @@ export function makeOutboundCtx(
 ): OutboundCtx {
   const logger = opts.logger ?? ({ info() {}, warn() {}, debug() {}, error() {} } as unknown as Logger);
   const t = (opts.target ?? null) as OutboundCtx['target'];
+  /**
+   * 造一份绑定到具体扩展名的 store。
+   *
+   * ★ CodeRabbit #87（第 5 轮）：
+   *   - 文件名用 `安全名-哈希`：纯替换会把 `扩展甲`/`扩展乙` 都压成 `_`（互相覆盖），
+   *     加 8 位哈希保证唯一，同时保留可读前缀。
+   *   - `save(obj)` 整表写也要先 `readAll().ok` —— 坏文件时不能覆盖。
+   */
+  const storeFor = (extensionName: string): NonNullable<OutboundCtx['store']> => {
+    const raw = String(extensionName || 'shared');
+    const safe = raw.replace(/[^\w.-]+/g, '_').slice(0, 40) || 'x';
+    const hash = createHash('sha1').update(raw, 'utf8').digest('hex').slice(0, 8);
+    const dir = join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data');
+    const file = join(dir, 'outbound-' + safe + '-' + hash + '.json');
+
+    const readAll = (): { ok: boolean; data: Record<string, unknown> } => {
+      const out: Record<string, unknown> = Object.create(null);
+      if (!opts.dataRoot) return { ok: false, data: out };
+      let raw2 = '';
+      try {
+        raw2 = readFileSync(file, 'utf8');
+      } catch (e) {
+        const code = (e as { code?: string } | undefined)?.code;
+        return { ok: code === 'ENOENT', data: out };
+      }
+      try {
+        const v = JSON.parse(raw2);
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, data: out };
+        for (const k of Object.keys(v as Record<string, unknown>)) {
+          Object.defineProperty(out, k, {
+            value: (v as Record<string, unknown>)[k],
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
+        }
+        return { ok: true, data: out };
+      } catch {
+        return { ok: false, data: out };
+      }
+    };
+
+    const writeAll = (all: Record<string, unknown>): boolean => {
+      if (!opts.dataRoot) return false;
+      try {
+        mkdirSync(dir, { recursive: true });
+        const tmp = file + '.tmp-' + process.pid;
+        writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
+        renameSync(tmp, file);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    return {
+      load: (k?: string): unknown => {
+        const r = readAll();
+        if (!r.ok) return undefined;
+        if (k === undefined) return r.data;
+        const key = String(k);
+        return Object.prototype.hasOwnProperty.call(r.data, key) ? r.data[key] : undefined;
+      },
+      save: (k: string | Record<string, unknown>, v?: unknown): boolean => {
+        // ★ 整表写（`save(obj)`）也要拒绝覆盖坏文件
+        if (k && typeof k === 'object') {
+          if (!readAll().ok) return false;
+          const all: Record<string, unknown> = Object.create(null);
+          for (const kk of Object.keys(k as Record<string, unknown>)) {
+            Object.defineProperty(all, kk, {
+              value: (k as Record<string, unknown>)[kk],
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
+          }
+          return writeAll(all);
+        }
+        const key = String(k ?? '');
+        if (!key) return false;
+        const r = readAll();
+        if (!r.ok) return false;
+        Object.defineProperty(r.data, key, { value: v ?? null, enumerable: true, configurable: true, writable: true });
+        return writeAll(r.data);
+      },
+    };
+  };
+
   const self: OutboundCtx = {
     text: state.text,
     segments: Array.isArray(opts.segments) ? opts.segments : [],
@@ -698,87 +802,19 @@ export function makeOutboundCtx(
         ? { peer: { scope: String(t.scope ?? ''), peerId: String(t.peerId ?? '') } }
         : {}),
     },
-    store: (() => {
-      // ★ 子代理审查 M3：**按扩展分文件** —— `state.extension` 每次进中间件前就设好了（transform 登记就靠它），
-      //   原来"没有稳定标识"的判断不成立，全局共用一份会让两个出站扩展互相覆盖。
-      const storeFile = (): string => {
-        const ext = state.extension;
-        const nm = ext && ext.name ? String(ext.name).replace(/[^\w.-]+/g, '_') : 'shared';
-        return join(String(opts.dataRoot ?? ''), '.qqbot-extensions', 'data', 'outbound-' + nm + '.json');
-      };
-      // ★ M2：区分「文件不存在（正常空表）」与「文件坏了（读失败）」—— 后者绝不能当空表，
-      //   否则下一次 save 会用空表把全库冲掉。
-      const readAll = (): { ok: boolean; data: Record<string, unknown> } => {
-        const out: Record<string, unknown> = Object.create(null);
-        if (!opts.dataRoot) return { ok: false, data: out };
-        let raw = '';
-        try {
-          raw = readFileSync(storeFile(), 'utf8');
-        } catch (e) {
-          const code = (e as { code?: string } | undefined)?.code;
-          return { ok: code === 'ENOENT', data: out };
-        }
-        try {
-          const v = JSON.parse(raw);
-          if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, data: out };
-          for (const k of Object.keys(v as Record<string, unknown>)) {
-            Object.defineProperty(out, k, {
-              value: (v as Record<string, unknown>)[k],
-              enumerable: true,
-              configurable: true,
-              writable: true,
-            });
-          }
-          return { ok: true, data: out };
-        } catch {
-          return { ok: false, data: out };
-        }
-      };
-      const writeAll = (all: Record<string, unknown>): boolean => {
-        if (!opts.dataRoot) return false;
-        const file = storeFile();
-        try {
-          mkdirSync(join(String(opts.dataRoot), '.qqbot-extensions', 'data'), { recursive: true });
-          const tmp = file + '.tmp-' + process.pid;
-          writeFileSync(tmp, JSON.stringify(all, null, 2), 'utf8');
-          renameSync(tmp, file);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      return {
-        // ★ M1：兼容 `load()`（整对象，文档写法）与 `load(k)`（单键）
-        load: (k?: string): unknown => {
-          const r = readAll();
-          if (!r.ok) return undefined;
-          if (k === undefined) return r.data;
-          const key = String(k);
-          return Object.prototype.hasOwnProperty.call(r.data, key) ? r.data[key] : undefined;
-        },
-        save: (k: string | Record<string, unknown>, v?: unknown): boolean => {
-          // ★ M1：`save(obj)` 整表写（文档写法）
-          if (k && typeof k === 'object') {
-            const all: Record<string, unknown> = Object.create(null);
-            for (const kk of Object.keys(k as Record<string, unknown>)) {
-              Object.defineProperty(all, kk, {
-                value: (k as Record<string, unknown>)[kk],
-                enumerable: true,
-                configurable: true,
-                writable: true,
-              });
-            }
-            return writeAll(all);
-          }
-          const key = String(k ?? '');
-          if (!key) return false;
-          const r = readAll();
-          if (!r.ok) return false; // ★ M2：读失败就别覆盖
-          Object.defineProperty(r.data, key, { value: v ?? null, enumerable: true, configurable: true, writable: true });
-          return writeAll(r.data);
-        },
-      };
-    })(),
+    /**
+     * 出站扩展的 KV。**兼容两种写法**（M1）：`load()` 整对象 / `load(k)` 单键；
+     * `save(obj)` 整表 / `save(k,v)` 单键。
+     *
+     * ★ CodeRabbit #87（第 5 轮）：改成 **getter** —— 每次访问按"当前正在执行的扩展"算文件名。
+     *   原来在对象字面量里立即求值、闭包里读 `state.extension`，而 `ctx.background()` 不阻塞链，
+     *   后台任务真正跑的时候 `state.extension` 早就被恢复/被下一个扩展占用了 ⇒ 会写错文件。
+     *   现在访问时才取；配合 `background()` 里的临时还原，后台任务也能拿到自己的那份。
+     */
+    get store() {
+      // ★ 优先 ALS（后台任务里也能拿到正确的扩展名），其次才是同步执行期的 state
+      return storeFor(currentExtName() || state.extension?.name || 'shared');
+    },
     rewrite(newText: string): boolean {
       if (state.killed) return false;
       state.text = String(newText ?? '');
@@ -815,6 +851,8 @@ export function makeOutboundCtx(
      *   任何异常都吞掉：后台任务的失败绝不允许影响任何人。
      */
     background(task: () => unknown): void {
+      // ★ CodeRabbit #87（第 5 轮）：后台任务靠 AsyncLocalStorage 继承扩展名（见 currentExtName），
+      //   **不要**在这里临时改 state.extension —— 那是共享可变状态，两个扩展的后台任务会互相覆盖。
       try {
         void Promise.resolve()
           .then(task)
@@ -907,7 +945,8 @@ export async function runOutboundChain(text: string, opts: RunOutboundOptions = 
       const previousExtension = state.extension;
       state.extension = ext;
       try {
-        await ext.middleware(ctx, onceNext);
+        // ★ 用 ALS 标记"这段异步调用链属于哪个扩展"——ctx.store / background 都靠它
+        await extNameAls.run(ext.name, () => ext.middleware(ctx, onceNext));
         if (!called && !state.killed) {
           // 既没调 next 也没消灭 ⇒ 替它放行（与 inbound 的"rescue"同语义），并记一笔
           logger.warn(`[ext-outbound] ${ext.name} 既没调 next() 也没 annihilate()，已替它放行`);

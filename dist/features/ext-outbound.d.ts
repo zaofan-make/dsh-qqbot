@@ -1,5 +1,4 @@
 import type { Logger } from '../types.js';
-/** 出站扩展子目录名（与 inbound / hooks / tools / botplay 并列的第六套） */
 export declare const EXT_OUTBOUND_SUBDIR = "outbound";
 /** 其他扩展取"出站操控器"的全局键（Symbol.for ⇒ 跨模块实例单例，同 ext-inbound 的 HANDLER_KEY 手法） */
 export declare const OUTBOUND_API_KEY: unique symbol;
