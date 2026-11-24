@@ -870,7 +870,195 @@ table.cards = table.cards.filter(c => !(c.toolName === TOOL && c.cardId === card
 
 ---
 
-## 8. 我能写哪一套？怎么选
+## 8. 底层通道：封装之外还能怎么走（每条都有真实例子）
+
+> 封装 API 覆盖 90% 场景。剩下 10% —— 要读宿主服务、要开 HTTP 路由、要跨扩展通信、要 hook 主动发消息 ——
+> 这一节给你**已经在生产跑着**的路子，每条都标了例子文件，直接去抄。
+
+### 8.1 先看这张表，再决定往下翻哪节
+
+| 你想干的事 | 走哪条 | 例子 |
+|---|---|---|
+| 发文本/媒体/卡片/改正文 | **`caps.*` 封装**（首选） | 契约 §2 |
+| 读/建会话、拿模型列表、订阅宿主事件 | `caps.kernel`（§8.2） | `commands/子会话.mjs` |
+| 给自己的 UI 卡片提供数据接口 | `caps.registerRoute`（§8.3） | `hooks/demo-store.mjs` |
+| 打官方 API（消息/群管/素材…） | `caps.api`（§8.4） | `commands/按钮测试.mjs` |
+| `caps.api` 覆盖不到的第三方接口 | 直接 `fetch`（§8.5） | `commands/翻译.mjs` |
+| 让**别的扩展**帮你发/改/查 | `globalThis` 符号槽（§8.6） | `outbound/report-relay.mjs` |
+| 读插件自己落的台账 | 落盘文件（§8.7） | `commands/引用字段.mjs` |
+| **hook 里主动发一条 QQ 消息** | `caps.api`（§8.8） | `proactive-companion/lib/transport.mjs` |
+
+### 8.2 `caps.kernel` —— 宿主的"遥控器"
+
+`caps.kernel` 就是插件自己的 cordis Context。拿到它，能力包做不到的事就能做了：
+
+```js
+const ctx = env.caps.kernel;
+ctx.get('sessions')                        // 读/建会话
+ctx.get('tools')                           // 工具注册表
+ctx.compaction.compactNow(agent, session, id)   // 调宿主的上下文压缩
+ctx.on('session/event', fn)                // 订阅宿主事件
+```
+
+**真实例子**：`commands/子会话.mjs` 用 `kernel.get('llm')` 取模型列表：
+
+```js
+// 子会话.mjs:216 附近的注释（实测结论，值得照抄思路）
+//   · 在 handler 里 kernel.get('llm') 能拿到（实测 6 个模型）
+//   · 在按钮回调里却拿不到（llm=false → 0 个）—— 两种 ctx 的 kernel 不是同一个对象
+//   ⇒ 凡是"只有 handler 侧够得着"的数据（模型、推理等级、预设），首次取到就缓存
+```
+
+**三条代价**（用之前先想清楚）：
+
+1. **跟随宿主版本** —— `ctx` 的形状由 dsh 决定，宿主升级可能让这段代码失效。所以封装 API 是主路，`kernel` 是**逃生舱**。
+2. **注册要自己收尾** —— `ctx.on()` / `ctx.tools.register()` 都返回 disposer，不 dispose 热重载会**不断累积**。
+3. **全权限** —— 等于把遥控器交出去。这是你自己机器上的代码，但别把它转手给不信任的代码。
+
+### 8.3 `caps.registerRoute` —— 给自己的 UI 卡片开数据接口
+
+扩展想有自己的存储 + 自己的 UI 卡片，不必塞进 ext-config 那套固定 JSON：注册一条 HTTP 路由，卡片侧用 `qqbotExt.api('/你的路由')` 取。
+
+**真实例子**：`hooks/demo-store.mjs`（完整可跑）
+
+```js
+export default async function (env) {
+  const caps = env?.caps ?? env;
+  if (typeof caps.registerRoute !== 'function') return;   // 老版本优雅跳过
+
+  const extId = 'demo';
+  caps.registerRoute('GET', '/store', async ({ query } = {}) => ({
+    ok: true, data: readStoreAt(fileOf(query)), file: fileOf(query),
+  }), extId);
+
+  caps.registerRoute('POST', '/store', async ({ query, body } = {}) => {
+    const f = fileOf(query);
+    const next = Object.assign({}, readStoreAt(f), body ?? {});
+    return writeStoreAt(f, next) ? { ok: true, data: next } : { ok: false, reason: '写入失败' };
+  }, extId);
+}
+```
+
+> 第 4 个参数 `extId` 是扩展 id —— 卡片用 `api()` 时会带上它，插件据此把请求路由到你这里。
+
+### 8.4 `caps.api` —— 官方 API（自带 token 与缓存）
+
+任何 `/v2/...` 路径都能打，**不用自己换 token**（插件内部有 2h 缓存）：
+
+```js
+const r = await caps.api('/v2/groups/123/messages', {
+  method: 'POST',
+  body: { msg_type: 2, markdown: { content: '**hi**' }, keyboard },
+});
+if (r.ok) { /* r.data */ } else { /* r.err.code / r.err.human */ }
+```
+
+**真实例子**：
+- `commands/按钮测试.mjs` —— 发按钮卡片（`msg_type: 2` + `keyboard`）
+- `commands/安全生图.mjs` —— 发图
+- `botplay/schulte-poem.mjs` —— 卡片事件里发消息
+
+### 8.5 直接 `fetch` —— 封装之外的第三方接口
+
+`caps.api` 只打 QQ 官方域名。要调别的服务（翻译、MC 服务器状态、网盘…），直接用 `fetch`，Node 24 内置。
+
+**真实例子**：`commands/翻译.mjs`
+
+```js
+const u = new URL('https://aidemo.youdao.com/trans');
+u.searchParams.set('q', text);
+const res = await fetch(u, {
+  headers: { 'User-Agent': 'Mozilla/5.0 …', Referer: 'https://aidemo.youdao.com/' },
+});
+```
+
+⚠️ 注意：
+- 超时要自己管（`AbortSignal.timeout(ms)`），否则一个卡住的请求会拖住整条链
+- 错误别把原文甩到群里（可能含内部 URL / 凭据）
+
+### 8.6 `globalThis` 符号槽 —— 让别的扩展帮你干活
+
+插件在 `globalThis` 上挂了几个 `Symbol.for('im-qqbot.*')` 的槽位，扩展之间靠它们互相调用：
+
+| 槽位 | 能干什么 | 真实例子 |
+|---|---|---|
+| `Symbol.for('im-qqbot.outbound')` | 直接跑一次出站链（`run()` / `last()` / `active()` / `list()`） | `outbound/report-relay.mjs:91`、`outbound/sticker-semantic.mjs:441` |
+| `Symbol.for('im-qqbot.reasoning')` | 思考流总线（订阅/发送模型思考） | `outbound/report-relay.mjs:98` |
+| `Symbol.for('im-qqbot.memstats')` | 内存统计 | 插件内置 |
+
+**真实例子**：`outbound/report-relay.mjs` 想补发一条消息，但它自己就在出站链里 —— 直接用出站 API 会**递归**，所以先判 `active()`：
+
+```js
+const ob = globalThis[Symbol.for('im-qqbot.outbound')];
+if (ob?.active?.()) return;                 // 正在出站 → 别自己套自己
+await ob?.run?.('要补发的正文', { target, sender });
+```
+
+### 8.7 落盘文件 —— 读插件自己的台账
+
+插件把很多东西落在 `{dataRoot}/.qqbot/` 下，扩展可以直接读（**只读**，别乱写）：
+
+| 文件 | 内容 |
+|---|---|
+| `msg-content.jsonl` | 消息内容台账（按天） |
+| `groups.json` | 群名注册表 |
+| `ext-tool-cards.json` | 卡片表（谁发的、按钮归属、过期时间） |
+| `card-callbacks.json` | 卡片回调表 |
+| `model-prefs.json` | 模型偏好 |
+| `quote-cache.json` | 引用缓存 |
+
+**真实例子**：`commands/引用字段.mjs`
+
+```js
+/** 台账文件路径：{dataRoot}/.qqbot/msg-content.jsonl */
+```
+
+### 8.8 ★ 钩子里怎么主动发消息（hook 最容易卡住的地方）
+
+**问题**：`hooks/` 是"插件启动时跑一次"，它**没有当前会话**，所以：
+
+| 途径 | hook 里能不能用 |
+|---|---|
+| `caps.text()` / `caps.markdown()` | ❌ 恒 `false` —— 它们要 `replyTarget`/`sender`，hook 都没有 |
+| `caps.appendSilent()` / `appendWake()` | ❌ 恒 `false` —— 要"当前会话的 agent" |
+| `caps.wakeTo(scope, peerId, text)` | ✅ 能，但那是**唤醒 AI 让它回复**（耗 token、会产生回合） |
+| **`caps.api(path, {method:'POST', body})`** | ✅ **能，直接发** —— hook 的 caps 带 `appId`/`appSecret`，`api()` 内部自己换 token |
+
+**真实例子**：插件市场的「主动陪伴」（`proactive-companion/lib/transport.mjs`）
+
+```js
+const path = `/v2/users/${openid}/messages`;
+const body = { content: text, msg_type: 0, msg_seq: lastSequence };
+const result = await env.caps.api.call(env.caps, path, { method: 'POST', body });
+if (result?.ok === true) return true;
+```
+
+它做了三级兜底，值得照抄：
+1. **`caps.api`** ← 首选
+2. 返回 `NO_CREDENTIALS` → 用 `env.caps.appId/appSecret` 自己换 token 直接打
+3. 再不行 → 用外部注入的 `env.text` adapter
+
+**群聊同理**：
+
+```js
+await env.caps.api(`/v2/groups/${groupOpenid}/messages`, {
+  method: 'POST',
+  body: { content: '播报：…', msg_type: 0, msg_seq: Date.now() % 100000 },
+});
+```
+
+**三个必须注意的点**：
+
+1. **`msg_seq` 必填** —— 主动消息没有 `msg_id` 可回，QQ 用 `msg_seq` 去重；同一个 seq 重复推送会被丢弃
+2. **别把 `caps.text` 当 adapter** —— 它只发 `replyTarget`，hook 里恒 false（`proactive-companion` 的注释专门写了这条）
+3. **目标 openid 从哪来** —— hook 没有会话列表，得自己想办法：
+   - `env.caps.kernel.get('sessions')` 拿会话管理器
+   - 或读 `{dataRoot}/.qqbot/groups.json`（群名 → openid 注册表）
+   - 或让用户在命令里配置一次、存进 `env.store`
+
+---
+
+## 9. 我能写哪一套？怎么选
 
 ```
 有人敲命令才做事            → commands/
@@ -887,8 +1075,9 @@ LLM 该主动调用才做事        → tools/
 
 ---
 
-## 9. 变更记录（契约相关）
+## 10. 变更记录（契约相关）
 
+- **2026-11-24**：新增 §8 **底层通道**（封装之外还能怎么走）—— 每条都标了**生产环境正在跑的真实例子**：`caps.kernel`（子会话.mjs）、`caps.registerRoute`（demo-store.mjs）、`caps.api`（按钮测试.mjs）、直接 fetch（翻译.mjs）、globalThis 符号槽（report-relay.mjs）、落盘台账（引用字段.mjs）、**hook 主动发消息用 caps.api 而不是 caps.text**（proactive-companion）。
 - **2026-11-24**：新增 §6 **出站扩展**（第六套）—— 九个能力（appendWake/appendSilent/api/emit/markdown/image/media/identity/store）全部补齐并写进契约；含 store 的按扩展分文件/原子写/坏文件保护、三条路径（send / turnEnd / onSent）、onSent 回执语义。
 - **2026-11-24**：新增 §7 **按钮交互 onInteraction** —— 真机实测补登：扩展命令与工具走同一条回调路径；回调 ctx 是**能力包平铺**（无 caps 键）；点击者身份在 **ctx.performer**（不是 ctx.actor，后者是 null）；按钮 data 必须 `ext:<工具名>:<卡id>:<按钮id>` 恰好 3 段且按钮 id 不能带冒号；键盘 5 行×5 列硬上限；必须 registerInteractionCard 才会派发；删卡表 = 消灭回调。
 - **2026-11-16**：补登**工具的条件可见性** `enabled(env)`（此前只在源码里，契约没写）。含 `env.provider` 的两个真相源、返回 `false`/抛错的语义（fail-closed）、以及"注册按会话走所以是热开关"。
