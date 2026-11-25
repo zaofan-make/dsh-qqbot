@@ -145,13 +145,27 @@ async function uploadOne(api, localPath) {
 
 export default {
   name: 'send_md3',
-  description: "用 markdown 富媒体卡片发消息，正文里的本地图片自动上传。",
+  description: `用 markdown 富媒体卡片发消息（msg_type=2），本地图自动上传、可带内联按钮。
+
+正文支持：
+· markdown：**粗体** *斜体* \`代码\` # 标题 - 列表 > 引用 [链接](url)
+· 本地图：![说明](D:/pics/a.png) —— 自动上传成 QQ 图片引用（尺寸可省）
+· 网图：![说明 #宽px #高px](https://...) —— 外链必须写尺寸；不想算就写 #0px #0px（自适应）
+· 图组：一行一张、连续几行，会按顺序渲染成一屏（小剧场/分镜）
+· LaTeX：行内 $E=mc^2$、独立行公式、彩色文字 —— 只在 msg_type=2 渲染，本工具自动处理
+
+按钮（见 buttons 参数）：只有「跳转按钮」，点了直接开链接，不做回调。
+需要「点了触发逻辑」的按钮，请用扩展命令发卡（命令能收 onInteraction 回调）。`,
   inputSchema: {
     text: { type: 'string', required: true, description: 'markdown 正文（图片可写 ![说明 #宽px #高px](D:/path/x.jpg)）' },
     force: { type: 'boolean', description: 'true=强制走卡片通道(msg_type=2)' },
     buttons: {
       type: 'string',
-      description: '可选：内联按钮，格式 "标签|链接,标签|链接"（最多 25 个，自动 5 个一行；只接受 http(s) 链接）',
+      description: `可选：内联按钮，格式 "标签|https://链接,标签|https://链接"。
+· 只有「跳转按钮」—— 点了直接打开链接，不需要服务端处理；
+· 想要「点了触发逻辑」（回调按钮）必须用扩展命令发卡并实现 onInteraction，本工具不做；
+· 最多 25 个（自动 5 个一行 × 5 行）；标签建议 ≤10 字（超了 QQ 会截断）；
+· 只接受 http(s) 链接，其他一律丢弃。`,
     },
   },
   run: async (args, env) => {
