@@ -1306,12 +1306,20 @@ export class SessionManager {
     const cwdC0 = String(a.session?.header?.cwd ?? '');
     if (!this.nsForCwd(cwdC0)) { traceContextless('[ctxtool-claim] skip: cwd 不属本实例 cwd=' + cwdC0); return; }
     const rec = this.findByAgent(agent as never) as { agentCtx?: unknown; sessionKey?: string } | undefined;
-    const ctxOfTool = rec?.agentCtx ?? a.ctx;
+    // ★ CodeRabbit 2026-11-25（Major）：**当前 agent 的 ctx 优先**。
+    //   forkCurrentSession 换了 record.agent / record.handle，但**没换 record.agentCtx** ——
+    //   原来这段优先读 rec.agentCtx ⇒ 工具全注册到**已被替换的旧上下文**上，新 agent 看不到。
+    //   顺序与同文件里其它几处（a.ctx 优先）保持一致；没有 ctx 的 agent 仍回退 rec.agentCtx。
+    const ctxOfTool = a.ctx ?? rec?.agentCtx;
     if (!ctxOfTool) { traceContextless('[ctxtool-claim] skip: 拿不到 agentCtx/agent.ctx rec=' + String(Boolean(rec))); return; }
     let sk = String(rec?.sessionKey ?? '').trim();
     if (!sk) {
       const sid = String(a.session?.id ?? '');
       if (sid) sk = String((this.findBySessionId(sid) as { sessionKey?: string } | undefined)?.sessionKey ?? '');
+      // ★ CodeRabbit 2026-11-25（Major）：宿主**恢复**出来的 QQ 会话（resumeHostAgent 走
+      //   agents.resume，不写 this.sessions）在 findByAgent / findBySessionId 眼里都不存在
+      //   ⇒ 这里曾直接跳过注册。持久化的 sessionId→sessionKey 映射（model-prefs）是唯一兜底。
+      if (!sk && sid) sk = String(this.modelResolver.findKeyBySessionId(sid) ?? '');
     }
     if (!sk) { traceContextless('[ctxtool-claim] skip: 拿不到 sessionKey rec=' + String(Boolean(rec)) + ' sid=' + String(a.session?.id ?? '')); return; }   // 未知 = 不动
     const smart = isContextlessActive(sk, this.config.contextlessMode)
@@ -1329,7 +1337,10 @@ export class SessionManager {
    *  每个实例在 patch 里配自己的 cwd + settingsNs, 即自动分流;
    *  其他实例/项目(web、别的 cwd)的 agent 一律不注入, 避免群守则污染非本 bot 会话。 */
   private nsForCwd(cwd: string): string {
-    const selfCwd = String(this.config.cwd ?? '').trim().replace(/[\/]+$/, '');
+    // ★ CodeRabbit 2026-11-25：会话 header.cwd 是 absCwdOf() 写进去的，配置侧也必须用同一规则
+    //   —— 否则配置为相对路径（如 storage/emulated/0/bot）时两侧永远不相等，本实例的会话被误判成别人的，
+    //   工具静默不注册。配置为绝对路径时 absCwdOf 原样返回，行为不变。
+    const selfCwd = String((absCwdOf(this.config.cwd) as string | undefined) ?? '').trim().replace(/[\/]+$/, '');
     const ns = String(this.config.settingsNs ?? '').trim() || 'im-qqbot';
     if (!selfCwd) return ns; // 未配 cwd → 对本实例所有 agent 注入(保守)
     const norm = String(cwd ?? '').replace(/[\/]+$/, '');

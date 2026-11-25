@@ -9,6 +9,7 @@
  *
  * 依赖：`env.qq.groupAdmin.apiCall`（账号包已暴露的群管理 API 通道）。
  */
+import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
@@ -23,8 +24,14 @@ function isLocalPath(p) {
 
 function stripFileUrl(p) {
   if (!/^file:\/\//i.test(p)) return p;
-  const s = decodeURIComponent(p.replace(/^file:\/\/\/?/i, ''));
-  return /^\/[A-Za-z]:\//.test(s) ? s.slice(1) : s;
+  // CodeRabbit 2026-11-25：原来手动剥 "file://" 会丢掉绝对路径的根 ——
+  //   file:///tmp/a.png → tmp/a.png（少了开头的 /），随后按工作目录找文件必然失败。
+  //   统一交给 fileURLToPath（Windows 转成 D:\...，POSIX 保留 /tmp/a.png）。
+  try { return fileURLToPath(p); } catch {
+    // 兜底：至少保住根目录
+    const s = decodeURIComponent(p.replace(/^file:\/\/\/?/i, (m) => (m.endsWith("///") ? "/" : "")));
+    return /^\/[A-Za-z]:\//.test(s) ? s.slice(1) : s;
+  }
 }
 
 const CT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
@@ -178,15 +185,45 @@ export default {
         // 降级：没有上传通道时，用现成的 sendImage 把图单独发出去，卡片里去掉图片语法
         const sendImage = qq && qq.sendImage;
         if (typeof sendImage === "function") {
+          // CodeRabbit 2026-11-25 三条一起修：
+          //   ① scope 不能写死 "group"（私聊会发到群端点、图发不出去且被 catch 吞掉）
+          //   ② 失败要能看见 —— 全部失败就是失败，部分成功要说清发了几张
+          //   ③ 只删**已单独发出去的本地图**标记，正文里的 HTTPS 图必须留着
+          const scopeOf = String((target && (target.scope || target.kind)) || "group") === "c2c" ? "c2c" : "group";
           const notes = [];
+          const failed = [];
+          const sentRaw = new Set();
           for (const h of hits) {
-            try { await sendImage("group", String(target.targetId || ""), h.path); notes.push(h.path.split(/[\/]/).pop()); } catch { /* ignore */ }
+            try {
+              await sendImage(scopeOf, String(target.targetId || ""), h.path);
+              notes.push(h.path.split(/[\/]/).pop());
+              if (h.raw) sentRaw.add(h.raw);
+            } catch (e) {
+              failed.push(h.path.split(/[\/]/).pop() + "(" + String((e && e.message) || e).slice(0, 40) + ")");
+            }
           }
-          const stripped = text.replace(IMG_RE, "").trim();
+          // 只剥掉"成功发出去的那几张"的字面量；远程图一个都不动
+          let stripped = text;
+          for (const r of sentRaw) stripped = stripped.split(r).join("");
+          stripped = stripped.trim();
           if (stripped) await sender.sendMarkdown(target, stripped);
-          return { ok: true, msg: "🖼 降级发送：" + notes.length + "/" + hits.length + " 张图已单独发出（卡片内不含图）+ 文字卡片" };
+          if (notes.length === 0) {
+            return { ok: false, msg: "❌ 降级发送全部失败：" + hits.length + " 张图都没发出去" + (failed.length ? "｜" + failed.join("、") : "") };
+          }
+          const tail = failed.length ? "｜失败 " + failed.length + " 张：" + failed.join("、") : "";
+          return {
+            ok: failed.length === 0,
+            msg: "🖼 降级发送：" + notes.length + "/" + hits.length + " 张图已单独发出（卡片内不含这些图）+ 文字卡片" + tail,
+          };
         }
-        const dbg = "qqKeys=" + Object.keys(qq || {}).join(",") + " | apiCall=" + typeof (qq && qq.apiCall) + " | sendImage=" + typeof (qq && qq.sendImage) + " | cred=" + JSON.stringify(globalThis.__qqbotAppCred || null) + " | tokenErr=" + String(globalThis.__sendMdTokenErr || '-');
+        // ⚠️ CodeRabbit 2026-11-25（Major · CWE-209）：这里原来 `JSON.stringify(globalThis.__qqbotAppCred)`
+        //   会把 **appSecret 原文**塞进工具结果（工具结果会进群、进上下文）。凭据绝不离开认证请求路径。
+        //   现在只报"有没有配"和脱敏后的错误码。
+        const credObj = globalThis.__qqbotAppCred || null;
+        const credHint = credObj
+          ? 'appId=' + String(credObj.appId || '').slice(0, 6) + '***, secret=' + (credObj.appSecret ? '已配置' : '缺')
+          : '无';
+        const dbg = "qqKeys=" + Object.keys(qq || {}).join(",") + " | apiCall=" + typeof (qq && qq.apiCall) + " | sendImage=" + typeof (qq && qq.sendImage) + " | cred=" + credHint + " | tokenErr=" + String(globalThis.__sendMdTokenErr || '-').slice(0, 60);
         return { ok: false, msg: "❌ 未发送：拿不到上传通道（" + dbg + "）—— 本卡含 " + hits.length + " 张本地图" };
       }
       const lines = [];
@@ -248,7 +285,8 @@ export default {
           action: { type: 0, permission: { type: 2 }, data: b.url, unsupport_tips: '请在支持的客户端点击' },
         }));
         const rows = [];
-        for (let i = 0; i < btns.length; i += 2) rows.push({ buttons: btns.slice(i, i + 2) });
+        // CodeRabbit 2026-11-25：原来每行 2 个 × 5 行 = 只留 10 个，契约允许 25 个 ⇒ 第 11 个起被静默丢弃。改成每行 5 个。
+        for (let i = 0; i < btns.length; i += 5) rows.push({ buttons: btns.slice(i, i + 5) });
         keyboard = { content: { rows: rows.slice(0, 5) } };
       }
     } catch {
@@ -259,7 +297,16 @@ export default {
     //   （「请求协议解析失败」，type 0/1、各种 id/permission 组合都试过）。
     //   而 /按钮测试 命令用 caps.api 直接 POST 同样的 body 是**成功**的 ⇒ 改走 api。
     if (keyboard && typeof env.api === 'function') {
-      const gid = String((env.message && env.message.groupOpenid) || (env.peer && env.peer.peerId) || '');
+      // ⚠️ CodeRabbit 2026-11-25（Major）：env.peer.peerId 在**私聊**里是用户 openid，
+      //   当群 openid 用会把 /v2/groups/{用户openid}/messages 打出去 —— 发不到当前私聊。
+      //   只有 replyTarget.scope==='group' 时 targetId 才是群 openid。
+      const rt = (env.replyTarget && typeof env.replyTarget === 'object') ? env.replyTarget : null;
+      const gid = String(
+        (env.message && env.message.groupOpenid)
+        || (rt && String(rt.scope || '') === 'group' && rt.targetId)
+        || (env.peer && env.peer.scope === 'group' && env.peer.peerId)
+        || '',
+      );
       const uid = String((env.user && env.user.openid) || '');
       const path = gid ? '/v2/groups/' + gid + '/messages' : '/v2/users/' + uid + '/messages';
       const body = { msg_type: 2, markdown: { content: out }, keyboard, ...(gid ? {} : { content: out }) };
