@@ -1574,6 +1574,16 @@ export class SessionManager {
             const rec0 = this.findBySessionId(sid0) as { sessionKey?: string } | undefined;
             sk0 = String(rec0?.sessionKey ?? '');
             if (!sk0) for (const [k, r] of this.sessions) { if ((r as { sessionId?: string })?.sessionId === sid0) { sk0 = k; break; } }
+            // ★★ 2026-11-25（CodeRabbit Major）：**宿主恢复出来的会话**（resumeHostAgent 走 agents.resume，
+            //   不写 this.sessions）在前两条反查里都查不到 ⇒ sk0 为空 ⇒ 下面 ctxKey0 退化成 '__global__'
+            //   ⇒ segOn0/ctxSmartOn 全 false ⇒ 1733 行的**固定窗口裁剪抢跑**（把本回合尾巴裁掉、
+            //   写入 lastTrimmedTurn）⇒ 等 1819 行才通过持久映射恢复 sessionKey 时，
+            //   1852 行的 trimHistoryForContextless 撞"同回合防重复"返回 false ⇒ pending 永远不执行。
+            //   所以必须**在这里**（所有裁剪分派之前）就用持久映射兜底 —— 否则补消费端也改不了执行顺序。
+            if (!sk0) {
+              try { sk0 = String(this.modelResolver.findKeyBySessionId(sid0) ?? ''); } catch { /* ignore */ }
+              if (sk0) traceContextless('[ctxsmart] sk0 持久映射兜底: ' + sk0);
+            }
             skForTool = sk0;   // 存到外层，供"上下文工具挂/卸"那块兜底用
           }
           try {
@@ -1589,7 +1599,9 @@ export class SessionManager {
           //   （isContextlessActive 在 globalEnabled===true 时直接返回 true）。
           // ★ 提前算：会话级「智能判断」开关（固定 N 条 trim 要用它让位）
           try {
-            const sk0b = this.findByAgent(agent as never)?.sessionKey;
+            // ★ 2026-11-25：优先用上面算好的 sk0（已含持久映射兜底），
+            //   否则恢复的会话这里又退回 findByAgent ⇒ ctxSmartOn 仍为 false，固定窗口照样抢跑。
+            const sk0b = this.findByAgent(agent as never)?.sessionKey || sk0;
             if (sk0b) {
               setMemoMaxItems(contextlessMemoMaxOf(sk0b) ?? this.config.contextMemoMaxItems ?? 20);
             ctxSmartOn = isContextlessActive(sk0b, this.config.contextlessMode)
@@ -1614,7 +1626,15 @@ export class SessionManager {
             if (skP && drP) pendingAhead = readContextPending(drP, skP);
             if (pendingAhead) traceContextless("[ctxorder] 本轮有 pending(" + String(pendingAhead.mode) + ") → 跳过分段压缩，交给下面消费");
           } catch { /* ignore */ }
-          if (segOn0 && !pendingAhead) {
+          // ★ 2026-11-25（CodeRabbit Major）：跳过分段压缩的条件必须和"本轮**真的能消费** pending"一致。
+          //   否则：上一回合登记了 compact、随后**关掉智能模式**但保留分段压缩 ⇒ pendingAhead 一直在，
+          //   而下面的消费分支要求 ctxSmartOn 为真 ⇒ 既不执行也不清除 ⇒ **分段压缩被永久跳过**。
+          //   正确口径：只有"有 pending **且** 智能模式开着（能消费）"才让位。
+          const willConsumePending = !!pendingAhead && ctxSmartOn;
+          if (pendingAhead && !ctxSmartOn) {
+            traceContextless('[ctxorder] 有 pending 但智能模式已关 ⇒ 消费不了，照常跑分段压缩（pending 留着）');
+          }
+          if (segOn0 && !willConsumePending) {
             // ── 分段压缩：只压「上回合结束 → 本回合开始」这一段，更早的前缀一个字都不动 ──
             //    为什么这么做：dsh 每轮把整段上下文发出去，前缀不变才有缓存；只动尾巴才不会把缓存打掉。
             try {
