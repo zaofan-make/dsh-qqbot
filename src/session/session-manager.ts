@@ -1602,7 +1602,19 @@ export class SessionManager {
           // ★ 2026-11-06 分段压缩：与 window / smart 互斥（三者选一）
           let segOn0 = false;
           try { segOn0 = isContextlessActive(ctxKey0, this.config.contextlessMode) && contextlessSegmentOf(sk0); } catch { /* ignore */ }
-          if (segOn0) {
+          // ★★ 2026-11-25（主人实测 + 微积分指出）：**智能判断与分段压缩同开时，AI 登记的
+          //   compact/drop 下一回合不生效**。原因是执行顺序：分段压缩先跑、把"上回合结束→本回合开始"
+          //   那段压成占位节点；等下面消费 pending 时，那段里"消息数 <= keep+1"直接 return false，
+          //   什么都删不掉 —— 但 pending 照样被 clear，工具回执还说"下一回合执行"，等于骗人。
+          //   pending 是 AI 明确要求的全量操作，优先级高于"压本轮尾巴"：有 pending 就跳过本轮分段压缩。
+          let pendingAhead = null;
+          try {
+            const skP = String(sk0 || (this.findByAgent(agent as never) as { sessionKey?: string } | undefined)?.sessionKey || "");
+            const drP = this.resolveDataRootSmart();
+            if (skP && drP) pendingAhead = readContextPending(drP, skP);
+            if (pendingAhead) traceContextless("[ctxorder] 本轮有 pending(" + String(pendingAhead.mode) + ") → 跳过分段压缩，交给下面消费");
+          } catch { /* ignore */ }
+          if (segOn0 && !pendingAhead) {
             // ── 分段压缩：只压「上回合结束 → 本回合开始」这一段，更早的前缀一个字都不动 ──
             //    为什么这么做：dsh 每轮把整段上下文发出去，前缀不变才有缓存；只动尾巴才不会把缓存打掉。
             try {
@@ -1795,7 +1807,18 @@ export class SessionManager {
         //    与上面的「固定 N 条 trim」互斥：智能模式开启时，固定窗口让位给 AI 自主决定。
         try {
           const recSmart = agent ? this.findByAgent(agent as never) : undefined;
-          const skSmart = recSmart?.sessionKey;
+          let skSmart = recSmart?.sessionKey;
+          // ★ CodeRabbit 2026-11-25（Major）：**消费端要和注册端用同一个会话键**。
+          //   宿主恢复出来的 QQ 会话没有 findByAgent 记录；注册端已经能用持久映射取到 key、
+          //   把请求写进该 key 的 pending 文件，但原来这里仍只用 rec.sessionKey ⇒ 对这种会话
+          //   skSmart 恒空 ⇒ 下面的条件不成立 ⇒ **pending 永远不执行**（工具却回"下一回合执行"）。
+          //   有活跃记录时仍以记录为准；没有映射的会话保持现状。
+          if (!skSmart) {
+            try {
+              const sidSmart = String((agent?.session as { id?: string } | undefined)?.id ?? '');
+              if (sidSmart) skSmart = this.modelResolver.findKeyBySessionId(sidSmart) || undefined;
+            } catch { /* ignore */ }
+          }
           try {
             traceContextless('[ctxsmart-diag2] sk=' + String(skSmart) + ' on=' + String(ctxSmartOn));
           } catch { /* ignore */ }
@@ -1821,15 +1844,24 @@ export class SessionManager {
             const req = readContextPending(dataRootSmart, skSmart);
             if (req) {
               const keep = req.mode === 'drop' ? 0 : (Number(req.keep) || 3);
-              await trimHistoryForContextless(
+              const done = await trimHistoryForContextless(
                 agent as unknown as { session?: { surface?: { nodes?: number[] } } },
                 keep,
                 this.logger,
                 (() => { try { return this.ctx as unknown as { tokenMeter?: { estimateMessage?: (m: unknown) => number }; logger?: { info?: (s: string) => void; debug?: (s: string) => void } }; } catch { return undefined; } })(),
                 Number.isFinite(currentTurn) ? currentTurn : undefined,
               );
-              clearContextPending(dataRootSmart, skSmart);
-              this.logger?.info?.('[contextless] 已执行 AI 登记的 ' + String(req.mode) + '（keep=' + keep + ', session=' + skSmart + '）');
+              // ★★ 2026-11-25：trimHistoryForContextless **返回 false 表示"什么都没删"**
+              //   （节点数不足 / 消息数 <= keep+1 / 受保护节点挡在最前）。原来不看返回值就 clear，
+              //   AI 那边看到"已登记"、历史却没动，且请求被吞掉再也不重试。
+              //   现在：没删成就**保留 pending**（下一回合还会再试），并把原因记进日志。
+              if (done) {
+                clearContextPending(dataRootSmart, skSmart);
+                this.logger?.info?.('[contextless] 已执行 AI 登记的 ' + String(req.mode) + '（keep=' + keep + ', session=' + skSmart + '）');
+              } else {
+                this.logger?.warn?.('[contextless] AI 登记的 ' + String(req.mode) + ' 本轮没能生效（可删内容不足），保留 pending 下回合重试: session=' + skSmart);
+                traceContextless('[ctxsmart] pending 未生效，保留: mode=' + String(req.mode) + ' keep=' + keep);
+              }
             }
           }
         } catch (e) { this.logger?.debug?.('[contextless] 消费 pending 异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
