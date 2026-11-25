@@ -291,7 +291,11 @@ export default {
           label: String((b && b.label) || '').trim().slice(0, 18),
           url: String((b && b.url) || '').trim(),
         }))
-        .filter((b) => b.label && (b.url.startsWith('/') || /^(https?:\/\/|cmd:)/i.test(b.url)))
+        // 目标非空即可：
+        //   · http(s)://        → type 0 跳转
+        //   · 其余任意文字       → type 2 指令（data 原样插入输入框，QQ 自动补 @bot）
+        //     ⚠️ data **不要**带开头的 /（会 11001），所以这里统一去掉
+        .filter((b) => b.label && String(b.url || '').trim())
         .slice(0, 25);   // 5 行 × 5 个
       if (items.length) {
         // 按目标形式决定按钮类型：
