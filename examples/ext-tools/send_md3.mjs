@@ -146,26 +146,23 @@ async function uploadOne(api, localPath) {
 export default {
   name: 'send_md3',
   description: `用 markdown 富媒体卡片发消息（msg_type=2），本地图自动上传、可带内联按钮。
+正文写法见注入的提示词（markdown / 图片 / 图组 / LaTeX 都支持）。
 
-正文支持：
-· markdown：**粗体** *斜体* \`代码\` # 标题 - 列表 > 引用 [链接](url)
-· 本地图：![说明](D:/pics/a.png) —— 自动上传成 QQ 图片引用（尺寸可省）
-· 网图：![说明 #宽px #高px](https://...) —— 外链必须写尺寸；不想算就写 #0px #0px（自适应）
-· 图组：一行一张、连续几行，会按顺序渲染成一屏（小剧场/分镜）
-· LaTeX：行内 $E=mc^2$、独立行公式、彩色文字 —— 只在 msg_type=2 渲染，本工具自动处理
+按钮（buttons 参数）两种：
+· 跳转按钮：写 http(s) 链接 → 点了直接打开网页
+· 指令按钮：写 /命令 或 cmd:/命令 → 点了在输入框自动插入「@bot /命令」，可配 enter=点了直接发送（仅私聊）
 
-按钮（见 buttons 参数）：只有「跳转按钮」，点了直接开链接，不做回调。
-需要「点了触发逻辑」的按钮，请用扩展命令发卡（命令能收 onInteraction 回调）。`,
+需要「点了触发自定义逻辑」的回调按钮，请用扩展命令发卡（命令能收 onInteraction）。`,
   inputSchema: {
     text: { type: 'string', required: true, description: 'markdown 正文（图片可写 ![说明 #宽px #高px](D:/path/x.jpg)）' },
     force: { type: 'boolean', description: 'true=强制走卡片通道(msg_type=2)' },
     buttons: {
       type: 'string',
-      description: `可选：内联按钮，格式 "标签|https://链接,标签|https://链接"。
-· 只有「跳转按钮」—— 点了直接打开链接，不需要服务端处理；
-· 想要「点了触发逻辑」（回调按钮）必须用扩展命令发卡并实现 onInteraction，本工具不做；
-· 最多 25 个（自动 5 个一行 × 5 行）；标签建议 ≤10 字（超了 QQ 会截断）；
-· 只接受 http(s) 链接，其他一律丢弃。`,
+      description: `可选：内联按钮，格式 "标签|目标,标签|目标"。目标形式决定按钮类型：
+· http(s)://...      → 跳转按钮：点了直接打开网页
+· /命令 或 cmd:/命令  → 指令按钮：点了在输入框自动插入「@bot /命令」，不用手打
+· 最多 25 个（自动 5 个一行 × 5 行）；标签建议 ≤10 字（超了 QQ 会截断）
+· 其他形式一律丢弃；回调按钮（点了通知服务端）不在本工具能力内，需要请用扩展命令发卡`,
     },
   },
   run: async (args, env) => {
@@ -173,7 +170,12 @@ export default {
     if (!text.trim()) return { ok: false, msg: 'text 为空, 没东西可发' };
     const sender = env && env.sender;
     const target = env && env.replyTarget;
-    if (!sender || !target) return { ok: false, msg: '当前会话发送器未就绪(请在 QQ 会话里调用本工具)' };
+    const hasApi = !!(env && typeof env.api === 'function');
+    // 按钮分支走 env.api 直接 POST，不需要 sender —— 所以有 api 就放行
+    if ((!sender || !target) && !hasApi) {
+      const keys = Object.keys(env || {}).sort().join(',');
+      return { ok: false, msg: '当前会话发送器未就绪（env 键: ' + keys + '）' };
+    }
 
     const hits = [];
     IMG_RE.lastIndex = 0;
@@ -289,15 +291,46 @@ export default {
           label: String((b && b.label) || '').trim().slice(0, 18),
           url: String((b && b.url) || '').trim(),
         }))
-        .filter((b) => b.label && /^https?:\/\//i.test(b.url))
+        .filter((b) => b.label && (b.url.startsWith('/') || /^(https?:\/\/|cmd:)/i.test(b.url)))
         .slice(0, 25);   // 5 行 × 5 个
       if (items.length) {
-        // 跳转按钮（type 0）：点了直接开链接，不需要卡表/回调
-        const btns = items.map((b, i) => ({
-          id: 'btn-' + i,
-          render_data: { label: b.label, visited_label: '已打开', style: 1 },
-          action: { type: 0, permission: { type: 2 }, data: b.url, unsupport_tips: '请在支持的客户端点击' },
-        }));
+        // 按目标形式决定按钮类型：
+        //   · http(s)://        → type 0 跳转：点了直接开链接
+        //   · cmd:xxx 或 /xxx   → type 2 指令：点了在输入框插入「@bot xxx」，**不需要卡表/回调**
+        // enter/reply 仅单聊可用（群里传会 11001），按当前会话类型决定
+        const isC2C = String(
+          (env.replyTarget && env.replyTarget.scope)
+          || (env.peer && env.peer.scope)
+          || '',
+        ) === 'c2c';
+        const btns = items.map((b, i) => {
+          const isCmd = !/^https?:\/\//i.test(b.url);
+          if (isCmd) {
+            // ★ 2026-11-26 实测 + 参考 whale-emotion-buttons（人家能发）：data 用**纯文字**，
+            //   不要带开头的 /。带 / 时会 11001「接口或参数不正确」。
+            //   点了输入框会变成「@bot 按钮测试」（QQ 自动补 @bot）。
+            const cmd = b.url.replace(/^cmd:/i, '').replace(/^\//, '').trim();
+            return {
+              id: 'btn-' + i,
+              render_data: { label: b.label, visited_label: b.label, style: 1 },
+              action: {
+                type: 2,                 // 指令按钮
+                permission: { type: 2 },
+                data: cmd,               // 插入输入框的内容（QQ 会自动补 @bot）
+                // ★ 2026-11-26 实测：`enter` / `reply` **只在单聊可用** —— 群里传了直接
+                //   11001「接口或参数不正确」（文档只写"指令按钮可用"，没说范围）。
+                //   所以按会话类型给：私聊带（点一下直接发送、且带引用），群里不带（点了只插入）。
+                // enter/reply 实测群里传了就 11001；先一律不传（点了只插入，最稳）
+                unsupport_tips: '请在支持的客户端点击',
+              },
+            };
+          }
+          return {
+            id: 'btn-' + i,
+            render_data: { label: b.label, visited_label: '已打开', style: 1 },
+            action: { type: 0, permission: { type: 2 }, data: b.url, unsupport_tips: '请在支持的客户端点击' },
+          };
+        });
         const rows = [];
         // CodeRabbit 2026-11-25：原来每行 2 个 × 5 行 = 只留 10 个，契约允许 25 个 ⇒ 第 11 个起被静默丢弃。改成每行 5 个。
         for (let i = 0; i < btns.length; i += 5) rows.push({ buttons: btns.slice(i, i + 5) });
@@ -331,7 +364,17 @@ export default {
         return { ok: false, msg: '❌ 未发送：' + (e && e.message ? e.message : String(e)) };
       }
       if (!r || r.ok === false) {
-        return { ok: false, msg: '❌ 未发送：' + JSON.stringify(r && r.err ? r.err : r).slice(0, 300) };
+        // ★★ 2026-11-26：**按钮发不出去不能连累正文**。
+        //   实测 type 2 指令按钮在某些场景会 11001（整条消息被拒），
+        //   用户看到的却是"什么都没发出去" —— 太糟。这里自动摘掉按钮重发一次。
+        const why = JSON.stringify(r && r.err ? r.err : r).slice(0, 200);
+        try {
+          const r2 = await env.api(path, { method: 'POST', body: { msg_type: 2, markdown: { content: out }, ...(gid ? {} : { content: out }) } });
+          if (r2 && r2.ok !== false) {
+            return { ok: true, msg: '⚠️ 按钮被 QQ 拒了（' + why + '），已**只发正文**。若正文正常、按钮没了，就是这个原因。' };
+          }
+        } catch { /* ignore */ }
+        return { ok: false, msg: '❌ 未发送：' + why };
       }
       const btnNote0 = '\n🔘 内联按钮 ' + keyboard.content.rows.reduce((n, row) => n + row.buttons.length, 0) + ' 个';
       return { ok: true, msg: '已用 markdown+按钮通道发出（caps.api）' + btnNote0 + '\n实际发送: ' + out.slice(0, 200) };
