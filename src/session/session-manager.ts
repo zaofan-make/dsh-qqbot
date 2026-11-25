@@ -572,6 +572,9 @@ export class SessionManager {
     record.agentPreset = composed.agentPreset;
     record.lastActivity = Date.now();
 
+    // ★★ 2026-11-25：/bot-new 换 agent 也不经 claimed/pre-step ⇒ 补一次 scoped 注册。
+    try { this.syncScopedToolsOnClaim(created.agent); } catch { /* ignore */ }
+
     void oldHandle.dispose().catch(() => {});
     void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger, {
       // 这个 childId 已经被下一次 fork/new 取代的话，别再挂、更别反归档（会撤销别人的自动归档）
@@ -998,6 +1001,10 @@ export class SessionManager {
           agent: record.agent,
         });
       }
+      // ★★ 2026-11-25（/bot-new 之后 context_* 三件套消失、重启才好）：mountChannelTools 只挂内置工具，
+      //   不碰 context_compact/drop/memo —— 那三个原先只在 agent/inbox/claimed 注册，
+      //   而"建会话"不是消息 claim ⇒ 事件不触发 ⇒ 工具永远不挂到重启。这里同点位补一次。
+      try { this.syncScopedToolsOnClaim(record.agent); } catch { /* 失败不影响建会话 */ }
     } catch { /* 注册失败不影响建会话 */ }
 
 
@@ -1294,18 +1301,19 @@ export class SessionManager {
       ctx?: unknown;
       session?: { id?: string; header?: { cwd?: string } };
     } | undefined;
-    if (!a) return;
+    if (!a) { traceContextless('[ctxtool-claim] skip: agent 为空'); return; }
     // 只碰本实例的 agent（cwd 分流：别的 bot 实例的会话工具集不归我们管）
-    if (!this.nsForCwd(String(a.session?.header?.cwd ?? ''))) return;
+    const cwdC0 = String(a.session?.header?.cwd ?? '');
+    if (!this.nsForCwd(cwdC0)) { traceContextless('[ctxtool-claim] skip: cwd 不属本实例 cwd=' + cwdC0); return; }
     const rec = this.findByAgent(agent as never) as { agentCtx?: unknown; sessionKey?: string } | undefined;
     const ctxOfTool = rec?.agentCtx ?? a.ctx;
-    if (!ctxOfTool) return;
+    if (!ctxOfTool) { traceContextless('[ctxtool-claim] skip: 拿不到 agentCtx/agent.ctx rec=' + String(Boolean(rec))); return; }
     let sk = String(rec?.sessionKey ?? '').trim();
     if (!sk) {
       const sid = String(a.session?.id ?? '');
       if (sid) sk = String((this.findBySessionId(sid) as { sessionKey?: string } | undefined)?.sessionKey ?? '');
     }
-    if (!sk) return;   // 未知 = 不动（绝不因为读不到而卸工具）
+    if (!sk) { traceContextless('[ctxtool-claim] skip: 拿不到 sessionKey rec=' + String(Boolean(rec)) + ' sid=' + String(a.session?.id ?? '')); return; }   // 未知 = 不动
     const smart = isContextlessActive(sk, this.config.contextlessMode)
       && contextlessSmartOf(sk, this.config.contextlessSmart);
     syncChannelScopedTools(ctxOfTool, {
@@ -1395,6 +1403,8 @@ export class SessionManager {
         //   内置工具（含 .mjs 加载）统一交给 claimed + inbound —— 那两条能拿到正确 ctx。
         if (!tagC) return;
         applyExtToolVisibility(ag.ctx, tagC);
+        // ★★ 2026-11-25：任何途径诞生的会话都该工具就绪 —— 这里也补一次 context_* 注册（幂等）。
+        try { this.syncScopedToolsOnClaim(ag); } catch { /* ignore */ }
       } catch { /* 注册失败不影响建 agent */ }
     });
     hostCtx.on('agent/inbox/claimed', (payload: unknown) => {
