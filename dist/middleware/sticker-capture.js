@@ -45,12 +45,15 @@ async function captureOne(job) {
         resolved = await store.capture(url, { sourceGroup, senderId, senderName, msgText, sourceUrl: url }, contentType);
     }
     catch (err) {
-        logger.debug(`[sticker] capture error: ${err instanceof Error ? err.message : String(err)}`);
+        // ★ 2026-11-26：从 debug 提到 info —— 下载失败/超限以前完全静默，
+        //   表现成"这张图压根没下载"，主人排查了半天。热路径日志该收敛，
+        //   但"这张图没进来"属于必须能看见的事件。
+        logger.info(`[sticker] 采集失败（这张图不会进库）: ${err instanceof Error ? err.message : String(err)}`);
         return undefined;
     }
     if (!resolved.id) {
         if (resolved.status === 'error')
-            logger.debug(`[sticker] capture failed: ${resolved.error}`);
+            logger.info(`[sticker] 采集失败: ${resolved.error}`);
         return undefined;
     }
     // 台账兜底(2026-09-13 主人要求, 只图片): 记「图库 id → 这条 QQ 链接」——

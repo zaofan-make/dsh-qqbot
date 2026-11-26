@@ -173,8 +173,16 @@ export interface StickerHit {
   useCount: number;
 }
 
-/** 图片大小上限（超过不收） */
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/**
+ * 图片大小上限（超过不收）。
+ *
+ * ⚠️ 2026-11-26 从 10MB 提到 25MB：QQ 的**动图 GIF** 很容易超 10MB ——
+ *   实测一张 600×600 的 GIF 就有 **15.5MB**（帧多）。原上限会把这类图
+ *   "下载成功但拒绝入库"，而且失败只留一条 debug 日志，
+ *   表现成"这张图压根没下载"，极难排查。
+ *   注意：`md-media.ts` 里那个 10MB 是 QQ 官方素材上传的硬限制，与这里无关，别一起改。
+ */
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 /** 下载超时 ms */
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 /** 目录层 */
@@ -480,7 +488,9 @@ export class StickerStore {
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const buf = Buffer.from(await resp.arrayBuffer());
-    if (buf.length > MAX_IMAGE_BYTES) throw new Error(`Image exceeds 10MB (${buf.length})`);
+    if (buf.length > MAX_IMAGE_BYTES) {
+      throw new Error(`Image too large: ${(buf.length / 1024 / 1024).toFixed(1)}MB > ${MAX_IMAGE_BYTES / 1024 / 1024}MB`);
+    }
     return buf;
   }
 
