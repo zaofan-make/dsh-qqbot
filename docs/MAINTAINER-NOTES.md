@@ -4632,3 +4632,166 @@ get store() { return storeFor(currentExtName() || state.extension?.name || 'shar
 | 2 | 中文名替换后碰撞（都变 `_`） | 文件名 `安全名-8位sha1` |
 | 3 | `save(obj)` 整表写不检查坏文件 | 整表分支也先 `readAll().ok` |
 | 4 | `kernel: pluginCtx` 被 splice 误删 | 补回 |
+
+---
+
+## §34 图片全量下载 + 上下文图片路径改写（2026-11-26，PR #93）
+
+### 背景：一条消息发 10 张图，本地只落 3 张
+
+主人实测发现的。两层原因**叠加**，都很隐蔽：
+
+```ts
+// ① 硬性只取前 3 张 —— 后面 7 张压根没发起下载
+const picked = all.slice(0, MAX_PER_MSG);        // MAX_PER_MSG = 3
+
+// ② 并发满了是**丢弃**，不是排队
+if (inflight >= MAX_INFLIGHT) return undefined;
+```
+
+第 ② 条尤其反直觉：看着像"先不处理"，实际是"这张图永久丢失"。
+
+**修法**：改成队列。`enqueue` 同步入队（主链仍然 0 等待），`pump()` 按 `MAX_INFLIGHT = 3` 逐个出队。队列上限 80，满了丢最旧的（那张图下次还会再发，损失可接受）。
+
+```ts
+queue.push(job);
+pump();   // 纯同步 while，不 await —— 主链不受影响
+```
+
+### 上下文里的链接：为什么需要第二套机制
+
+图片是**后台异步下载**的，而消息在 debounce 静默期（默认 3 秒）后就要组装进上下文。所以存在一个真实的竞态：**组装那一刻，图可能还没下完**。
+
+于是上下文里会留下这种东西：
+
+```
+https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhRe4s...&rkey=CAISONPs...&spec=0
+```
+
+又长、又会过期、模型也读不了盘。三个机制依次兜底：
+
+| 层 | 机制 | 时机 | 覆盖面 |
+|---|---|---|---|
+| 1 | 组装时查 `lookupImagePath` | 消息进上下文那一刻 | 已下完的 |
+| 2 | pre-step 改 `dec.messages` | 回合开始前 | 本步新消息 |
+| 3 | `imagePathSurface`（`surfaceOp replace`） | pre-step | session 尾部，**永久生效** |
+
+第 3 层默认**关**。
+
+### ⚠️ 最容易踩的坑：`surfaceOp` 字段名随版本变，而且写错不报错
+
+这一点必须单独记住，因为**编译期完全无保护**：
+
+| 来源 | `isReplaceOp` 要求 |
+|---|---|
+| 运行时 `dsh-session@0.2.2-rc.3` | `{ op, startSeq, endSeq }` |
+| 仓库 devDependency `0.1.0-rc.6` / 较新源码仓库 | `{ op, start, end }` |
+
+- **严格 3 键校验**：`Object.keys(op).length === 3`，多一个少一个都 `invalid`
+- **写错不会崩**：`append` 抛 `invalid replace surfaceOp`，被 `catch` 吞成一条 debug 日志 ⇒ **静默失效**
+- **插件运行时用的是宿主提供的那份**（peerDependency），**不是**仓库 `node_modules` 里那份（那份只用于编译）
+
+**所以本仓库的做法是运行时探测，不赌版本**（`src/features/image-path-surface.ts` 的 `appendReplaceOne`）：
+
+```ts
+try {
+  append(..., { surfaceOp: { op:'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
+  return;
+} catch (e) {
+  if (!/invalid replace surfaceOp/i.test(msg)) throw e;   // 只对「字段名不认」回退
+}
+append(..., { surfaceOp: { op:'replace', start: seq, end: seq }, sourceEventSeqs: [seq] });
+```
+
+试错安全：宿主在 `validateSurfaceMetadata` 阶段同步抛错，**日志不会写入**，第一次失败不留痕。
+
+### 改历史的唯一正规口子
+
+```ts
+type SurfaceOp = 'append' | { op: 'replace'; startSeq: SessionSeq; endSeq: SessionSeq }
+```
+
+- **不需要 compaction 四事件**（`start` → `summary` → `replace` → `end`）。那是 compaction 自己的事务协议，普通替换一条 append 就够
+- 参考实现：`zeranhub/dsh-context-shaping` 的 `appendReplace()`，三行
+- `startSeq`/`endSeq` 就是 **seq 本身**（相等 = 只替换一个节点），不是 surface 下标
+- `sourceEventSeqs` 必须**列全**被遮蔽的 seq（`assertProvenance` 校验）
+- 被替换的 seq **必须还在当前 surface 上**，已换过的再换会抛 `not found in surface`
+
+**只改模型可见性，不改人类可见性。** `surface.ts` 原话：
+
+> The model-visible surface deliberately shadows replaced ranges... **replacement copies stay model-only**; Append-origin events are that transcript's durable source material.
+
+所以 DSH 界面里看到的仍是原始长链接 —— 这是设计，不是 bug。
+
+### `imagePathSurface` 的处理范围
+
+**只处理尾部**：最后一条 `assistant/message` 之后、下一个回合开始前那几条。
+
+理由：历史深处的旧链接多半已被 `image-offload` 压成 `[图片已省略 ...]` 占位，改它们只会在会话日志里堆更多事件。
+
+⚠️ 新会话还没说过话时 surface 上没有 `assistant/message` —— 此时必须退回 `start = 1`，否则循环一次都不跑，**新会话首批图永远不被处理**。
+
+### 正则必须同时满足两个条件
+
+```ts
+const URL_BODY = String.raw`[^\s)\]}>"'，。；！？、【】（）《》]*`;
+const QQ_IMAGE_URL_RE = new RegExp(
+  'https://(?:multimedia\\.nt\\.qq\\.com\\.cn|qq\\.com)/download' + URL_BODY,
+  'g',
+);
+```
+
+**两个条件缺一不可**：
+
+1. **字符类要排除 `]`** —— 本仓库图片占位的真实格式是 `[图片: <url>]`（`gateway/debounce.ts` 生成）。用 `[^\s)]` 会把 `]` 连同一段正文一起吃掉：
+   ```
+   「[图片: <url>] 好看吗」→「[图片: D:/a.jpg 好看吗」   ← 丢了 ]
+   「看图 <url>，然后呢」  →「看图 D:/a.jpg」            ← 后文整段没了
+   ```
+2. **域名要锚定在协议头之后** —— 否则 `https://example.com/multimedia.nt.qq.com.cn/download?fileid=X` 也能命中；而 `lookupImagePath` 的 `stableKey` 只看 `fileid` 前 40 字符，会误命中别人的缓存。
+
+### `dec.messages` 的改写是**会落库**的
+
+`session-manager.ts` 那段 pre-step 里改 `dec.messages` 的代码，注释以前写着"只改副本、不动 session"—— **这是错的**。宿主 `agent-loop` 的 `step()` 会把 `decision.messages` 逐条 `append` 进 session。
+
+所以它是"一次性改写并落库"。副作用：本地路径日后若被图片回收删掉，**原 QQ 链接不可恢复**。
+
+### 测试
+
+`src/features/image-path-surface.test.ts`（9 个）：
+
+- `[图片: <url>]` 替换后 `]` 与后文保留 ← **正则退回旧写法会当场失败**
+- 裸 URL 后跟中文标点不吞
+- `surfaceOp` 键集合恰好 `{op, startSeq, endSeq}` + `sourceEventSeqs` 列全
+- **模拟旧版宿主（只认 `start/end`）→ 自动回退、仍成功**
+- **模拟 `seq not found` → 不回退、不吞错**
+- 普通链接不该被替换
+- 缓存未命中不追加事件
+- 新会话无 `assistant/message` 也要处理
+- `append` 抛错只记日志不外抛
+
+`src/middleware/sticker-capture.test.ts`（4 个）：
+
+- 一次 10 张也不并发超过 3
+- 某张抛错后计数回退（**前 3 个都抛**，泄漏即失败）
+- `fullDownload=false` 退回只收 3 张
+- `collectEnabled=false` 一张都不碰
+
+### 关于 #92 的生命周期修复（顺带补齐）
+
+`#92` 只修了一半，回归审核又抓出这些：
+
+| 坑 | 后果 | 修法 |
+|---|---|---|
+| 代次用**全局**计数器 | 实例 B 卸载 → A 正在等的登录醒来误判自己过期，**把自己 kill 掉** | 代次按 `owner` 分桶 |
+| 免扫码成功路径直接 `return` | 本次新建的 `handle`/`cdp` 还没进 `sessions`，`closeSession` 查不到 → **孤儿浏览器进程** | 抽 `closeOwned()`，4 处成功出口都用它 |
+| `owner` 分桶**没接上生产调用链** | `channel-tools` 调 `qunBrowserLoginStart` 不传 owner，dispose 传 `instanceToken` ⇒ 两桶不同 ⇒ `stale()` **恒为 false** ⇒ 代次检查一次都不触发，等于没修 | 加 `currentOwner` + `setQunLoginOwner()`，`opts.owner ?? currentOwner` |
+
+**通用教训**：加"归属/代次"这类机制时，**必须 end-to-end 验证一遍真实调用链**。单元层面看着对、类型也对，但参数根本没传进来 —— 这种"空转"比不加还危险，因为它给人一种"已经修好了"的错觉。
+
+### 未处理（留给后续）
+
+- **devDependency 版本漂移**：`dsh-session` 的 `devDependencies` 是 `0.1.0-rc.6`，运行时是 `0.2.2-rc.3`，`SurfaceOp` 类型**相反**，`peerDependencies` 还无上界。本次用运行时自适应兜住了，但根因没修（建议 devDep 对齐运行时 + peer 加上界）
+- **两处正则各自维护**：`image-path-surface.ts` 与 `session-manager.ts` 各有一套，该抽公共函数
+- **下载队列是模块级的**：同进程多实例会互相拖慢（A 排 80 张会拖慢 B）
+- **实例标识未透传到工具层**：`qq_group_admin` 是模块级 `defineTool`，拿不到 `apply()` 的 token，多实例下 A 的登录会记到 B 名下（已用无主兜底，不会永久泄漏）

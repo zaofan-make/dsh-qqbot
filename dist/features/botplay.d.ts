@@ -245,6 +245,15 @@ export declare class BotplayController {
     private _kernel?;
     setKernel(kernel: unknown): void;
     private applyEffect;
+    /**
+     * 卡片异常提示（失效/超时/权限不足）的安全回复。
+     *
+     * `mention`：@ 触发人。卡片失效类提示如果只发正文，群里不知道在说谁；
+     * 单独一行 `<@openid>` + 空行再接正文（与扩展包 lib/card-format.mjs 同一口径）。
+     *
+     * 失败回落：人格切换会重建会话，旧卡片的 `replyTarget.msgId` 可能已过期，
+     * 此时用不带 msgId 的主动发送再试一次，避免提示被静默吞掉。
+     */
     private safeReply;
     /**
      * 通知自定义模块"这张卡片过期了"(onExpire; 2026-10-05)。

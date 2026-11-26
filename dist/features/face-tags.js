@@ -28,8 +28,16 @@ const QQ_FACE_NAMES = {
     '150': '无语', '151': '献花', '152': '撇嘴2', '153': '暗送秋波', '154': '挑眉', '155': '委屈2',
     '156': '吓哭', '157': '财神', '158': '右太极', '159': '歌唱', '160': '水', '161': '猪头2',
 };
+/**
+ * 图片表情 / 收藏表情的 faceType。
+ *
+ * faceType=6 是「图片贴纸」：ext 通常是 `{"text":""}`，faceId 常见 "0" 但**不是**经典表情 id。
+ * 旧实现空 text 时拿它去查经典表 → faceId=0 一律命中「微笑」，
+ * 于是群友发贴纸，模型一律理解成「她在笑」。按 faceType 区分后输出中性的「【图片表情】」。
+ */
+const QQ_IMAGE_FACE_TYPE = '6';
 /** 解新格式标签: 返回可读文本(找不到名字给通用占位) */
-function decodeNewTag(_full, faceId, ext) {
+function decodeNewTag(faceType, faceId, ext) {
     // 1) ext 里带 text → 官方给的名字最准
     if (ext) {
         try {
@@ -43,7 +51,10 @@ function decodeNewTag(_full, faceId, ext) {
             /* ext 不可解 → 走 faceId 兜底 */
         }
     }
-    // 2) faceId 查表
+    // 2) 图片表情 / 收藏表情：faceId 不是经典表情 id，绝不能按经典表查（否则 faceId=0 一律「微笑」）
+    if (String(faceType) === QQ_IMAGE_FACE_TYPE)
+        return '【图片表情】';
+    // 3) faceId 查表
     const name = QQ_FACE_NAMES[faceId];
     if (name)
         return `【表情: ${name}】`;
@@ -54,12 +65,9 @@ export function resolveFaceTags(text) {
     if (!text)
         return text;
     // 新格式: <faceType=N,faceId="X",ext="b64"> (属性顺序可能与 SDK 不同, 宽松匹配)
-    let out = text.replace(/<faceType=\d+,faceId="([^"]*)",ext="([^"]*)">/g, (m, id, ex) => decodeNewTag(m, id, ex));
+    let out = text.replace(/<faceType=(\d+),faceId="([^"]*)",ext="([^"]*)">/g, (_m, ft, id, ex) => decodeNewTag(ft, id, ex));
     // 宽松形态(缺 ext / 顺序不同): <faceType=N,faceId="X">
-    out = out.replace(/<faceType=\d+,faceId="([^"]*)">/g, (_m, id) => {
-        const name = QQ_FACE_NAMES[id];
-        return name ? `【表情: ${name}】` : (id ? `【表情: id${id}】` : '【表情】');
-    });
+    out = out.replace(/<faceType=(\d+),faceId="([^"]*)">/g, (_m, ft, id) => decodeNewTag(ft, id, ''));
     // 老格式: [<face,id=N/>]
     out = out.replace(/\[<face,id=(\d+)\/?>]/g, (_m, id) => {
         const name = QQ_FACE_NAMES[id];

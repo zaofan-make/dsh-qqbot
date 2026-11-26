@@ -16,6 +16,9 @@ const SILENT_TOOLS = new Set(['reply_gate']);
 export function formatToolResult(name, rawArgs, data, toolsRegistry, agent) {
     // 1. 错误优先：始终展示（静默工具除外——其中止=有意静默，如 reply_gate 吃瓜 self-cancel）
     if (data.error) {
+        // QQ 群不展示联网工具的凭据与网络内部错误（可能含 token / 内部 URL）。
+        if (name === 'web_search' || name === 'web_fetch')
+            return null;
         if (SILENT_TOOLS.has(name))
             return null;
         return `❌ 工具 \`${name}\` 执行失败\n\`${data.error.name}: ${data.error.code}\``;
