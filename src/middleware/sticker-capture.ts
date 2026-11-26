@@ -85,8 +85,6 @@ interface CaptureJob {
   senderName?: string;
   sourceGroup?: string;
   msgText?: string;
-  /** 归属键（group:<gid> / c2c:<uid>）—— 用于「这个会话还有几张没下完」的等待 */
-  peerKey: string;
   config: ImQQBotConfig;
   logger: Logger;
 }
@@ -172,11 +170,6 @@ function enqueue(job: CaptureJob): void {
   pump();
 }
 
-/** 诊断用：当前队列长度 / 在飞数 */
-export function stickerQueueStats(): { queued: number; inflight: number } {
-  return { queued: queue.length, inflight };
-}
-
 export function stickerCapture(config: ImQQBotConfig, logger: Logger) {
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     // 先"发起"下载（不等它完成），再走主链 —— 保证被后续截断(未@被门控吞)也照样收藏。
@@ -198,15 +191,11 @@ export function stickerCapture(config: ImQQBotConfig, logger: Logger) {
         const picked = config.sticker.fullDownload === false ? all.slice(0, MAX_PER_MSG) : all;
         if (picked.length > 0) {
           const isGroup = (ctx.message as { kind?: string }).kind === 'group';
-          const peerKey = isGroup
-            ? `group:${String(msg.groupOpenid ?? '')}`
-            : `c2c:${String(msg.senderId ?? '')}`;
           const snapshot = {
             senderId: msg.senderId,
             senderName: msg.senderName,
             sourceGroup: isGroup ? msg.groupOpenid : undefined,
             msgText: (msg.content ?? '').trim().slice(0, 120) || undefined,
-            peerKey,
             config,
             logger,
           };

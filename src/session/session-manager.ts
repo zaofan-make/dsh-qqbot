@@ -2105,7 +2105,10 @@ export class SessionManager {
         //   为什么在这里：图片下载是后台 fire-and-forget（不阻塞入站），消息组装时可能还没下完；
         //   而 `dec.messages` 是「本步从收件箱取出的新消息」，正是**上下文已就位、回合正要开始**的那一刻。
         //   在这儿查 image-path-cache，下完几张就换几张，没下完的原样留着（回退 QQ 链接）。
-        //   与 compression/replace 无关：只改即将发给模型的那份副本，不动 session 事件流。
+        //   ⚠️ 2026-11-26（审核 S8 更正）：这段改写**会进 session** —— 宿主 agent-loop 的 step()
+        //   会把 decision.messages 逐条 `session.append('user/message', …, {surfaceOp:'append'})`。
+        //   所以是"一次性改写并落库"，不是"只改副本"。副作用：本地路径日后若被图片回收删掉，
+        //   原 QQ 链接已不可恢复 —— 这也是它虽不带开关、仍要尽量收窄范围的原因。
         try {
           let imgReplaced = 0;
           // 防御：只扫前 24 条（`dec.messages` 正常只有 1~3 条；真遇到大批量也不至于卡住热路径）
@@ -2124,7 +2127,9 @@ export class SessionManager {
               // 只碰含 QQ 图片下载链接的文本块，其他内容一律不动
               if (!/multimedia\.nt\.qq\.com\.cn|qq\.com\/download/i.test(c.text)) return c;
               let blockChanged = false;
-              const replacedText = c.text.replace(/https:\/\/[^\s)]+/g, (u: string) => {
+              // ⚠️ 字符类必须排除 `]`/`>`/中文标点：本仓库图片占位是 `[图片: <url>]`，
+              //   用 `[^\s)]` 会把 `]` 与紧跟的正文一起吃掉（审核 M1）。
+              const replacedText = c.text.replace(/https:\/\/[^\s)\]}>"'，。；！？、【】（）《》]+/g, (u: string) => {
                 const local = lookupImagePath(u);
                 if (!local) return u;
                 imgReplaced++;

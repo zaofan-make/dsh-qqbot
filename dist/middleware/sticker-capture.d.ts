@@ -28,10 +28,5 @@
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
-/** 诊断用：当前队列长度 / 在飞数 */
-export declare function stickerQueueStats(): {
-    queued: number;
-    inflight: number;
-};
 export declare function stickerCapture(config: ImQQBotConfig, logger: Logger): (ctx: MiddlewareContext, next: () => Promise<void>) => Promise<void>;
 //# sourceMappingURL=sticker-capture.d.ts.map

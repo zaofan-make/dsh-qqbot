@@ -283,6 +283,8 @@ export interface EditableConfig {
     autoTagEnabled?: boolean;
     /** 视觉引擎命令模板(留空自动探测) */
     visionCli?: string;
+    /** 一条消息里的图是否全部下载（默认开；老行为=只收前 3 张）· 审核 S6 补 */
+    fullDownload?: boolean;
   };
   injectRules: InjectRuleConfig[];
   /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条
@@ -754,6 +756,7 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
     gates: stickerGatesSchema,
     autoTagEnabled: Schema.boolean().default(false).description('新图后台自动识图打标(耗视觉额度,默认关)'),
     visionCli: Schema.string().default('').description('视觉引擎命令模板(留空自动探测)'),
+    fullDownload: Schema.boolean().default(true).description('一条消息里的图全部下载(默认开): 原来每条只收前 3 张, 开=全部入队后台慢慢下; 关=老行为'),
   }).description('表情包图库'),
   injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则'),
   imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),

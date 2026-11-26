@@ -23,9 +23,10 @@
  *   · 被替换的 seq **必须还在当前 surface 上**（`surface.nodes.indexOf(seq) !== -1`），
  *     已被替换过的再换会抛错
  *
- *   ⚠️ 宿主对字段名是**严格校验**的（`isReplaceOp`）：必须恰好 `{ op, start, end }` 三个键。
- *      写成 `startSeq/endSeq` 会被判为 invalid 并抛错 —— 这正是本仓库
- *      `image-offload.ts` 的现存问题（它的调用处把异常吞成 debug 日志了）。
+ *   ⚠️ 宿主对字段名**严格校验**（`isReplaceOp`）：键集合必须与版本完全匹配，多一个少一个都 invalid。
+ *      · 运行时 @deepseek-ai/dsh-session@0.2.2-rc.3 → `{ op, startSeq, endSeq }`（已实测 foldSurface 通过）
+ *      · 仓库 devDependency 0.1.0-rc.6 与新源码仓库     → `{ op, start, end }`
+ *      两者互斥。**不要照源码仓库改成 start/end** —— 运行期会静默失效（只留一条 debug 日志）。
  *
  * ## 处理范围（2026-11-26 主人定）
  *
@@ -40,7 +41,16 @@
  */
 import { lookupImagePath } from './image-path-cache.js';
 /** 只认 QQ 图片下载链接（别的 URL 一律不碰，避免误伤正文里的普通链接） */
-const QQ_IMAGE_URL_RE = /https:\/\/[^\s)]*(?:multimedia\.nt\.qq\.com\.cn[^\s)]*|qq\.com\/download[^\s)]*)/g;
+/**
+ * QQ 图片 URL 的匹配式。
+ *
+ * ⚠️ 2026-11-26（审核 M1）：原写法 `[^\s)]` 只排除空白和半角右括号，**没排除 `]`**。
+ *   而本仓库图片占位的真实格式就是 `[图片: <url>]`（见 gateway/debounce.ts 的
+ *   `[图片: ${local ?? url}]`），于是替换会把 `]` 一起吃掉，紧跟其后的正文也被吞 ——
+ *   改完比不改更糟。字符类补上 `] > } " '` 与中文标点，与 image-offload 的
+ *   `/\[图片:\s*https?:\/\/[^\]]*\]/` 口径对齐。
+ */
+const QQ_IMAGE_URL_RE = /https:\/\/[^\s)\]}>"'，。；！？、【】（）《》]+/g;
 /** 这条消息的文本块里有没有 QQ 图片 URL */
 function hasQqImageUrl(content) {
     if (!Array.isArray(content))
@@ -99,9 +109,13 @@ export async function replaceImagePathsInSurface(agent, logger, turn, opts) {
     if (!Array.isArray(nodes) || nodes.length < 2)
         return 0;
     // 起点：默认只扫尾部（最后一条 assistant/message 之后）
+    // ⚠️ 2026-11-26（审核 S3）：新会话还没说过话时 surface 上没有 assistant/message，
+    //   若把 start 留在 nodes.length，循环一次都不跑 ⇒「新会话首批图永远不被处理」。
+    //   找不到边界就退回 1（跳过索引 0 的 system 节点），整段都算"本回合新来的"。
     const scope = opts?.scope ?? 'tail';
-    let start = scope === 'tail' ? nodes.length : 1;
+    let start = 1;
     if (scope === 'tail') {
+        let found = false;
         for (let i = nodes.length - 1; i >= 1; i -= 1) {
             const sq = nodes[i];
             if (sq === undefined)
@@ -109,19 +123,24 @@ export async function replaceImagePathsInSurface(agent, logger, turn, opts) {
             const ev = sess.eventAt(sq);
             if (ev && ev.type === 'assistant/message') {
                 start = i + 1;
+                found = true;
                 break;
             }
         }
+        if (!found)
+            start = 1;
     }
     const maxMessages = Math.max(1, Math.min(24, opts?.maxMessages ?? 8));
-    const onSurface = new Set(nodes);
+    // 用进来那一刻的 surface 快照遍历：append 会让 nodes 变长/变位，
+    // 直接按索引走容易读到刚插进去的替换事件（审核 S4）。
+    const snapshot = [...nodes];
     let totalReplaced = 0;
     let messagesTouched = 0;
     // 从后往前：最新的消息最可能是"刚下载完、正等着换成路径"的那条
-    for (let i = nodes.length - 1; i >= start; i -= 1) {
+    for (let i = snapshot.length - 1; i >= start; i -= 1) {
         if (messagesTouched >= maxMessages)
             break;
-        const seq = nodes[i];
+        const seq = snapshot[i];
         if (seq === undefined)
             continue;
         const ev = sess.eventAt(seq);
@@ -133,11 +152,6 @@ export async function replaceImagePathsInSurface(agent, logger, turn, opts) {
         const rewritten = rewriteContent(content);
         if (!rewritten)
             continue;
-        // 关键校验：被替换的 seq 必须还在当前 surface 上，否则宿主会抛
-        if (!onSurface.has(seq)) {
-            logger?.debug?.(`[img-path-surface] seq=${seq} 已不在 surface 上，跳过`);
-            continue;
-        }
         try {
             sess.append('user/message', {
                 ...ev.data,

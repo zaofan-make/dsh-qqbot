@@ -265,6 +265,8 @@ export interface EditableConfig {
         autoTagEnabled?: boolean;
         /** 视觉引擎命令模板(留空自动探测) */
         visionCli?: string;
+        /** 一条消息里的图是否全部下载（默认开；老行为=只收前 3 张）· 审核 S6 补 */
+        fullDownload?: boolean;
     };
     injectRules: InjectRuleConfig[];
     /** 图片消息是否自动追加「看图」内置提示(默认 true)。关掉=不再注入「请把 URL 传给识图工具」那条

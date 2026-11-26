@@ -1922,7 +1922,9 @@ window.__ModuleLoader__.load({
             autoTagEnabled: !!(v.sticker && v.sticker.autoTagEnabled),
             visionCli: (v.sticker && typeof v.sticker.visionCli === 'string') ? v.sticker.visionCli : '',
             // ★ 2026-11-26：图片全量下载。不在这里收集 = 面板存了也不生效（老坑）
-            fullDownload: !!(v.sticker && v.sticker.fullDownload !== false),
+            //   审核 S7：cfg 为空时 v.sticker 是 undefined → 原来会写死 false，把默认「开」掀成「关」。
+            //   改成 undefined 语义：没配置就不写，交给 schema 默认值。
+            fullDownload: (v.sticker && typeof v.sticker.fullDownload === 'boolean') ? v.sticker.fullDownload : undefined,
           },
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,

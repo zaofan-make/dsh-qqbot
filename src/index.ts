@@ -599,6 +599,10 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
     //   而 entry 缺这几个键 ⇒ 用**默认值**覆盖用户的真实配置：
     //   例 extMetaTool 默认 true（用户关了会被掀回 true）、webTurnSilent 默认 false（用户开了会被关掉）。
     imageOffload: live.imageOffload,
+    // ★ 2026-11-26（审核 M2）：entry 不带这个字段 → 面板显示走 schema 默认 false，
+    //   用户配置里写了 true 也显示成 false。本文件的 CodeRabbit 注释已强调过：
+    //   「sync 里同步的字段 entry 必须也带上」。这是第五次踩同一个坑。
+    imagePathSurface: live.imagePathSurface,
     imageAggregate: live.imageAggregate,
     messageReference: live.messageReference,
     extMetaTool: live.extMetaTool,
@@ -644,6 +648,8 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       // ★★ 2026-11-14 修（审查发现）：`EditableConfigSchema` 里这几个字段**面板能改但 sync 没同步** ——
       //   保存后旧值一直生效，只有重启才变。逐项补齐（与 schema 对齐）。
       if (typeof next.imageOffload === 'boolean') live.imageOffload = next.imageOffload;
+      // ★ 2026-11-26（审核 M2）：不在这里同步 → 面板勾了保存，live 不变，必须重启才生效。
+      if (typeof next.imagePathSurface === 'boolean') live.imagePathSurface = next.imagePathSurface;
       if (next.imageAggregate && typeof next.imageAggregate === 'object') live.imageAggregate = next.imageAggregate;
       if (typeof next.messageReference === 'boolean') live.messageReference = next.messageReference;
       if (typeof next.extMetaTool === 'boolean') live.extMetaTool = next.extMetaTool;
@@ -690,7 +696,7 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       // ⚠️ 仅当 settings 提供了**非空**数组时才覆盖 live, 否则空数组会把文件装载的事件清掉
       //    (实测症状: dock 保存后 /botplay 报"还没有装配任何互动事件")。
       if (Array.isArray(next.botplayEvents) && next.botplayEvents.length > 0) live.botplayEvents = next.botplayEvents;
-      logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
+      logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imagePathSurface/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
     } catch (err) {
       logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);
     }
