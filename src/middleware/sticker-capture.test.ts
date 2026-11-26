@@ -93,7 +93,9 @@ describe('stickerCapture 队列', () => {
     let n = 0;
     captureImpl.mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new Error('boom');
+      // S-b：前 3 个都抛（而不是只抛 1 个）—— 若 inflight 真泄漏，并发从 3 降到 0，
+      //   后面 5 张永不启动，调用次数会停在 3 ≠ 8，断言必失败。
+      if (n <= 3) throw new Error('boom');
       await new Promise((r) => setTimeout(r, 5));
       return { status: 'new', id: 'x' };
     });

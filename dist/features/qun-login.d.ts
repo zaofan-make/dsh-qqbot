@@ -16,6 +16,14 @@ export declare function findSystemBrowser(): string | null;
 /** 由插件 apply() 设置：本进程当前实例的归属 token（传 undefined = 清除） */
 export declare function setQunLoginOwner(owner: object | undefined): void;
 /**
+ * 卸载时清回默认值（S-a，复审建议）。
+ *
+ * ⚠️ 必须**只清自己的**：A、B 两实例共存时，A 卸载若无条件清成 undefined，
+ *   会把 B 的 currentOwner 也抹掉 → B 之后发起的登录又落回 undefined 桶，
+ *   M3 的代次检查对 B 就失效了。
+ */
+export declare function clearQunLoginOwner(owner: object): void;
+/**
  * 供插件 dispose 生命周期调用：清理登录浏览器会话与空闲定时扫描器。
  *
  * @param owner 传入时只关掉**该实例创建**的会话（多实例/热重载安全）；

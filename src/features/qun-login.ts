@@ -264,6 +264,17 @@ export function setQunLoginOwner(owner: object | undefined): void {
   currentOwner = owner;
 }
 
+/**
+ * 卸载时清回默认值（S-a，复审建议）。
+ *
+ * ⚠️ 必须**只清自己的**：A、B 两实例共存时，A 卸载若无条件清成 undefined，
+ *   会把 B 的 currentOwner 也抹掉 → B 之后发起的登录又落回 undefined 桶，
+ *   M3 的代次检查对 B 就失效了。
+ */
+export function clearQunLoginOwner(owner: object): void {
+  if (currentOwner === owner) currentOwner = undefined;
+}
+
 function genOf(owner: object | undefined): number {
   return lifecycleGenerations.get(owner) ?? 0;
 }

@@ -26,7 +26,7 @@ void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 import { setLexicalFallback } from './features/local-embed.js';
-import { disposeQunLogin, setQunLoginOwner } from './features/qun-login.js';
+import { clearQunLoginOwner, disposeQunLogin, setQunLoginOwner } from './features/qun-login.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -58,8 +58,8 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   try { setQunLoginOwner(instanceToken); } catch { /* ignore */ }
   (ctx as unknown as { on?: (event: string, cb: () => void) => void }).on?.('dispose', () => {
     disposeQunLogin(instanceToken);
-    // 别把死 token 留成默认值（下一个实例会自己设新的）
-    try { setQunLoginOwner(undefined); } catch { /* ignore */ }
+    // 别把死 token 留成默认值 —— 但只清**自己的**（多实例时别误清别人的 currentOwner）
+    try { clearQunLoginOwner(instanceToken); } catch { /* ignore */ }
   });
 
   // ── 扩展 UI 自动铺设（2026-10-27 主人要求）─────────────────────────────
