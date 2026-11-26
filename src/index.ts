@@ -26,6 +26,7 @@ void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 import { setLexicalFallback } from './features/local-embed.js';
+import { disposeQunLogin } from './features/qun-login.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -47,6 +48,9 @@ export type { ImQQBotConfig } from './config.js';
 export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> {
   const agents = (ctx as unknown as Record<string, unknown>).agents as DshAgentRegistry;
   const logger: Logger = ((ctx as unknown as Record<string, unknown>).logger as Logger) ?? console;
+  (ctx as unknown as { on?: (event: string, cb: () => void) => void }).on?.('dispose', () => {
+    disposeQunLogin();
+  });
 
   // ── 扩展 UI 自动铺设（2026-10-27 主人要求）─────────────────────────────
   //   为什么要在启动时做：

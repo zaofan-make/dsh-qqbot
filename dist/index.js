@@ -23,6 +23,7 @@ void runQrSetup;
 void persistCredentialsToProfile;
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 import { setLexicalFallback } from './features/local-embed.js';
+import { disposeQunLogin } from './features/qun-login.js';
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
 //   - alpha / 0.1.2 线：改为 ctx.settings 服务，方法 installSection(ctx, ns, schema, entry, hooks)
@@ -39,6 +40,9 @@ export const Config = ConfigSchema;
 export async function apply(ctx, config) {
     const agents = ctx.agents;
     const logger = ctx.logger ?? console;
+    ctx.on?.('dispose', () => {
+        disposeQunLogin();
+    });
     // ── 扩展 UI 自动铺设（2026-10-27 主人要求）─────────────────────────────
     //   为什么要在启动时做：
     //     · slot=settings 的卡片必须落在 {PROFILE_ROOT}/.qqbot-extensions/ui/
