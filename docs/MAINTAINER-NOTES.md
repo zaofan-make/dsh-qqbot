@@ -4795,3 +4795,218 @@ const QQ_IMAGE_URL_RE = new RegExp(
 - **两处正则各自维护**：`image-path-surface.ts` 与 `session-manager.ts` 各有一套，该抽公共函数
 - **下载队列是模块级的**：同进程多实例会互相拖慢（A 排 80 张会拖慢 B）
 - **实例标识未透传到工具层**：`qq_group_admin` 是模块级 `defineTool`，拿不到 `apply()` 的 token，多实例下 A 的登录会记到 B 名下（已用无主兜底，不会永久泄漏）
+
+---
+
+## §35 工具与界面可见性：把「能力归属」写进类型系统（2026-11-26，issue #94 / PR #95）
+
+### 起因：一个用户被逼着每次升级手改 dist
+
+issue #94 的作者只用 QQ 私聊、完全不用群，但三样东西「启用即无条件生效」：
+
+| 项目 | 原状 |
+|---|---|
+| 32 个内置工具（10 个纯群治理） | `for (t of toolDefs) ctx.tools.register(t)` 零过滤 —— 说明每轮吃 context |
+| 悬浮球 7 个内置标签 | 无条件拼字符串 |
+| 小传提醒 | 无条件注入 `agentBody` |
+
+他用过 **17 个版本**，项目 **19 天发 40 个 release**，每次都要在**压缩后的 dist** 上重打三处补丁。
+他的原话值得记住：
+
+> **「这不是抱怨更新频繁 —— 更新多是好事。问题是「用户想关掉的功能只能靠改打包文件来关」。」**
+
+### 诊断：不是缺 15 个开关，是缺一层元数据
+
+`toolDefs` 原来只有 `{ name, tool }` —— **谁属于哪类能力，只活在人的脑子里**。
+所以每加一个工具，就多一个「漏了门控」的机会。
+
+修法是补齐这个维度，而不是加一堆 boolean：
+
+```ts
+const toolDefs: Array<{ name: string; tool: unknown; scope: ToolScope }> = [
+  //                                      ↑ 必填。漏标 = 编译失败
+```
+
+`ToolScope = 'group' | 'cross' | 'memo' | 'base'`（32 个工具逐个归类，见 `channel-tools.ts` 注释）。
+
+**为什么必填而不是可选**：漏标在编译期就红，而不是运行期静默漏掉、让用户再提一次同样的 issue。
+
+### ⚠️ 判定必须复用 `enabled(env)`，不要另造
+
+项目里**早就有正确的机制**（`extension-store.ts:211`，2026-11-14 加的，扩展工具一直在用）：
+
+```ts
+/**
+ * 条件可见：注册前调用，返回 false ⇒ **不注册**（AI 完全看不见，不是"看得见但报错"）。
+ * 不声明 = 永远可见。为什么这就是"热开关"：注册按会话走，新会话/`/tools-reload` 重新求值。
+ */
+enabled?: (env) => boolean | Promise<boolean>;
+```
+
+配套的四个现成模式（照抄即可，别发明）：
+
+| 模式 | 位置 | 说明 |
+|---|---|---|
+| 注册前判定 | `3044-3068` | false → `continue` **不注册** |
+| **fail-closed** | `3056` | 判据抛错 ⇒ 按不可见处理 |
+| disposer 回收 | `3060-3068` | `if (!vis) { stale?.(); delete }` |
+| 步骤级重算 | `3251-3276` | 包成 `register(def, { when })`，改配置下一轮生效 |
+
+**当天走过的弯路**：专家团（8 个 agent）争论「用 restrict 还是 continue」，两个都不是最优 ——
+项目自己的 `enabled(env)` 才是，而且已经在跑了两个月。**我给他们看的材料里没提这条。**
+
+### 五个硬伤（全是"看着对、实际空转"）
+
+#### 1. `register()` 的返回值被丢弃 ⇒ 热关闭根本不可能
+
+```ts
+ctx.tools.register(t.tool as never);     // ← 原来的写法，返回值直接扔了
+```
+
+`channel-tools.ts:2909` 的注释其实早写了「`register()` 其实返回 disposer」——
+只是内建工具那一层没收。补上之后才有「关了就是真关」：
+
+```ts
+const dispose = ctx.tools.register(t.tool);
+if (typeof dispose === 'function') myDisposers.set(t.name, dispose);
+```
+
+#### 2. disposer 用工具名做 key、模块级 → 跨 agent 覆盖
+
+`ctx.tools.register()` 是 **per-agent 各注册一份**。用 `Map<工具名, disposer>` 的话：
+
+```
+会话 A apply → set('send_media', A的句柄)
+会话 B apply → 覆盖成 B的句柄       ← A 的句柄永丢
+配置关掉 → 只撤 B 的，A 依然可见
+A 之后再 apply → 撞 already registered → 拿不到新句柄 → A 永远关不掉
+```
+
+改成按 ctx 分桶：
+
+```ts
+const builtinDisposerBuckets = new WeakMap<object, Map<string, () => void>>();
+```
+
+#### 3. 判据的「传入点」与「消费点」不在同一个桶 ⇒ 机制空转
+
+`syncChannelScopedTools` 的 `sig` 只有两位（`${ctxTools}${groupAdmin}`）。
+新增可见性维度后，**sig 不变 ⇒ `if (st.sig === sig) return` 直接跳过 ⇒ 静默不生效**。
+
+而且更隐蔽的：它有**两个调用点**（claim / pre-step），只给一处传 `config` 的话：
+
+```
+claim     → config 有 → qunVisible='0' → sig "100"
+pre-step  → config 无 → qunVisible='1' → sig "101"
+⇒ 同一回合内每 step 都撤销+重注册工具表
+⇒ 宿主每步发「工具已更新·移除/新增」（还进上下文，纯烧 token）
+```
+
+这**恰好是 `ctxScopeState` 当初存在的理由**（源码注释原文："每步都动一次工具表 → 宿主每步都发…"）。
+我把 sig 加维度时把它重新激活了。
+
+**两条修法都要**：
+
+```ts
+// ① 补上漏的 config（根治）
+syncChannelScopedTools(ctx, { ..., config: this.config });
+// ② 不影响 want 的维度不进 sig（防御）
+const qunVisible = opts.groupAdmin && !toolVisible('qq_group_admin', 'group', opts.config) ? '0' : '1';
+```
+
+#### 4. UI 的「类总勾」两个方向都失效
+
+```js
+// 前端
+members.forEach(n => delete overrides[n]);
+// 后端 mergeDeepOne（settings-host.js:477）
+//   patch 里没有的键 → 保留 cur 的旧值（只增不减）
+```
+
+那句 `delete` 提交上去**等于没删**。而判定是 `overrides` 优先 ⇒
+
+- 先单独关掉某个工具，再点「全显示」→ 它还是隐藏
+- 先单独勾回某个工具，再点「全隐藏」→ 它还是可见
+
+用户点完提示「✓ 已保存」，刷新一看纹丝不动，**而且没法用 UI 自救**（只能手改 json）——
+**跟这个 issue 抱怨的"只能手改 dist"是同一类痛苦**。
+
+**修法：用 `null` 表达「取消覆盖」**
+
+```js
+members.forEach(n => { overrides[n] = null });   // 前端
+// 判定用 typeof === 'boolean' 严格判 → null 自动落到 classes 分支
+// load 时 cleanOv() 把 null 剔掉，保持内存干净
+```
+
+实测（`temp/verify_p0a.mjs` 那种探针，照抄两边逻辑跑）：
+
+| 场景 | 旧实现 | 新实现 |
+|---|---|---|
+| 先关单项 → 点全显示 | ❌ 仍隐藏 | ✅ 恢复可见 |
+| 先勾回单项 → 点全隐藏 | ❌ 仍可见 | ✅ 正确隐藏 |
+
+#### 5. `classes.all` 是个假接口
+
+类型写成 `Partial<Record<ToolScope | 'all', boolean>>`，但判定只读 `cls[scope]`，**从不读 `all`**。
+schemastery 又会把 `all` 原样保留 ⇒ 配置文件里存着 `all: false` 却完全无效。
+最坏的一种「配置了但不生效」。**要么实现，要么从类型里删掉。**
+
+### 判定链（两边必须逐行同源）
+
+```
+overrides[名字] ＞ classes[类] ＞ 默认 true
+```
+
+`src` 侧 `toolVisible()` / `dockTabVisible()`、`client` 侧 `visOf()` / `dockOn()`——
+**client 是手写 bundle，import 不到 dist，所以是双源同步**。改一处必须改另一处，
+注释里已标成「契约锚点」。
+
+### 验收要可观测
+
+```
+[channel-tools] 按配置隐藏 10 个工具（22/32 已注册）: group_join_requests, ...
+```
+
+只在「隐藏集合变化」时打（`lastVisibilitySig`），否则 `ensureChannelTools` 每条消息都跑，日志会被淹。
+
+issue 作者以前用日志证明「32 个工具全部注册」，现在能用同一行证明「挡掉了 10 个」——
+**把他的验证方式反过来用**。
+
+### dock 球：不隐藏，只隐藏里面的标签
+
+主人明确要求（也是 issue 里 P1 建议的修正）：
+
+- **球本身不隐藏** —— 它是**容器**，「⚙️ 出站」那一栏也在里面，整关会把无关功能一起关掉
+- 只隐藏里面的**内置标签**，按 3 类（群管理 / 群发 / 基础）
+- **自定义扩展的标签一个字都不动** —— 那是用户自己装的，不该被内置开关连坐
+- 当前 tab 落在被隐藏的标签上要**回落**，全隐藏时给一句可读提示（别留空标签条 + 照常渲染）
+
+### 排查清单
+
+看到「用户说关了但没用」时：
+
+1. **先确认AI侧真的看不见** —— 让模型自己答「能不能调用 X」，比看配置可靠
+2. 配置写到哪了？`~/.dsh/qqbot-settings/<ns>.json` 里有没有 `visibility`
+3. 工具可见性**需重启宿主**（注册发生在启动时）；dock 标签刷新页面即可
+4. 看 `[channel-tools] 按配置隐藏 N 个` 那行
+5. 单项 vs 类的优先级搞反了？（`overrides` 赢）
+
+### 已知限制
+
+- `qq_group_admin` 跟 `group` 类一起关，无独立开关（它本来就受 `groupAdmin.enabled` 管）
+- 关掉「入群审批」标签后悬浮球红点仍显示（`refreshBadge` 在另一个作用域，拿不到判定函数）
+- `syncContextTools` / `ensureContextToolsGlobal` 已废弃（全仓无调用点），复活前必须补 `toolVisible`
+- `VisibilityPage` 保存后没回写服务器返回值（深合并能兜住，但不如设置页严谨）
+
+### 通用教训（比这个功能本身重要）
+
+> **加任何"机制"（分桶 / 代次 / 开关 / 缓存）之后，必须端到端验证真实调用链 ——
+> 而不是验证「字段被设置了」。**
+>
+> 单元层面看着对、类型也对，但参数根本没传进来 —— 这种**空转**比不加还危险，
+> 因为它给人一种"已经修好了"的错觉。
+
+以及：**做 UI 时先确认真实存在的 API 端点**。我这次写了个 `api/qqbot-settings/config`，
+那端点**根本不存在**（只有 `/read` 和 `/update`），整页会永久卡在「读取配置中…」，
+连错误都不显示（因为 `if (!cfg) return '读取配置中…'` 把错误信息一起挡住了）。
