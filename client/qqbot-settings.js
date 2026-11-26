@@ -1829,12 +1829,24 @@ window.__ModuleLoader__.load({
             setRev(j.revision)
             var c = j.value || {}
             if (!c.visibility) c.visibility = {}
+            // ★ P0-A-new ②：把 null / 非 boolean 的残留剔掉 —— 它们是「取消覆盖」的标记，
+            //   语义上等于"没配过"，不该出现在内存状态里（否则 UI 会显示成半选、保存时又会带回去）。
+            //   剔除只影响本次渲染；存储里那几条 null 无害（判定时被 typeof 挡掉）。
+            var cleanOv = function (ov) {
+              var o = {}
+              if (ov && typeof ov === 'object') {
+                Object.keys(ov).forEach(function (k) { if (typeof ov[k] === 'boolean') o[k] = ov[k] })
+              }
+              return o
+            }
             if (!c.visibility.tools) c.visibility.tools = {}
             if (!c.visibility.tools.classes) c.visibility.tools.classes = {}
             if (!c.visibility.tools.overrides) c.visibility.tools.overrides = {}
             if (!c.visibility.dock) c.visibility.dock = {}
             if (!c.visibility.dock.classes) c.visibility.dock.classes = {}
             if (!c.visibility.dock.overrides) c.visibility.dock.overrides = {}
+            c.visibility.tools.overrides = cleanOv(c.visibility.tools.overrides)
+            c.visibility.dock.overrides = cleanOv(c.visibility.dock.overrides)
             setCfg(c); setDirty(0); setMsg('')
           })
           .catch(function () { setMsg('✗ 读取配置失败') })
@@ -1856,11 +1868,22 @@ window.__ModuleLoader__.load({
         c.visibility[bucket].overrides[name] = val
         setCfg(c); setDirty(function (d) { return d + 1 })
       }
-      // 类总勾：把这一类全部设为 val（写进 classes，同时清掉该类成员的 overrides —— 否则单项残留会顶掉总勾）
+      // 类总勾：把这一类全部设为 val（写进 classes，同时**清掉**该类成员的 overrides）
+      //
+      // ⚠️ 2026-11-26（审核 P0）：原来写的是 `delete overrides[n]`，**提交上去等于没删** ——
+      //   后端 `mergeDeepOne`（settings-host.js:477）是"只增不减"的：patch 里没有的键，
+      //   会保留 cur 的旧值。于是那条 overrides 永远活着，而判定又是 overrides 优先，
+      //   结果「类总勾」两个方向都失效：勾回全显示时单项 false 还顶事，勾全隐藏时单项 true 还顶事。
+      //   用户点完提示「已保存」，刷新一看纹丝不动，而且没法用 UI 自救。
+      //
+      // 修法：用 **null 表达"取消覆盖"**（键存在但值不是 boolean）——
+      //   · mergeDeepOne 会把 null 当普通值写下去（覆盖掉旧值）✓
+      //   · toolVisible / isOn 都用 `typeof === 'boolean'` 严格判 → null 自动落到 classes 分支 ✓
+      //   · load 时再把 null 剔掉，保持内存状态干净（见 cleanOv）
       function setClass(bucket, cls, members, val) {
         var c = JSON.parse(JSON.stringify(cfg))
         c.visibility[bucket].classes[cls] = val
-        members.forEach(function (n) { delete c.visibility[bucket].overrides[n] })
+        members.forEach(function (n) { c.visibility[bucket].overrides[n] = null })
         setCfg(c); setDirty(function (d) { return d + 1 })
       }
       function classState(bucket, cls, members) {
@@ -5044,11 +5067,16 @@ var QQS_THEME_CSS = [
         }
         var dockOn = function (key, cap) { return visOf('dock', cap, key) }
         // ★ 复审 D：当前 tab 被隐藏时要回落，否则顶上没有激活标签、下面却还在渲染那个面板
-        var TAB_CAP = { roster: 'group', join: 'group', mute: 'group', send: 'cross', chat: 'base', out: 'base', session: 'base' }
+        // ★ 审核 D 补完：子 tab（broadcast/bp/card 是 send 的子页）也要映射，否则停在子页时
+        //   第一个 if 直接短路、不回落 → 顶部没有发送按钮、下面还在渲染广播面板。
+        var TAB_CAP = {
+          roster: 'group', join: 'group', mute: 'group',
+          send: 'cross', broadcast: 'cross', bp: 'cross', card: 'cross',
+          chat: 'base', out: 'base', session: 'base',
+        }
+        var MAIN_TABS = ['chat', 'roster', 'join', 'mute', 'out', 'send', 'session']
         if (TAB_CAP[state.tab] && !dockOn(state.tab, TAB_CAP[state.tab])) {
-          state.tab = ['chat', 'roster', 'join', 'mute', 'out', 'send', 'session'].filter(function (k) {
-            return dockOn(k, TAB_CAP[k])
-          })[0] || 'chat'
+          state.tab = MAIN_TABS.filter(function (k) { return dockOn(k, TAB_CAP[k]) })[0] || ''
         }
         var tabs = '<div class="dk-tab">'
           + (dockOn('roster', 'group') ? '<button data-t="roster" class="' + (state.tab === 'roster' ? 'on' : '') + '">📇 群组管理</button>' : '')
@@ -5064,6 +5092,12 @@ var QQS_THEME_CSS = [
             }).join('')
           + '</div>'
         var body = tabs
+        // ★ 审核 D 补完：一个标签都不剩时，别再往下渲染某个面板（顶部空条 + 下面有内容 = 看起来像坏了）
+        if (!state.tab) {
+          return panel.innerHTML = tabs
+            + '<div class="dk-empty">悬浮球里没有可见标签了。<br>去「设置 → 工具与界面 → 悬浮球标签」打开几个（自定义扩展的标签不受影响）。</div>',
+            void 0
+        }
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
         if (!state.ns || state.accts.length === 0) {
           body += '<div class="dk-empty">还没有配置机器人账号 → 到「账号与预设」页添加后再回来</div>'
@@ -7407,6 +7441,10 @@ var QQS_THEME_CSS = [
           state.ns = list[0].ns || ''
         }
         refreshAll(); paintHead(); paintDetect()
+        // ★ 复审 C（补完）：ns 到这里才确定下来。首次 loadVisibility() 是在挂载时发的，
+        //   那时 state.ns 还是 ''，多账号会读成主实例的可见性。
+        //   loadVisibility 内部有"值没变就不重绘"的保护，这里再调一次是安全的。
+        if (typeof loadVisibility === 'function') loadVisibility()
       }
       loadAccts()
       // 首次自动展开?不——保持球形态(审批/提问仍走打断弹出)。主人点开才展开。
