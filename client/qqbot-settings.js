@@ -5075,7 +5075,11 @@ var QQS_THEME_CSS = [
           chat: 'base', out: 'base', session: 'base',
         }
         var MAIN_TABS = ['chat', 'roster', 'join', 'mute', 'out', 'send', 'session']
-        if (TAB_CAP[state.tab] && !dockOn(state.tab, TAB_CAP[state.tab])) {
+        // ★ 审核 P1-1：`state.tab === ''` 之后**不会自己恢复** —— 因为 `TAB_CAP['']` 是 undefined，
+        //   `undefined && ...` 直接短路，第一个 if 永不进入。于是用户把标签全关掉、再打开几个、
+        //   切回 dock 时仍停在"没有可见标签"的提示上（看起来像设置没保存）。
+        //   所以要把「当前 tab 为空」也当作需要重新挑一个的情形。
+        if (!state.tab || (TAB_CAP[state.tab] && !dockOn(state.tab, TAB_CAP[state.tab]))) {
           state.tab = MAIN_TABS.filter(function (k) { return dockOn(k, TAB_CAP[k]) })[0] || ''
         }
         var tabs = '<div class="dk-tab">'
