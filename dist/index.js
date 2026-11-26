@@ -40,8 +40,12 @@ export const Config = ConfigSchema;
 export async function apply(ctx, config) {
     const agents = ctx.agents;
     const logger = ctx.logger ?? console;
+    // ★ 2026-11-26（CodeRabbit #92）：dispose 只清理**本实例**创建的登录会话。
+    //   `sessions` 是模块级 Map，多实例/热重载时无条件全清会关掉别人正在等扫码的浏览器。
+    //   instanceToken 每次 apply 新建 ⇒ 天然区分实例；不传 token 的全局清理路径仍然保留给进程退出。
+    const instanceToken = {};
     ctx.on?.('dispose', () => {
-        disposeQunLogin();
+        disposeQunLogin(instanceToken);
     });
     // ── 扩展 UI 自动铺设（2026-10-27 主人要求）─────────────────────────────
     //   为什么要在启动时做：

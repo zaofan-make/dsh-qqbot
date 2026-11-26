@@ -13,8 +13,16 @@ export interface StartResult {
 }
 /** 找系统浏览器（Edge 优先：Windows 必装）。可用 QUN_BROWSER 环境变量覆盖。 */
 export declare function findSystemBrowser(): string | null;
-/** 供插件 dispose 生命周期调用：清理全部登录浏览器会话与空闲定时扫描器 */
-export declare function disposeQunLogin(): void;
+/**
+ * 供插件 dispose 生命周期调用：清理登录浏览器会话与空闲定时扫描器。
+ *
+ * @param owner 传入时只关掉**该实例创建**的会话（多实例/热重载安全）；
+ *              不传则全局清理（进程级退出、历史外部调用保持旧行为）。
+ *
+ * 扫描器与退出钩子是**模块级共享资源**：只有当清理后已经没有任何会话了才撤掉，
+ * 否则会误伤其他实例仍在用的会话（CodeRabbit #92）。
+ */
+export declare function disposeQunLogin(owner?: object): void;
 export declare function qunLoginSessionAlive(dataRoot: string): boolean;
 export declare function qunLoginSessionClose(dataRoot: string): void;
 /**
@@ -25,6 +33,7 @@ export declare function qunLoginSessionClose(dataRoot: string): void;
 export declare function qunBrowserLoginStart(dataRoot: string, opts?: {
     headless?: boolean;
     profileDir?: string;
+    owner?: object;
 }): Promise<StartResult>;
 /**
  * 第二步：在已开的会话上继续等（扫码 or 点头像跳转完成）。
