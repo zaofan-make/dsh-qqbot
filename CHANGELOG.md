@@ -1,3 +1,55 @@
+## 1.13.27 (2026-11-26)
+
+### 修复：群聊并发 @ 时第二条消息被静默丢弃（issue #90）
+
+群里两个人几乎同时 @ 时，**第二条消息无报错、无日志地消失**，而且后续回合也不会补回。
+
+根因在宿主的两个队列语义不同 —— `packages/core/agent/src/inbox.ts:71`：
+
+```ts
+claim(target, turn) {
+  const claimed = this.mutate('next-step', 0, this.nextStep.length, [], false)  // 全取
+  if (target === 'next-turn') {
+    claimed.push(...this.mutate('next-turn', 0, 1, [], false))                  // 只取 1 条
+  }
+}
+```
+
+`followup` 进 `next-turn`，`inject` 进 `next-step`。而 inbound 的唤醒路径**无条件 `followup`**，
+于是回合进行中进来的消息排进 `next-turn` 后，下一回合只领走 1 条，其余既不出队也不回补。
+
+**修复**：进来时先记 `wasTurnActive`，图片聚合之后、`captureSegment` 之前分岔 ——
+忙且聚合结束时仍忙 → `agent.inject()`（清群历史缓存后 return）。`nothink` 兜底分支同样处理。
+
+三个容易写错的点：
+
+1. **`wasTurnActive` 必须在 `record.turnActive = true` 之前取**，否则赋值完恒为 true，判断失效
+2. **分岔放在图片聚合之后** —— 聚合也要带给插话那条，放前面会丢图
+3. **判断要用聚合之后的实时状态**（`record.turnActive === true` 双条件），因为
+   `buildAggregateBlocks` 是 `await`，期间可能收到 `turn/end`；那时仍走 inject 会让消息
+   躺在 `next-step` 里等下一次外部唤醒，等于漏回
+
+插话分支跳过 `captureSegment`：那条注释的语义是「唤醒 = 这一段结束」，插话没有唤醒，
+不该把分段定格清空。
+
+### 影响面（重要，别误判修复范围）
+
+`gateway/debounce.ts` 在 flush 前**已有**回合忙处理：排队模式攒着等 `turn/end`，
+插话模式（`behavior.debounce.busySendMode=interject`）本来就走 `inject`。所以常规多人在
+3 秒静默窗口内同时 @ 其实是**合并成一次派发**，不会丢。
+
+本修复真正覆盖的是**绕过 debounce 兜底的路径**：
+
+- `debounce.enabled=false` 或 `@` 秒回（`mentionDelayed=false`）→ **直放行**，消息不进聚合，
+  没有任何合并保护 —— 这是「多人同时 @ 丢第二条」最可能的真实触发场景
+- 忙等超时 `BUSY_MAX_WAIT_MS`（3 分钟）后强制放行，此时 `turnActive` 仍是 true
+- `nothink` 兜底分支
+- 任何不经 debounce 的直接入站
+
+顺带把「`turnActive` 在本文件里只写不读」这个隐患一并收口。
+
+---
+
 ## 1.13.24 (2026-11-23)
 
 ### 修复：多段回复只发出第一段（BnnBot-Suite 实测反馈）
