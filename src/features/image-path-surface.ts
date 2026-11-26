@@ -83,7 +83,11 @@ interface SurfaceLogger {
  */
 const URL_BODY = String.raw`[^\s)\]}>"'，。；！？、【】（）《》]*`;
 const QQ_IMAGE_URL_RE = new RegExp(
-  'https://' + URL_BODY + '(?:multimedia\\.nt\\.qq\\.com\\.cn|qq\\.com/download)' + URL_BODY,
+  // ⚠️ 2026-11-26（CodeRabbit PR #93）：主机必须**紧贴**在 `https://` 之后。
+  //   之前写成 'https://' + URL_BODY + '(?:domain)'，而 URL_BODY 允许 `/` 和 `.`，
+  //   于是 `https://example.com/multimedia.nt.qq.com.cn/download?fileid=ABC` 也会命中；
+  //   而 lookupImagePath 的 stableKey 只看 fileid 前 40 字符 → 非 QQ 链接可能被换成本地路径。
+  'https://(?:multimedia\\.nt\\.qq\\.com\\.cn|qq\\.com)/download' + URL_BODY,
   'g',
 );
 

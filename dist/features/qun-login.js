@@ -257,6 +257,11 @@ export function clearQunLoginOwner(owner) {
         currentOwner = undefined;
 }
 function genOf(owner) {
+    // ⚠️ 2026-11-26（CodeRabbit PR #93）：读到没登记过的 owner 时要**顺手登记**。
+    //   否则该 owner 从未出现在 Map 里，无参 disposeQunLogin() 的「推所有桶」也推不到它，
+    //   它正在 await 的登录醒来后 stale() 仍为 false → 全局清理之后资源复活。
+    if (!lifecycleGenerations.has(owner))
+        lifecycleGenerations.set(owner, 0);
     return lifecycleGenerations.get(owner) ?? 0;
 }
 function bumpGen(owner) {
@@ -723,12 +728,18 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
         }
         if (hit) {
             closeOwned(handle, cdp);
+            // CodeRabbit PR #93：tryReadCookie 也是 await，这期间可能已卸载 —— 别把过期凭据交出去
+            if (stale())
+                return { ok: false, msg: '插件已卸载，本次登录已取消。' };
             return { ok: true, msg: `免扫码：profile 里的登录态还有效，直接取用（uin=${hit.uin}）`, cookie: hit };
         }
         // 再补一次（页面可能刚跳完）
         hit = await tryReadCookie(cdp);
         if (hit) {
             closeOwned(handle, cdp);
+            // CodeRabbit PR #93：tryReadCookie 也是 await，这期间可能已卸载 —— 别把过期凭据交出去
+            if (stale())
+                return { ok: false, msg: '插件已卸载，本次登录已取消。' };
             return { ok: true, msg: `免扫码：profile 里的登录态还有效，直接取用（uin=${hit.uin}）`, cookie: hit };
         }
         // ★★ 需要人登录 → 必须**主动跳到 xlogin 面板页**。
@@ -741,6 +752,8 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
             hit = await tryReadCookie(cdp);
             if (hit) {
                 closeOwned(handle, cdp);
+                if (stale())
+                    return { ok: false, msg: '插件已卸载，本次登录已取消。' };
                 return { ok: true, msg: `登录态有效（uin=${hit.uin}）`, cookie: hit };
             }
         }
@@ -753,6 +766,8 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
                 const ck = await tryReadCookie(cdp);
                 if (ck) {
                     closeOwned(handle, cdp);
+                    if (stale())
+                        return { ok: false, msg: '插件已卸载，本次登录已取消。' };
                     return { ok: true, msg: `免扫码登录成功（点头像授权），uin=${ck.uin}`, cookie: ck };
                 }
             }

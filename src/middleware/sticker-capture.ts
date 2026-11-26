@@ -85,6 +85,12 @@ interface CaptureJob {
   senderName?: string;
   sourceGroup?: string;
   msgText?: string;
+  /**
+   * 入队那一刻算好的图库目录（CodeRabbit PR #93）。
+   * 不在 worker 里现算：`config` 是可变引用，排队期间用户改了 dataRoot 的话，
+   * 任务落盘会跑到**新**目录去 —— 与消息到达时的语义不符。
+   */
+  stickerDir: string;
   config: ImQQBotConfig;
   logger: Logger;
 }
@@ -94,8 +100,7 @@ const queue: CaptureJob[] = [];
 
 /** 真正执行一次收藏（落盘 + 记住本地路径）；返回本地路径（失败返回 undefined） */
 async function captureOne(job: CaptureJob): Promise<string | undefined> {
-  const { url, contentType, senderId, senderName, sourceGroup, msgText, config, logger } = job;
-  const stickerDir = stickerDirOf(config);
+  const { url, contentType, senderId, senderName, sourceGroup, msgText, stickerDir, config, logger } = job;
   const store = getStickerStore(stickerDir, logger);
 
   let resolved: { status: 'new' | 'dup' | 'error'; id?: string; error?: string };
@@ -192,6 +197,8 @@ export function stickerCapture(config: ImQQBotConfig, logger: Logger) {
         if (picked.length > 0) {
           const isGroup = (ctx.message as { kind?: string }).kind === 'group';
           const snapshot = {
+            // ★ CodeRabbit PR #93：目录在**入队时**定下来，worker 不再看 live config
+            stickerDir: stickerDirOf(config),
             senderId: msg.senderId,
             senderName: msg.senderName,
             sourceGroup: isGroup ? msg.groupOpenid : undefined,

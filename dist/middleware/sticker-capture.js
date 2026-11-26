@@ -38,8 +38,7 @@ function isNonImageContentType(ct) {
 const queue = [];
 /** 真正执行一次收藏（落盘 + 记住本地路径）；返回本地路径（失败返回 undefined） */
 async function captureOne(job) {
-    const { url, contentType, senderId, senderName, sourceGroup, msgText, config, logger } = job;
-    const stickerDir = stickerDirOf(config);
+    const { url, contentType, senderId, senderName, sourceGroup, msgText, stickerDir, config, logger } = job;
     const store = getStickerStore(stickerDir, logger);
     let resolved;
     try {
@@ -136,6 +135,8 @@ export function stickerCapture(config, logger) {
                 if (picked.length > 0) {
                     const isGroup = ctx.message.kind === 'group';
                     const snapshot = {
+                        // ★ CodeRabbit PR #93：目录在**入队时**定下来，worker 不再看 live config
+                        stickerDir: stickerDirOf(config),
                         senderId: msg.senderId,
                         senderName: msg.senderName,
                         sourceGroup: isGroup ? msg.groupOpenid : undefined,

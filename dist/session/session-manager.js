@@ -2172,7 +2172,13 @@ export class SessionManager {
                             let blockChanged = false;
                             // ⚠️ 字符类必须排除 `]`/`>`/中文标点：本仓库图片占位是 `[图片: <url>]`，
                             //   用 `[^\s)]` 会把 `]` 与紧跟的正文一起吃掉（审核 M1）。
+                            // CodeRabbit PR #93：外层只判断「整段里有没有 QQ 图片域名」，但下面这个回调会对块里
+                            // **每个** https 链接调 lookupImagePath，而它的 stableKey 只看 fileid 前 40 字符
+                            // → 普通链接可能误命中缓存。所以回调内先校验主机，非 QQ 图片链接原样返回。
+                            const isQqImageUrl = (x) => /^https:\/\/(?:multimedia\.nt\.qq\.com\.cn|qq\.com)\/download/i.test(x);
                             const replacedText = c.text.replace(/https:\/\/[^\s)\]}>"'，。；！？、【】（）《》]+/g, (u) => {
+                                if (!isQqImageUrl(u))
+                                    return u;
                                 const local = lookupImagePath(u);
                                 if (!local)
                                     return u;
