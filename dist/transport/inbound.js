@@ -1062,9 +1062,14 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
     //   followup 进 next-turn（每次只 claim 1 条），inject 进 next-step（一次全 claim）。
     //   放在图片聚合之后：插话也要带上本批攒的图。
     //   跳过 captureSegment：插话没唤醒，不该把分段定格清空。
-    if (wasTurnActive && typeof record.agent.inject === 'function') {
+    //   ⚠️ 用「聚合之后」的实时状态判断：buildAggregateBlocks 是 await，期间可能收到 turn/end。
+    if (wasTurnActive && record.turnActive === true && typeof record.agent.inject === 'function') {
         record.agent.inject(message);
         logger.debug(`→ inject sent(回合中): key=${scope}:${peerId}`);
+        // 提前 return 也要清群历史缓存，否则这批下次会被重复打包
+        if (scope === 'group') {
+            clearGroupHistory(config.appId, msg.groupOpenid ?? msg.senderId);
+        }
         return;
     }
     // 唤醒 = 这一段结束：先定格快照（含本条）再清空（主人定：唤醒即清空）
