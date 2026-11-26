@@ -13,6 +13,8 @@ export interface StartResult {
 }
 /** 找系统浏览器（Edge 优先：Windows 必装）。可用 QUN_BROWSER 环境变量覆盖。 */
 export declare function findSystemBrowser(): string | null;
+/** 由插件 apply() 设置：本进程当前实例的归属 token（传 undefined = 清除） */
+export declare function setQunLoginOwner(owner: object | undefined): void;
 /**
  * 供插件 dispose 生命周期调用：清理登录浏览器会话与空闲定时扫描器。
  *

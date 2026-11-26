@@ -26,7 +26,7 @@ void runQrSetup; void persistCredentialsToProfile;
 import type { Logger } from './types.js';
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 import { setLexicalFallback } from './features/local-embed.js';
-import { disposeQunLogin } from './features/qun-login.js';
+import { disposeQunLogin, setQunLoginOwner } from './features/qun-login.js';
 
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
@@ -52,8 +52,14 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   //   `sessions` 是模块级 Map，多实例/热重载时无条件全清会关掉别人正在等扫码的浏览器。
   //   instanceToken 每次 apply 新建 ⇒ 天然区分实例；不传 token 的全局清理路径仍然保留给进程退出。
   const instanceToken = {};
+  // ★ N1（复审）：把本实例 token 设为登录的默认归属 —— 生产入口 channel-tools 调
+  //   `qunBrowserLoginStart(dataRoot, { headless: true })` 不传 owner，
+  //   没有这一步的话它落在 undefined 桶，dispose 推进的是 instanceToken 桶 ⇒ 代次检查永远不触发。
+  try { setQunLoginOwner(instanceToken); } catch { /* ignore */ }
   (ctx as unknown as { on?: (event: string, cb: () => void) => void }).on?.('dispose', () => {
     disposeQunLogin(instanceToken);
+    // 别把死 token 留成默认值（下一个实例会自己设新的）
+    try { setQunLoginOwner(undefined); } catch { /* ignore */ }
   });
 
   // ── 扩展 UI 自动铺设（2026-10-27 主人要求）─────────────────────────────
@@ -591,6 +597,10 @@ async function installLiveSettings(ctx: Context, live: ImQQBotConfig, logger: Lo
       gates: live.sticker.gates,
       autoTagEnabled: live.sticker.autoTagEnabled,
       visionCli: live.sticker.visionCli,
+      // ★ N3（复审）：schema 里 fullDownload 的默认值是 true，而 sync() 是
+      //   `live.sticker = {...live.sticker, ...next.sticker}` 整块合并 —— entry 少这一行，
+      //   首次 sync 就会用默认 true 把用户手写的 false 静默掀回 true（= 悄悄开全量下载）。
+      fullDownload: live.sticker.fullDownload,
     },
     injectRules: live.injectRules,
     imageHint: live.imageHint,

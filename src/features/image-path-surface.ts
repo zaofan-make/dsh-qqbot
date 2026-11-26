@@ -74,7 +74,18 @@ interface SurfaceLogger {
  *   改完比不改更糟。字符类补上 `] > } " '` 与中文标点，与 image-offload 的
  *   `/\[图片:\s*https?:\/\/[^\]]*\]/` 口径对齐。
  */
-const QQ_IMAGE_URL_RE = /https:\/\/[^\s)\]}>"'，。；！？、【】（）《》]+/g;
+/**
+ * ⚠️ N4（复审）：光收窄字符类会**丢掉域名限定** —— 原实现只认 QQ 图片域名，
+ *   注释也写着「别的 URL 一律不碰」。若放宽成「任何 https 链接」，
+ *   `hasQqImageUrl` 的门槛消失、`rewriteContent` 会对正文里每个链接都查缓存，
+ *   而 `lookupImagePath` 的 stableKey 只看 `fileid` 参数前 40 字符 —— 可能误命中别人的缓存条目。
+ *   所以字符类与域名限定**两个都要**。
+ */
+const URL_BODY = String.raw`[^\s)\]}>"'，。；！？、【】（）《》]*`;
+const QQ_IMAGE_URL_RE = new RegExp(
+  'https://' + URL_BODY + '(?:multimedia\\.nt\\.qq\\.com\\.cn|qq\\.com/download)' + URL_BODY,
+  'g',
+);
 
 /** 这条消息的文本块里有没有 QQ 图片 URL */
 function hasQqImageUrl(content: MsgContentBlock[]): boolean {

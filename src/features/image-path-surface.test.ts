@@ -99,6 +99,20 @@ describe('replaceImagePathsInSurface', () => {
     expect(opts.sourceEventSeqs).toEqual([1]);
   });
 
+  it('普通链接不该被替换（N4 反向断言：只认 QQ 图片域名）', async () => {
+    mockLookup.mockReturnValue(LOCAL);
+    const { sess, appended } = makeSession(
+      '看这个 https://example.com/a.png 和这个 https://x.com/?fileid=ABC123 谢谢',
+    );
+
+    const n = await replaceImagePathsInSurface({ session: sess } as never, undefined, 1);
+
+    // 域名不匹配 ⇒ 一眼都不看，不查缓存、不追加事件
+    expect(n).toBe(0);
+    expect(appended).toHaveLength(0);
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
+
   it('缓存没命中（还没下完）时不替换、不追加事件', async () => {
     mockLookup.mockReturnValue(undefined);
     const { sess, appended } = makeSession(`[图片: ${QQ_URL}]`);

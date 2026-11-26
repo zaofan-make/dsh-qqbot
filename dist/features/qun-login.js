@@ -228,6 +228,23 @@ const sessions = new Map();
  *    owner === undefined 表示进程级全局清理（`disposeQunLogin()` 无参时使用）。
  */
 const lifecycleGenerations = new Map();
+/**
+ * 当前实例的归属 token（N1，2026-11-26 复审）。
+ *
+ * 为什么需要：生产唯一的登录入口 `channel-tools.ts` 调
+ * `qunBrowserLoginStart(dataRoot, { headless: true })` 时**不传 owner**，
+ * 而 dispose 端传的是 `instanceToken` —— 两者落在不同的桶里，
+ * 于是 `stale()` 恒为 false，代次检查一次都不会触发（M3 白干）。
+ *
+ * 做法：由插件 `apply()` 通过 {@link setQunLoginOwner} 注入本实例 token，
+ * `qunBrowserLoginStart` 取 `opts.owner ?? currentOwner` 兜底 ——
+ * 这样外部扩展/内部命令不传 owner 也能归到当前实例，卸载时能被正确作废。
+ */
+let currentOwner;
+/** 由插件 apply() 设置：本进程当前实例的归属 token（传 undefined = 清除） */
+export function setQunLoginOwner(owner) {
+    currentOwner = owner;
+}
 function genOf(owner) {
     return lifecycleGenerations.get(owner) ?? 0;
 }
@@ -304,6 +321,11 @@ export function disposeQunLogin(owner) {
             }
             catch { /* ignore */ }
         }
+        // ★ N2（复审）：只推 undefined 桶是不够的 —— 带 owner 的进行中登录醒来后
+        //   仍会 sessions.set 并把刚撤掉的退出钩子重新装回去（全局清理之后资源又活了）。
+        //   这里把所有桶一起推一遍（先快照 keys，避免边迭代边改 Map）。
+        for (const k of Array.from(lifecycleGenerations.keys()))
+            bumpGen(k);
         bumpGen(undefined);
         releaseSharedIfIdle();
         return;
@@ -523,7 +545,9 @@ async function shotQr(cdp, dataRoot) {
  */
 export async function qunBrowserLoginStart(dataRoot, opts = {}) {
     // 记下进场代次（按 owner 分桶）：后面每个 await 之后都可能已被卸载（CodeRabbit #92 / M3）
-    const owner = opts.owner;
+    // N1：外部调用方（channel-tools / 扩展）通常不传 owner —— 兜到当前实例，
+    //     否则代次桶是 undefined，dispose 推进的是 instanceToken 桶，stale() 永远 false。
+    const owner = opts.owner ?? currentOwner;
     const generation = genOf(owner);
     /** 本次调用是否已被卸载作废 */
     const stale = () => generation !== genOf(owner);
