@@ -743,7 +743,7 @@ export class SessionManager {
               return;
             }
             try {
-              await mountChannelTools(agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+              await mountChannelTools(agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
               (agentCtx as unknown as { [k: symbol]: unknown })[CTX_TOOLS_READY] = true;
               this.logger.info('im-qqbot: 通道工具已注册到 agentCtx(send_media/recall_message/list_stickers)');
               diagSm('agentCtx 注册完成(mountChannelTools 正常返回)');
@@ -836,6 +836,7 @@ export class SessionManager {
         if (existing.agentCtx) {
           await mountChannelTools(existing.agentCtx as never, {
             dataRoot: this.resolveDataRootSmart(),
+            config: this.config,
             cwd: String(this.config.cwd ?? ''),
             agent: existing.agent,
           });
@@ -1003,6 +1004,10 @@ export class SessionManager {
           dataRoot: this.resolveDataRootSmart(),
           cwd: String(this.config.cwd ?? ''),
           agent: record.agent,
+          // ★ 审核 P0-3：漏了这个 ⇒ 新建会话时 opts.config 是 undefined
+          //   ⇒ toolVisible 三个分支全 miss ⇒ 32 个工具（含 10 个群治理）全部重新注册。
+          //   这条路径是「每个新会话」的必经之路，不是边角。
+          config: this.config,
         });
       }
       // ★★ 2026-11-25（/bot-new 之后 context_* 三件套消失、重启才好）：mountChannelTools 只挂内置工具，
@@ -1178,7 +1183,7 @@ export class SessionManager {
       return;
     }
     try {
-      await mountChannelTools(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+      await mountChannelTools(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
       (agentCtx as unknown as { [k: symbol]: unknown })[CTX_TOOLS_READY] = true;
       record.channelToolsReady = true;
       diagSm('ensureChannelTools: 全量幂等注册完成');
@@ -1231,8 +1236,8 @@ export class SessionManager {
     }
     url.searchParams.set('hot', hotVer);
     const mod = (await import(url.href)) as { apply?: (c: Context) => unknown };
-    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context, o?: { dataRoot?: string; cwd?: string; agent?: unknown }) => unknown;
-    await applyFn(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+    const applyFn = (mod.apply ?? mountChannelTools) as (c: Context, o?: { dataRoot?: string; cwd?: string; agent?: unknown; config?: unknown }) => unknown;
+    await applyFn(agentCtx, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
     this.logger.info('im-qqbot: 通道工具热刷新完成(新工具已注册到 agentCtx)');
     diagSm('hotReloadChannelTools: 完成');
   }
@@ -1331,6 +1336,7 @@ export class SessionManager {
     syncChannelScopedTools(ctxOfTool, {
       ctxTools: smart,
       groupAdmin: this.config.groupAdmin?.enabled === true,
+        config: this.config,
       dataRoot: this.resolveDataRootSmart(),
       sessionKey: sk,
     });
@@ -1479,9 +1485,9 @@ export class SessionManager {
         if (ctxC && this.nsForCwd(cwdC)) {
           setCtxEnv(ctxC, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(recC?.sessionKey ?? '') });
           // 当前回合作用域：这是本回合快照会读的那份，必须同步完成（await 不行，这里是同步派发）
-          void mountChannelTools(ctxC as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+          void mountChannelTools(ctxC as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
           if (recC?.agentCtx && recC.agentCtx !== ctxC) {
-            void mountChannelTools(recC.agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? '') });
+            void mountChannelTools(recC.agentCtx as never, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
           }
         }
       } catch { /* ignore */ }
@@ -1834,6 +1840,12 @@ export class SessionManager {
               ctxTools: smartForTool,
               // 群管理工具跟 groupAdmin.enabled 走（此前被绑在 smart 开关上，语义不对）
               groupAdmin: this.config.groupAdmin?.enabled === true,
+              // ★ 复审 A（必须）：这条 pre-step 路径漏了 config，而 claim 路径有
+              //   ⇒ 两条路径算出不同的 sig（qunVisible 一个 '0' 一个 '1'）
+              //   ⇒ 同一回合内每 step 都撤销+重注册工具表
+              //   ⇒ 宿主每步发「工具已更新·移除/新增」（还进上下文，纯烧 token）。
+              //   这恰好是 ctxScopeState 存在的理由，别把它重新激活。
+              config: this.config,
               dataRoot: dataRootSmart,
               sessionKey: skTool,
             });

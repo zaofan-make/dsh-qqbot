@@ -37,6 +37,15 @@ export const name = 'im-qqbot';
 export const inject = ['agents', 'systemPrompt'];
 export const Config = ConfigSchema;
 // ── 插件主体 ──
+/** live 里有没有"用户真的配过"的可见性（复审 B：区分「没配」与「配了全 true」） */
+function hasVisibility(v) {
+    if (!v || typeof v !== 'object')
+        return false;
+    const o = v;
+    const nonEmpty = (x) => !!x && typeof x === 'object' && Object.keys(x).length > 0;
+    return nonEmpty(o.tools?.classes) || nonEmpty(o.tools?.overrides)
+        || nonEmpty(o.dock?.classes) || nonEmpty(o.dock?.overrides);
+}
 export async function apply(ctx, config) {
     const agents = ctx.agents;
     const logger = ctx.logger ?? console;
@@ -640,6 +649,10 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
         //   用户配置里写了 true 也显示成 false。本文件的 CodeRabbit 注释已强调过：
         //   「sync 里同步的字段 entry 必须也带上」。这是第五次踩同一个坑。
         imagePathSurface: live.imagePathSurface,
+        // ★ 2026-11-26（issue #94）：这两个字段必须也进 entry —— 否则面板显示走 schema 默认值，
+        //   用户配置里写的值显示不出来（本文件被这个坑咬过 5 次）。
+        selfDisclosureHint: live.selfDisclosureHint,
+        visibility: live.visibility,
         imageAggregate: live.imageAggregate,
         messageReference: live.messageReference,
         extMetaTool: live.extMetaTool,
@@ -695,6 +708,17 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             // ★ 2026-11-26（审核 M2）：不在这里同步 → 面板勾了保存，live 不变，必须重启才生效。
             if (typeof next.imagePathSurface === 'boolean')
                 live.imagePathSurface = next.imagePathSurface;
+            // ★ 2026-11-26（issue #94）
+            if (typeof next.selfDisclosureHint === 'boolean')
+                live.selfDisclosureHint = next.selfDisclosureHint;
+            // ★ 复审 B：上一版的深合并**方向反了** —— `{...cur, ...inc}` 是 next 覆盖 live。
+            //   若 next.visibility 是 schemastery 补出来的「全 true 对象」，用户存的
+            //   `group: false` 照样被盖回 true，等于没解决问题。
+            //   插件的写入路径是 `/update` → `qqbot/settings-changed` → mergeDeep(readOwnSettings())，
+            //   **不经过 sync**；所以这里只需要在 live 还没有值的时候用 next 做初值。
+            if (next.visibility && typeof next.visibility === 'object' && !hasVisibility(live.visibility)) {
+                live.visibility = next.visibility;
+            }
             if (next.imageAggregate && typeof next.imageAggregate === 'object')
                 live.imageAggregate = next.imageAggregate;
             if (typeof next.messageReference === 'boolean')
@@ -766,7 +790,7 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             //    (实测症状: dock 保存后 /botplay 报"还没有装配任何互动事件")。
             if (Array.isArray(next.botplayEvents) && next.botplayEvents.length > 0)
                 live.botplayEvents = next.botplayEvents;
-            logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imagePathSurface/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
+            logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imagePathSurface/visibility/selfDisclosureHint/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
         }
         catch (err) {
             logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);

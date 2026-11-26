@@ -64,6 +64,41 @@ export interface StickerGatesConfig {
   libRoots: string[];
 }
 
+/**
+ * 工具 / dock 标签的可见性（2026-11-26，issue #94）。
+ *
+ * 两层结构：**类**给默认，**单项**给例外。
+ *   · 用户在设置页取消「群治理」这个类 → 该类 10 个工具全隐藏
+ *   · 再单独把 group_kick 勾回来 → overrides.group_kick = true
+ *   · 判定：`overrides[name] ?? classes[类] ?? true`
+ */
+export interface VisibilityConfig {
+  /** 内置工具（32 个）的可见性 */
+  tools?: {
+    /** 类开关（默认值）。键 = ToolScope */
+    classes?: Partial<Record<ToolScope, boolean>>;
+    /** 单项覆盖（例外）。键 = 工具名 */
+    overrides?: Record<string, boolean>;
+  };
+  /** 悬浮球里的标签可见性（自定义扩展标签不受此控制） */
+  dock?: {
+    classes?: Partial<Record<DockTabCap, boolean>>;
+    overrides?: Record<string, boolean>;
+  };
+}
+
+/**
+ * 工具的能力归属。
+ *   · `group`  纯群治理：没有群就是空壳（10 个）
+ *   · `cross`  跨会话投递：私聊用户也需要「主动找人说事」（5 个）
+ *   · `memo`   人物记忆：私聊主力（1 个）
+ *   · `base`   其余：媒体/表情/会话控制/定时（16 个）
+ */
+export type ToolScope = 'group' | 'cross' | 'memo' | 'base';
+
+/** dock 标签的能力归属（自定义扩展标签不在其中，永远显示） */
+export type DockTabCap = 'group' | 'cross' | 'base';
+
 export interface StickerConfig {
   /** 是否自动收藏群图片（默认开，只存本地不外发） */
   collectEnabled: boolean;
@@ -349,6 +384,23 @@ export interface EditableConfig {
    * 只处理尾部：历史深处的旧链接多半已被 offload 压成文字占位，改它们只会堆事件。
    */
   imagePathSurface?: boolean;
+  /**
+   * 是否在消息末尾注入「小传提醒」（2026-11-26，issue #94）。
+   * 那段提示是让她主动问「要不要记一下这个人」。关掉 = 不再注入。
+   * 注意它属于**行为**开关，放「设置」页，不跟工具可见性放一起。
+   */
+  selfDisclosureHint?: boolean;
+  /**
+   * 工具与界面的可见性（2026-11-26，issue #94）。
+   *
+   * 解决的问题：只用私聊的用户没有群、不做群管理，但 32 个内置工具和 7 个 dock 标签
+   * 无条件全部生效 —— 群工具的 describe 每轮都占 context，dock 里还挂着用不上的标签。
+   * 以前只能每次升级手动改打包后的 dist。
+   *
+   * 规则：`overrides[name]` ＞ `classes[类]` ＞ 默认 true。
+   * 默认全开 ⇒ 未配置的用户行为与旧版**逐字一致**。
+   */
+  visibility?: VisibilityConfig;
   /** 图片聚合(issue #40): 把连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
   imageAggregate?: {
     /** 总开关(默认关) */
@@ -773,6 +825,26 @@ export const EditableConfigSchema: Schema<EditableConfig> = Schema.object({
       outboundLastCtxFallback: Schema.boolean().default(false).description('出站扩展未指定 target 时是否回落到最近活跃会话(issue #78, 默认关=拒发)。开启=旧行为, 多会话并发会串台'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imagePathSurface: Schema.boolean().default(false).description('把已进上下文的图片链接换成本地路径(默认关, 2026-11-26): 图是后台下的, 组装时可能还没下完 → 上下文里留的是 QQ 临时长链接; 开=每回合开始前把尾部消息里能命中的 URL 改成本地路径(surfaceOp replace)。只动尾部几条, 不动历史深处'),
+  visibility: Schema.object({
+    tools: Schema.object({
+      classes: Schema.object({
+        group: Schema.boolean().default(true).description('群治理类工具可见(10 个: 入群申请/审批/禁言/撤回/群消息搜索/踢人等)。纯私聊用户可关'),
+        cross: Schema.boolean().default(true).description('跨会话投递类工具可见(5 个: 会话列表/唤醒/群发/目标分组/查人)。私聊用户也可能需要, 建议保留'),
+        memo: Schema.boolean().default(true).description('人物记忆类工具可见(people_memo)'),
+        base: Schema.boolean().default(true).description('基础类工具可见(16 个: 媒体/表情包/会话控制/定时)'),
+      }).description('按类开关(默认值); 单项例外见 overrides'),
+      overrides: Schema.dict(Schema.boolean()).default({}).description('单项例外: {"group_kick": false} 表示该工具单独隐藏, 优先级高于类开关'),
+    }).description('内置工具的可见性(issue #94): 关掉的工具**不会注册**, AI 完全看不见, 其 schema 也不再占 context'),
+    dock: Schema.object({
+      classes: Schema.object({
+        group: Schema.boolean().default(true).description('悬浮球里「群组管理 / 入群审批 / 锤子」这三个标签是否显示'),
+        cross: Schema.boolean().default(true).description('悬浮球里「群发」标签是否显示'),
+        base: Schema.boolean().default(true).description('悬浮球里「聊天 / 出站 / 单会话设置」标签是否显示'),
+      }).description('按类开关; 注意悬浮球本身**不会消失**, 只是隐藏里面的标签'),
+      overrides: Schema.dict(Schema.boolean()).default({}).description('单项例外: {"mute": false} 表示单独隐藏「锤子」标签'),
+    }).description('悬浮球标签可见性。**自定义扩展的标签永远显示**, 不受这里控制'),
+  }).description('工具与界面可见性(issue #94, 2026-11-26): 只用私聊的用户可以关掉群相关工具和 dock 标签, 不用再手改 dist'),
+  selfDisclosureHint: Schema.boolean().default(true).description('是否注入「小传提醒」(她主动问要不要把这个人记下来)。关掉=消息末尾不再追加那段提示'),
 
   imageAggregate: Schema.object({
     enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
@@ -919,6 +991,23 @@ export interface ImQQBotConfig {
    * 只处理尾部：历史深处的旧链接多半已被 offload 压成文字占位，改它们只会堆事件。
    */
   imagePathSurface?: boolean;
+  /**
+   * 是否在消息末尾注入「小传提醒」（2026-11-26，issue #94）。
+   * 那段提示是让她主动问「要不要记一下这个人」。关掉 = 不再注入。
+   * 注意它属于**行为**开关，放「设置」页，不跟工具可见性放一起。
+   */
+  selfDisclosureHint?: boolean;
+  /**
+   * 工具与界面的可见性（2026-11-26，issue #94）。
+   *
+   * 解决的问题：只用私聊的用户没有群、不做群管理，但 32 个内置工具和 7 个 dock 标签
+   * 无条件全部生效 —— 群工具的 describe 每轮都占 context，dock 里还挂着用不上的标签。
+   * 以前只能每次升级手动改打包后的 dist。
+   *
+   * 规则：`overrides[name]` ＞ `classes[类]` ＞ 默认 true。
+   * 默认全开 ⇒ 未配置的用户行为与旧版**逐字一致**。
+   */
+  visibility?: VisibilityConfig;
   /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
   imageAggregate?: {
     /** 总开关(默认关) */
@@ -1098,6 +1187,26 @@ const ConfigSchemaRaw: Schema<ImQQBotConfig> = Schema.object({
       outboundLastCtxFallback: Schema.boolean().default(false).description('出站扩展未指定 target 时是否回落到最近活跃会话(issue #78, 默认关=拒发)。开启=旧行为, 多会话并发会串台'),
   imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
   imagePathSurface: Schema.boolean().default(false).description('把已进上下文的图片链接换成本地路径(默认关, 2026-11-26): 图是后台下的, 组装时可能还没下完 → 上下文里留的是 QQ 临时长链接; 开=每回合开始前把尾部消息里能命中的 URL 改成本地路径(surfaceOp replace)。只动尾部几条, 不动历史深处'),
+  visibility: Schema.object({
+    tools: Schema.object({
+      classes: Schema.object({
+        group: Schema.boolean().default(true).description('群治理类工具可见(10 个: 入群申请/审批/禁言/撤回/群消息搜索/踢人等)。纯私聊用户可关'),
+        cross: Schema.boolean().default(true).description('跨会话投递类工具可见(5 个: 会话列表/唤醒/群发/目标分组/查人)。私聊用户也可能需要, 建议保留'),
+        memo: Schema.boolean().default(true).description('人物记忆类工具可见(people_memo)'),
+        base: Schema.boolean().default(true).description('基础类工具可见(16 个: 媒体/表情包/会话控制/定时)'),
+      }).description('按类开关(默认值); 单项例外见 overrides'),
+      overrides: Schema.dict(Schema.boolean()).default({}).description('单项例外: {"group_kick": false} 表示该工具单独隐藏, 优先级高于类开关'),
+    }).description('内置工具的可见性(issue #94): 关掉的工具**不会注册**, AI 完全看不见, 其 schema 也不再占 context'),
+    dock: Schema.object({
+      classes: Schema.object({
+        group: Schema.boolean().default(true).description('悬浮球里「群组管理 / 入群审批 / 锤子」这三个标签是否显示'),
+        cross: Schema.boolean().default(true).description('悬浮球里「群发」标签是否显示'),
+        base: Schema.boolean().default(true).description('悬浮球里「聊天 / 出站 / 单会话设置」标签是否显示'),
+      }).description('按类开关; 注意悬浮球本身**不会消失**, 只是隐藏里面的标签'),
+      overrides: Schema.dict(Schema.boolean()).default({}).description('单项例外: {"mute": false} 表示单独隐藏「锤子」标签'),
+    }).description('悬浮球标签可见性。**自定义扩展的标签永远显示**, 不受这里控制'),
+  }).description('工具与界面可见性(issue #94, 2026-11-26): 只用私聊的用户可以关掉群相关工具和 dock 标签, 不用再手改 dist'),
+  selfDisclosureHint: Schema.boolean().default(true).description('是否注入「小传提醒」(她主动问要不要把这个人记下来)。关掉=消息末尾不再追加那段提示'),
   imageAggregate: Schema.object({
     enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
     max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),

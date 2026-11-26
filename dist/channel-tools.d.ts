@@ -1,3 +1,4 @@
+import type { ImQQBotConfig, ToolScope, DockTabCap } from './config.js';
 import type { Context } from '@deepseek-ai/cordis';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
@@ -28,10 +29,16 @@ export declare function setChannelBridge(b: QQChannel | undefined): void;
  *   调用方（session-manager）知道自己是谁，必须把根传进来。
  * @param opts.cwd 本实例的工作目录（扩展 runner 的 env.cwd）
  */
+/**
+ * @param opts.config 当前插件配置（2026-11-26，issue #94 加）。
+ *   装载方 SessionManager 手里有 `this.config`，沿参数链传进来即可 ——
+ *   这样工具可见性判定能读到用户配置，不必去猜或读全局。
+ */
 export declare function apply(ctx: Context, opts?: {
     dataRoot?: string;
     cwd?: string;
     agent?: unknown;
+    config?: ImQQBotConfig;
 }): Promise<void>;
 /**
  * host 面板用(2026-09-13 主人要的「让ai写」按钮):
@@ -93,6 +100,20 @@ export declare function askAiToWriteBotplayEvent(ns: string, scope: 'group' | 'c
     ok: boolean;
     msg: string;
 }>;
+/**
+ * 这个工具在**当前配置**下是否可见。
+ *
+ * 判定顺序：单项覆盖 → 类开关 → 默认可见。
+ * `overrides` 优先是刻意的：用户先按类关掉 10 个群工具，再单独把 group_kick 勾回来，是可预期的。
+ */
+export declare function toolVisible(name: string, scope: ToolScope, config: ImQQBotConfig | undefined): boolean;
+/**
+ * dock 标签的可见性。语义基准：**client 的 dockOn() 必须与此逐行一致**
+ * （overrides → classes → true，且都用 `typeof === 'boolean'` 严格判）。
+ * client 是手写 bundle（不 import dist），两者是**双源同步**关系 ——
+ * 改这里记得同步改 `client/qqbot-settings.js` 的 visOf()。
+ */
+export declare function dockTabVisible(key: string, cap: DockTabCap, config: ImQQBotConfig | undefined): boolean;
 export declare function setCtxSmartText(t: string): void;
 export declare function getCtxSmartText(): string;
 /**
@@ -112,6 +133,11 @@ export declare function setCtxEnv(agentCtx: unknown, env: {
     dataRoot?: string;
     sessionKey?: string;
 }): void;
+/**
+ * ⚠️ 2026-11-26：**已废弃**（全仓无调用点）。qq_group_admin 现在只经
+ * `syncChannelScopedTools` 注册，可见性由那里的 `toolVisible` 判定。
+ * 若将来要复活本函数，必须补上同样的 toolVisible 判定，否则 issue #94 的洞会重新打开。
+ */
 export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean, env?: {
     dataRoot?: string;
     sessionKey?: string;
@@ -119,6 +145,11 @@ export declare function syncContextTools(agentCtx: unknown, shouldHave: boolean,
 /** 按当前会话的「已领取集合」重设一次剪枝（幂等：deny 名单没变就不动） */
 export declare function applyExtToolVisibility(agentCtx: unknown, selfTag?: string): void;
 export declare function ensureExtToolsGlobal(globalCtx: unknown): void;
+/**
+ * ⚠️ 2026-11-26：**已废弃**（全仓无调用点）。理由同 syncContextTools ——
+ * 它内部 `for (const t of [...ctxToolsRef(), ...qunAdminRef()])` 是无条件注册，
+ * 复活前必须先接 toolVisible。
+ */
 export declare function ensureContextToolsGlobal(globalCtx: unknown): void;
 /**
  * 按会话同步「上下文压缩三件套 + QQ 群管理」的**注册状态**（幂等）。
@@ -137,6 +168,8 @@ export declare function syncChannelScopedTools(agentCtx: unknown, opts: {
     groupAdmin: boolean;
     dataRoot?: string;
     sessionKey?: string;
+    /** 当前配置（2026-11-26，issue #94）：用来判 qq_group_admin 的可见性 */
+    config?: ImQQBotConfig;
 }): void;
 export declare function applyExtDisabledRestrict(agentCtx: unknown, dataRoot: string, extToolNames: string[]): void;
 export declare function restrictContextTools(agentCtx: unknown, shouldHave: boolean, env?: {

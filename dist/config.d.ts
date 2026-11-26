@@ -59,6 +59,38 @@ export interface StickerGatesConfig {
     bannedGroups: string[];
     libRoots: string[];
 }
+/**
+ * 工具 / dock 标签的可见性（2026-11-26，issue #94）。
+ *
+ * 两层结构：**类**给默认，**单项**给例外。
+ *   · 用户在设置页取消「群治理」这个类 → 该类 10 个工具全隐藏
+ *   · 再单独把 group_kick 勾回来 → overrides.group_kick = true
+ *   · 判定：`overrides[name] ?? classes[类] ?? true`
+ */
+export interface VisibilityConfig {
+    /** 内置工具（32 个）的可见性 */
+    tools?: {
+        /** 类开关（默认值）。键 = ToolScope */
+        classes?: Partial<Record<ToolScope, boolean>>;
+        /** 单项覆盖（例外）。键 = 工具名 */
+        overrides?: Record<string, boolean>;
+    };
+    /** 悬浮球里的标签可见性（自定义扩展标签不受此控制） */
+    dock?: {
+        classes?: Partial<Record<DockTabCap, boolean>>;
+        overrides?: Record<string, boolean>;
+    };
+}
+/**
+ * 工具的能力归属。
+ *   · `group`  纯群治理：没有群就是空壳（10 个）
+ *   · `cross`  跨会话投递：私聊用户也需要「主动找人说事」（5 个）
+ *   · `memo`   人物记忆：私聊主力（1 个）
+ *   · `base`   其余：媒体/表情/会话控制/定时（16 个）
+ */
+export type ToolScope = 'group' | 'cross' | 'memo' | 'base';
+/** dock 标签的能力归属（自定义扩展标签不在其中，永远显示） */
+export type DockTabCap = 'group' | 'cross' | 'base';
 export interface StickerConfig {
     /** 是否自动收藏群图片（默认开，只存本地不外发） */
     collectEnabled: boolean;
@@ -337,6 +369,23 @@ export interface EditableConfig {
      * 只处理尾部：历史深处的旧链接多半已被 offload 压成文字占位，改它们只会堆事件。
      */
     imagePathSurface?: boolean;
+    /**
+     * 是否在消息末尾注入「小传提醒」（2026-11-26，issue #94）。
+     * 那段提示是让她主动问「要不要记一下这个人」。关掉 = 不再注入。
+     * 注意它属于**行为**开关，放「设置」页，不跟工具可见性放一起。
+     */
+    selfDisclosureHint?: boolean;
+    /**
+     * 工具与界面的可见性（2026-11-26，issue #94）。
+     *
+     * 解决的问题：只用私聊的用户没有群、不做群管理，但 32 个内置工具和 7 个 dock 标签
+     * 无条件全部生效 —— 群工具的 describe 每轮都占 context，dock 里还挂着用不上的标签。
+     * 以前只能每次升级手动改打包后的 dist。
+     *
+     * 规则：`overrides[name]` ＞ `classes[类]` ＞ 默认 true。
+     * 默认全开 ⇒ 未配置的用户行为与旧版**逐字一致**。
+     */
+    visibility?: VisibilityConfig;
     /** 图片聚合(issue #40): 把连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
     imageAggregate?: {
         /** 总开关(默认关) */
@@ -562,6 +611,23 @@ export interface ImQQBotConfig {
      * 只处理尾部：历史深处的旧链接多半已被 offload 压成文字占位，改它们只会堆事件。
      */
     imagePathSurface?: boolean;
+    /**
+     * 是否在消息末尾注入「小传提醒」（2026-11-26，issue #94）。
+     * 那段提示是让她主动问「要不要记一下这个人」。关掉 = 不再注入。
+     * 注意它属于**行为**开关，放「设置」页，不跟工具可见性放一起。
+     */
+    selfDisclosureHint?: boolean;
+    /**
+     * 工具与界面的可见性（2026-11-26，issue #94）。
+     *
+     * 解决的问题：只用私聊的用户没有群、不做群管理，但 32 个内置工具和 7 个 dock 标签
+     * 无条件全部生效 —— 群工具的 describe 每轮都占 context，dock 里还挂着用不上的标签。
+     * 以前只能每次升级手动改打包后的 dist。
+     *
+     * 规则：`overrides[name]` ＞ `classes[类]` ＞ 默认 true。
+     * 默认全开 ⇒ 未配置的用户行为与旧版**逐字一致**。
+     */
+    visibility?: VisibilityConfig;
     /** 图片聚合(issue #40): 连续收到的几张图拼成一张长图, 随唤醒消息一起进上下文。仅对**声明 image 输入**的模型生效 */
     imageAggregate?: {
         /** 总开关(默认关) */
