@@ -13,7 +13,12 @@ describe('host-provided UI Settings', () => {
     expect(pkg.peerDependencies[settings]).toBeUndefined();
     expect(pkg.devDependencies[settings]).toBeUndefined();
     expect(pkg.peerDependenciesMeta[settings]).toBeUndefined();
-    expect(pkg.dependencies[slots]).toBe('0.1.7-rc.1');
+    // ★ 2026-11-26（PR #92）：slots 已从 dependencies 迁到 peerDependencies ——
+    //   避免包管理器装一份私有副本、和 DSH 宿主各持一个 slot 注册表（多实例分裂）。
+    //   devDependencies 保留固定版供构建与单测，运行时一律用宿主那份。
+    expect(pkg.dependencies[slots]).toBeUndefined();
+    expect(pkg.peerDependencies[slots]).toBe('>=0.1.7-rc.1');
+    expect(pkg.devDependencies[slots]).toBe('0.1.7-rc.1');
     expect(pkg.dsh.client).toMatchObject({
       platform: 'web', immediately: true, inject: [settings, slots],
     });

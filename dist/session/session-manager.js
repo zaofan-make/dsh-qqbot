@@ -25,6 +25,10 @@ import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextl
 import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
 import { getSegmentScore } from '../features/segment-score.js';
 import { offloadHistoryImages } from '../features/image-offload.js';
+// ★ 2026-11-26：把已进上下文的 QQ 图片链接换成本地路径（surfaceOp replace，只动尾部）
+import { replaceImagePathsInSurface } from '../features/image-path-surface.js';
+// ★ 2026-11-26：pre-step 兜底把 QQ 图片 URL 换成本地路径（后台下载完的在回合开始那一刻生效）
+import { lookupImagePath } from '../features/image-path-cache.js';
 import { trimHistoryForContextless } from '../features/contextless-trim.js';
 import { memoForInject, setMemoMaxItems } from '../features/context-memo.js';
 import { traceContextless } from '../features/contextless-store.js';
@@ -517,6 +521,11 @@ export class SessionManager {
         record.handle = created;
         record.agentPreset = composed.agentPreset;
         record.lastActivity = Date.now();
+        // ★★ 2026-11-25：/bot-new 换 agent 也不经 claimed/pre-step ⇒ 补一次 scoped 注册。
+        try {
+            this.syncScopedToolsOnClaim(created.agent);
+        }
+        catch { /* ignore */ }
         void oldHandle.dispose().catch(() => { });
         void attachSessionToWorkspaceWithRetry(this.ctx, this.config.cwd, childId, this.logger, {
             // 这个 childId 已经被下一次 fork/new 取代的话，别再挂、更别反归档（会撤销别人的自动归档）
@@ -941,6 +950,13 @@ export class SessionManager {
                     agent: record.agent,
                 });
             }
+            // ★★ 2026-11-25（/bot-new 之后 context_* 三件套消失、重启才好）：mountChannelTools 只挂内置工具，
+            //   不碰 context_compact/drop/memo —— 那三个原先只在 agent/inbox/claimed 注册，
+            //   而"建会话"不是消息 claim ⇒ 事件不触发 ⇒ 工具永远不挂到重启。这里同点位补一次。
+            try {
+                this.syncScopedToolsOnClaim(record.agent);
+            }
+            catch { /* 失败不影响建会话 */ }
         }
         catch { /* 注册失败不影响建会话 */ }
         return record;
@@ -1217,23 +1233,41 @@ export class SessionManager {
      */
     syncScopedToolsOnClaim(agent) {
         const a = agent;
-        if (!a)
+        if (!a) {
+            traceContextless('[ctxtool-claim] skip: agent 为空');
             return;
+        }
         // 只碰本实例的 agent（cwd 分流：别的 bot 实例的会话工具集不归我们管）
-        if (!this.nsForCwd(String(a.session?.header?.cwd ?? '')))
+        const cwdC0 = String(a.session?.header?.cwd ?? '');
+        if (!this.nsForCwd(cwdC0)) {
+            traceContextless('[ctxtool-claim] skip: cwd 不属本实例 cwd=' + cwdC0);
             return;
+        }
         const rec = this.findByAgent(agent);
-        const ctxOfTool = rec?.agentCtx ?? a.ctx;
-        if (!ctxOfTool)
+        // ★ CodeRabbit 2026-11-25（Major）：**当前 agent 的 ctx 优先**。
+        //   forkCurrentSession 换了 record.agent / record.handle，但**没换 record.agentCtx** ——
+        //   原来这段优先读 rec.agentCtx ⇒ 工具全注册到**已被替换的旧上下文**上，新 agent 看不到。
+        //   顺序与同文件里其它几处（a.ctx 优先）保持一致；没有 ctx 的 agent 仍回退 rec.agentCtx。
+        const ctxOfTool = a.ctx ?? rec?.agentCtx;
+        if (!ctxOfTool) {
+            traceContextless('[ctxtool-claim] skip: 拿不到 agentCtx/agent.ctx rec=' + String(Boolean(rec)));
             return;
+        }
         let sk = String(rec?.sessionKey ?? '').trim();
         if (!sk) {
             const sid = String(a.session?.id ?? '');
             if (sid)
                 sk = String(this.findBySessionId(sid)?.sessionKey ?? '');
+            // ★ CodeRabbit 2026-11-25（Major）：宿主**恢复**出来的 QQ 会话（resumeHostAgent 走
+            //   agents.resume，不写 this.sessions）在 findByAgent / findBySessionId 眼里都不存在
+            //   ⇒ 这里曾直接跳过注册。持久化的 sessionId→sessionKey 映射（model-prefs）是唯一兜底。
+            if (!sk && sid)
+                sk = String(this.modelResolver.findKeyBySessionId(sid) ?? '');
         }
-        if (!sk)
-            return; // 未知 = 不动（绝不因为读不到而卸工具）
+        if (!sk) {
+            traceContextless('[ctxtool-claim] skip: 拿不到 sessionKey rec=' + String(Boolean(rec)) + ' sid=' + String(a.session?.id ?? ''));
+            return;
+        } // 未知 = 不动
         const smart = isContextlessActive(sk, this.config.contextlessMode)
             && contextlessSmartOf(sk, this.config.contextlessSmart);
         syncChannelScopedTools(ctxOfTool, {
@@ -1248,7 +1282,10 @@ export class SessionManager {
      *  每个实例在 patch 里配自己的 cwd + settingsNs, 即自动分流;
      *  其他实例/项目(web、别的 cwd)的 agent 一律不注入, 避免群守则污染非本 bot 会话。 */
     nsForCwd(cwd) {
-        const selfCwd = String(this.config.cwd ?? '').trim().replace(/[\/]+$/, '');
+        // ★ CodeRabbit 2026-11-25：会话 header.cwd 是 absCwdOf() 写进去的，配置侧也必须用同一规则
+        //   —— 否则配置为相对路径（如 storage/emulated/0/bot）时两侧永远不相等，本实例的会话被误判成别人的，
+        //   工具静默不注册。配置为绝对路径时 absCwdOf 原样返回，行为不变。
+        const selfCwd = String(absCwdOf(this.config.cwd) ?? '').trim().replace(/[\/]+$/, '');
         const ns = String(this.config.settingsNs ?? '').trim() || 'im-qqbot';
         if (!selfCwd)
             return ns; // 未配 cwd → 对本实例所有 agent 注入(保守)
@@ -1324,6 +1361,11 @@ export class SessionManager {
                 if (!tagC)
                     return;
                 applyExtToolVisibility(ag.ctx, tagC);
+                // ★★ 2026-11-25：任何途径诞生的会话都该工具就绪 —— 这里也补一次 context_* 注册（幂等）。
+                try {
+                    this.syncScopedToolsOnClaim(ag);
+                }
+                catch { /* ignore */ }
             }
             catch { /* 注册失败不影响建 agent */ }
         });
@@ -1503,6 +1545,20 @@ export class SessionManager {
                                     break;
                                 }
                             }
+                        // ★★ 2026-11-25（CodeRabbit Major）：**宿主恢复出来的会话**（resumeHostAgent 走 agents.resume，
+                        //   不写 this.sessions）在前两条反查里都查不到 ⇒ sk0 为空 ⇒ 下面 ctxKey0 退化成 '__global__'
+                        //   ⇒ segOn0/ctxSmartOn 全 false ⇒ 1733 行的**固定窗口裁剪抢跑**（把本回合尾巴裁掉、
+                        //   写入 lastTrimmedTurn）⇒ 等 1819 行才通过持久映射恢复 sessionKey 时，
+                        //   1852 行的 trimHistoryForContextless 撞"同回合防重复"返回 false ⇒ pending 永远不执行。
+                        //   所以必须**在这里**（所有裁剪分派之前）就用持久映射兜底 —— 否则补消费端也改不了执行顺序。
+                        if (!sk0) {
+                            try {
+                                sk0 = String(this.modelResolver.findKeyBySessionId(sid0) ?? '');
+                            }
+                            catch { /* ignore */ }
+                            if (sk0)
+                                traceContextless('[ctxsmart] sk0 持久映射兜底: ' + sk0);
+                        }
                         skForTool = sk0; // 存到外层，供"上下文工具挂/卸"那块兜底用
                     }
                     try {
@@ -1521,7 +1577,9 @@ export class SessionManager {
                     //   （isContextlessActive 在 globalEnabled===true 时直接返回 true）。
                     // ★ 提前算：会话级「智能判断」开关（固定 N 条 trim 要用它让位）
                     try {
-                        const sk0b = this.findByAgent(agent)?.sessionKey;
+                        // ★ 2026-11-25：优先用上面算好的 sk0（已含持久映射兜底），
+                        //   否则恢复的会话这里又退回 findByAgent ⇒ ctxSmartOn 仍为 false，固定窗口照样抢跑。
+                        const sk0b = this.findByAgent(agent)?.sessionKey || sk0;
                         if (sk0b) {
                             setMemoMaxItems(contextlessMemoMaxOf(sk0b) ?? this.config.contextMemoMaxItems ?? 20);
                             ctxSmartOn = isContextlessActive(sk0b, this.config.contextlessMode)
@@ -1540,7 +1598,30 @@ export class SessionManager {
                         segOn0 = isContextlessActive(ctxKey0, this.config.contextlessMode) && contextlessSegmentOf(sk0);
                     }
                     catch { /* ignore */ }
-                    if (segOn0) {
+                    // ★★ 2026-11-25（主人实测 + 微积分指出）：**智能判断与分段压缩同开时，AI 登记的
+                    //   compact/drop 下一回合不生效**。原因是执行顺序：分段压缩先跑、把"上回合结束→本回合开始"
+                    //   那段压成占位节点；等下面消费 pending 时，那段里"消息数 <= keep+1"直接 return false，
+                    //   什么都删不掉 —— 但 pending 照样被 clear，工具回执还说"下一回合执行"，等于骗人。
+                    //   pending 是 AI 明确要求的全量操作，优先级高于"压本轮尾巴"：有 pending 就跳过本轮分段压缩。
+                    let pendingAhead = null;
+                    try {
+                        const skP = String(sk0 || this.findByAgent(agent)?.sessionKey || "");
+                        const drP = this.resolveDataRootSmart();
+                        if (skP && drP)
+                            pendingAhead = readContextPending(drP, skP);
+                        if (pendingAhead)
+                            traceContextless("[ctxorder] 本轮有 pending(" + String(pendingAhead.mode) + ") → 跳过分段压缩，交给下面消费");
+                    }
+                    catch { /* ignore */ }
+                    // ★ 2026-11-25（CodeRabbit Major）：跳过分段压缩的条件必须和"本轮**真的能消费** pending"一致。
+                    //   否则：上一回合登记了 compact、随后**关掉智能模式**但保留分段压缩 ⇒ pendingAhead 一直在，
+                    //   而下面的消费分支要求 ctxSmartOn 为真 ⇒ 既不执行也不清除 ⇒ **分段压缩被永久跳过**。
+                    //   正确口径：只有"有 pending **且** 智能模式开着（能消费）"才让位。
+                    const willConsumePending = !!pendingAhead && ctxSmartOn;
+                    if (pendingAhead && !ctxSmartOn) {
+                        traceContextless('[ctxorder] 有 pending 但智能模式已关 ⇒ 消费不了，照常跑分段压缩（pending 留着）');
+                    }
+                    if (segOn0 && !willConsumePending) {
                         // ── 分段压缩：只压「上回合结束 → 本回合开始」这一段，更早的前缀一个字都不动 ──
                         //    为什么这么做：dsh 每轮把整段上下文发出去，前缀不变才有缓存；只动尾巴才不会把缓存打掉。
                         try {
@@ -1669,6 +1750,19 @@ export class SessionManager {
                     catch (e) {
                         this.logger?.debug?.('[model-sync] 异常(已忽略): ' + (e instanceof Error ? e.message : String(e)));
                     }
+                    // ── 已进上下文的图片链接 → 本地路径（2026-11-26 主人要求，默认关）──
+                    //   图片是后台下载的，组装时可能还没下完，上下文里就留下了 QQ 临时长链接。
+                    //   这里用 surfaceOp replace 只改**尾部**（上一回合结束之后那几条），改完永久生效。
+                    try {
+                        if (this.config.imagePathSurface === true && (!Number.isFinite(currentStep) || currentStep <= 1)) {
+                            const n = await replaceImagePathsInSurface(agent, this.logger, Number.isFinite(currentTurn) ? currentTurn : undefined, { scope: 'tail' });
+                            if (n > 0)
+                                this.logger?.info?.(`[img-path-surface] 本轮改写 ${n} 个图片链接`);
+                        }
+                    }
+                    catch (e) {
+                        this.logger?.debug?.('[img-path-surface] 异常(已忽略): ' + (e instanceof Error ? e.message : String(e)));
+                    }
                     // ── 历史图片不重发（2026-11-07 主人定）──
                     //   每轮第一步：把**本插件聚合出来**的图片在历史里换成文字占位，
                     //   只保留「本回合新来的那几张」。别的插件/功能塞的图一律不动。
@@ -1769,7 +1863,20 @@ export class SessionManager {
                 //    与上面的「固定 N 条 trim」互斥：智能模式开启时，固定窗口让位给 AI 自主决定。
                 try {
                     const recSmart = agent ? this.findByAgent(agent) : undefined;
-                    const skSmart = recSmart?.sessionKey;
+                    let skSmart = recSmart?.sessionKey;
+                    // ★ CodeRabbit 2026-11-25（Major）：**消费端要和注册端用同一个会话键**。
+                    //   宿主恢复出来的 QQ 会话没有 findByAgent 记录；注册端已经能用持久映射取到 key、
+                    //   把请求写进该 key 的 pending 文件，但原来这里仍只用 rec.sessionKey ⇒ 对这种会话
+                    //   skSmart 恒空 ⇒ 下面的条件不成立 ⇒ **pending 永远不执行**（工具却回"下一回合执行"）。
+                    //   有活跃记录时仍以记录为准；没有映射的会话保持现状。
+                    if (!skSmart) {
+                        try {
+                            const sidSmart = String(agent?.session?.id ?? '');
+                            if (sidSmart)
+                                skSmart = this.modelResolver.findKeyBySessionId(sidSmart) || undefined;
+                        }
+                        catch { /* ignore */ }
+                    }
                     try {
                         traceContextless('[ctxsmart-diag2] sk=' + String(skSmart) + ' on=' + String(ctxSmartOn));
                     }
@@ -1797,14 +1904,24 @@ export class SessionManager {
                         const req = readContextPending(dataRootSmart, skSmart);
                         if (req) {
                             const keep = req.mode === 'drop' ? 0 : (Number(req.keep) || 3);
-                            await trimHistoryForContextless(agent, keep, this.logger, (() => { try {
+                            const done = await trimHistoryForContextless(agent, keep, this.logger, (() => { try {
                                 return this.ctx;
                             }
                             catch {
                                 return undefined;
                             } })(), Number.isFinite(currentTurn) ? currentTurn : undefined);
-                            clearContextPending(dataRootSmart, skSmart);
-                            this.logger?.info?.('[contextless] 已执行 AI 登记的 ' + String(req.mode) + '（keep=' + keep + ', session=' + skSmart + '）');
+                            // ★★ 2026-11-25：trimHistoryForContextless **返回 false 表示"什么都没删"**
+                            //   （节点数不足 / 消息数 <= keep+1 / 受保护节点挡在最前）。原来不看返回值就 clear，
+                            //   AI 那边看到"已登记"、历史却没动，且请求被吞掉再也不重试。
+                            //   现在：没删成就**保留 pending**（下一回合还会再试），并把原因记进日志。
+                            if (done) {
+                                clearContextPending(dataRootSmart, skSmart);
+                                this.logger?.info?.('[contextless] 已执行 AI 登记的 ' + String(req.mode) + '（keep=' + keep + ', session=' + skSmart + '）');
+                            }
+                            else {
+                                this.logger?.warn?.('[contextless] AI 登记的 ' + String(req.mode) + ' 本轮没能生效（可删内容不足），保留 pending 下回合重试: session=' + skSmart);
+                                traceContextless('[ctxsmart] pending 未生效，保留: mode=' + String(req.mode) + ' keep=' + keep);
+                            }
                         }
                     }
                 }
@@ -2026,6 +2143,61 @@ export class SessionManager {
                     }
                     catch { /* ignore */ }
                 }
+                // ★ 2026-11-26（主人方案）：**pre-step 兜底** —— 把本步新消息里的 QQ 图片 URL 换成本地路径。
+                //   为什么在这里：图片下载是后台 fire-and-forget（不阻塞入站），消息组装时可能还没下完；
+                //   而 `dec.messages` 是「本步从收件箱取出的新消息」，正是**上下文已就位、回合正要开始**的那一刻。
+                //   在这儿查 image-path-cache，下完几张就换几张，没下完的原样留着（回退 QQ 链接）。
+                //   ⚠️ 2026-11-26（审核 S8 更正）：这段改写**会进 session** —— 宿主 agent-loop 的 step()
+                //   会把 decision.messages 逐条 `session.append('user/message', …, {surfaceOp:'append'})`。
+                //   所以是"一次性改写并落库"，不是"只改副本"。副作用：本地路径日后若被图片回收删掉，
+                //   原 QQ 链接已不可恢复 —— 这也是它虽不带开关、仍要尽量收窄范围的原因。
+                try {
+                    let imgReplaced = 0;
+                    // 防御：只扫前 24 条（`dec.messages` 正常只有 1~3 条；真遇到大批量也不至于卡住热路径）
+                    const IMG_SCAN_MAX = 24;
+                    let scanLeft = IMG_SCAN_MAX;
+                    dec.messages = dec.messages.map((m) => {
+                        if (scanLeft-- <= 0)
+                            return m;
+                        const mm = m;
+                        if (!mm || mm.role !== 'user' || !Array.isArray(mm.content))
+                            return m;
+                        let msgChanged = false;
+                        const nc = mm.content.map((c) => {
+                            if (!c || c.type !== 'text' || typeof c.text !== 'string')
+                                return c;
+                            // 只碰含 QQ 图片下载链接的文本块，其他内容一律不动
+                            if (!/multimedia\.nt\.qq\.com\.cn|qq\.com\/download/i.test(c.text))
+                                return c;
+                            let blockChanged = false;
+                            // ⚠️ 字符类必须排除 `]`/`>`/中文标点：本仓库图片占位是 `[图片: <url>]`，
+                            //   用 `[^\s)]` 会把 `]` 与紧跟的正文一起吃掉（审核 M1）。
+                            // CodeRabbit PR #93：外层只判断「整段里有没有 QQ 图片域名」，但下面这个回调会对块里
+                            // **每个** https 链接调 lookupImagePath，而它的 stableKey 只看 fileid 前 40 字符
+                            // → 普通链接可能误命中缓存。所以回调内先校验主机，非 QQ 图片链接原样返回。
+                            const isQqImageUrl = (x) => /^https:\/\/(?:multimedia\.nt\.qq\.com\.cn|qq\.com)\/download/i.test(x);
+                            const replacedText = c.text.replace(/https:\/\/[^\s)\]}>"'，。；！？、【】（）《》]+/g, (u) => {
+                                if (!isQqImageUrl(u))
+                                    return u;
+                                const local = lookupImagePath(u);
+                                if (!local)
+                                    return u;
+                                imgReplaced++;
+                                blockChanged = true;
+                                return local;
+                            });
+                            if (!blockChanged)
+                                return c;
+                            msgChanged = true;
+                            return { ...c, text: replacedText };
+                        });
+                        return msgChanged ? { ...mm, content: nc } : m;
+                    });
+                    if (imgReplaced > 0) {
+                        this.logger?.debug?.(`[img-path] pre-step 替换 ${imgReplaced} 个图片 URL → 本地路径`);
+                    }
+                }
+                catch { /* 替换失败不影响本步 */ }
                 if (recMemo || isQqSessionByPrefs) {
                     const DIRECT_MARK = '【主人在 DSH 宿主界面直接发送】';
                     let marked = 0;

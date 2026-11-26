@@ -28,6 +28,10 @@ import { isContextlessActive, contextlessSmartOf, contextlessMemoMaxOf, contextl
 import { contextlessSegmentOf, contextlessSegmentKeepOf, contextlessSegmentScoreMinOf } from '../features/contextless-store.js';
 import { getSegmentScore } from '../features/segment-score.js';
 import { offloadHistoryImages } from '../features/image-offload.js';
+// ★ 2026-11-26：把已进上下文的 QQ 图片链接换成本地路径（surfaceOp replace，只动尾部）
+import { replaceImagePathsInSurface } from '../features/image-path-surface.js';
+// ★ 2026-11-26：pre-step 兜底把 QQ 图片 URL 换成本地路径（后台下载完的在回合开始那一刻生效）
+import { lookupImagePath } from '../features/image-path-cache.js';
 
 /**
  * 分段压缩（2026-11-06）：**边界每次现算** —— 取"最后一条 assistant/message 之后"，
@@ -1736,6 +1740,21 @@ export class SessionManager {
             }
           } catch (e) { this.logger?.debug?.('[model-sync] 异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
 
+          // ── 已进上下文的图片链接 → 本地路径（2026-11-26 主人要求，默认关）──
+          //   图片是后台下载的，组装时可能还没下完，上下文里就留下了 QQ 临时长链接。
+          //   这里用 surfaceOp replace 只改**尾部**（上一回合结束之后那几条），改完永久生效。
+          try {
+            if (this.config.imagePathSurface === true && (!Number.isFinite(currentStep) || currentStep <= 1)) {
+              const n = await replaceImagePathsInSurface(
+                agent as unknown as { session?: { surface?: { nodes?: number[] } } },
+                this.logger,
+                Number.isFinite(currentTurn) ? currentTurn : undefined,
+                { scope: 'tail' },
+              );
+              if (n > 0) this.logger?.info?.(`[img-path-surface] 本轮改写 ${n} 个图片链接`);
+            }
+          } catch (e) { this.logger?.debug?.('[img-path-surface] 异常(已忽略): ' + (e instanceof Error ? e.message : String(e))); }
+
           // ── 历史图片不重发（2026-11-07 主人定）──
           //   每轮第一步：把**本插件聚合出来**的图片在历史里换成文字占位，
           //   只保留「本回合新来的那几张」。别的插件/功能塞的图一律不动。
@@ -2082,6 +2101,58 @@ export class SessionManager {
             if (sidNow) isQqSessionByPrefs = !!this.modelResolver.findKeyBySessionId(sidNow);
           } catch { /* ignore */ }
         }
+        // ★ 2026-11-26（主人方案）：**pre-step 兜底** —— 把本步新消息里的 QQ 图片 URL 换成本地路径。
+        //   为什么在这里：图片下载是后台 fire-and-forget（不阻塞入站），消息组装时可能还没下完；
+        //   而 `dec.messages` 是「本步从收件箱取出的新消息」，正是**上下文已就位、回合正要开始**的那一刻。
+        //   在这儿查 image-path-cache，下完几张就换几张，没下完的原样留着（回退 QQ 链接）。
+        //   ⚠️ 2026-11-26（审核 S8 更正）：这段改写**会进 session** —— 宿主 agent-loop 的 step()
+        //   会把 decision.messages 逐条 `session.append('user/message', …, {surfaceOp:'append'})`。
+        //   所以是"一次性改写并落库"，不是"只改副本"。副作用：本地路径日后若被图片回收删掉，
+        //   原 QQ 链接已不可恢复 —— 这也是它虽不带开关、仍要尽量收窄范围的原因。
+        try {
+          let imgReplaced = 0;
+          // 防御：只扫前 24 条（`dec.messages` 正常只有 1~3 条；真遇到大批量也不至于卡住热路径）
+          const IMG_SCAN_MAX = 24;
+          let scanLeft = IMG_SCAN_MAX;
+          dec.messages = dec.messages.map((m: unknown) => {
+            if (scanLeft-- <= 0) return m;
+            const mm = m as {
+              role?: string;
+              content?: Array<{ type?: string; text?: string }>;
+            };
+            if (!mm || mm.role !== 'user' || !Array.isArray(mm.content)) return m;
+            let msgChanged = false;
+            const nc = mm.content.map((c) => {
+              if (!c || c.type !== 'text' || typeof c.text !== 'string') return c;
+              // 只碰含 QQ 图片下载链接的文本块，其他内容一律不动
+              if (!/multimedia\.nt\.qq\.com\.cn|qq\.com\/download/i.test(c.text)) return c;
+              let blockChanged = false;
+              // ⚠️ 字符类必须排除 `]`/`>`/中文标点：本仓库图片占位是 `[图片: <url>]`，
+              //   用 `[^\s)]` 会把 `]` 与紧跟的正文一起吃掉（审核 M1）。
+              // CodeRabbit PR #93：外层只判断「整段里有没有 QQ 图片域名」，但下面这个回调会对块里
+              // **每个** https 链接调 lookupImagePath，而它的 stableKey 只看 fileid 前 40 字符
+              // → 普通链接可能误命中缓存。所以回调内先校验主机，非 QQ 图片链接原样返回。
+              const isQqImageUrl = (x: string): boolean =>
+                /^https:\/\/(?:multimedia\.nt\.qq\.com\.cn|qq\.com)\/download/i.test(x);
+              const replacedText = c.text.replace(/https:\/\/[^\s)\]}>"'，。；！？、【】（）《》]+/g, (u: string) => {
+                if (!isQqImageUrl(u)) return u;
+                const local = lookupImagePath(u);
+                if (!local) return u;
+                imgReplaced++;
+                blockChanged = true;
+                return local;
+              });
+              if (!blockChanged) return c;
+              msgChanged = true;
+              return { ...c, text: replacedText };
+            });
+            return msgChanged ? { ...mm, content: nc } : m;
+          });
+          if (imgReplaced > 0) {
+            this.logger?.debug?.(`[img-path] pre-step 替换 ${imgReplaced} 个图片 URL → 本地路径`);
+          }
+        } catch { /* 替换失败不影响本步 */ }
+
         if (recMemo || isQqSessionByPrefs) {
           const DIRECT_MARK = '【主人在 DSH 宿主界面直接发送】';
           let marked = 0;

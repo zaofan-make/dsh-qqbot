@@ -215,6 +215,71 @@ async function pageWsUrl(port, timeoutMs = 20000) {
     throw new Error('没找到浏览器页面目标');
 }
 const sessions = new Map();
+/**
+ * 生命周期代次（2026-11-26，CodeRabbit #92；M3 修正为按 owner 分桶）。
+ *
+ * `disposeQunLogin()` 是同步的，而 `qunBrowserLoginStart()` 要过好几个 `await` 才会
+ * `sessions.set()`。若卸载正好发生在这段 await 中间，旧调用醒来后仍会新建浏览器、
+ * 重新装退出钩子、重启扫描器 —— 资源就复活了。
+ *
+ * ⚠️ 代次必须**按 owner 分开**：早先版本用一个全局计数器，导致
+ *    「实例 B 卸载 → 全局 +1 → 实例 A 正在进行的登录醒来后误判自己过期，把自己 kill 掉」。
+ *    这与"只清自己的"目标直接矛盾。
+ *    owner === undefined 表示进程级全局清理（`disposeQunLogin()` 无参时使用）。
+ */
+const lifecycleGenerations = new Map();
+/**
+ * 当前实例的归属 token（N1，2026-11-26 复审）。
+ *
+ * 为什么需要：生产唯一的登录入口 `channel-tools.ts` 调
+ * `qunBrowserLoginStart(dataRoot, { headless: true })` 时**不传 owner**，
+ * 而 dispose 端传的是 `instanceToken` —— 两者落在不同的桶里，
+ * 于是 `stale()` 恒为 false，代次检查一次都不会触发（M3 白干）。
+ *
+ * 做法：由插件 `apply()` 通过 {@link setQunLoginOwner} 注入本实例 token，
+ * `qunBrowserLoginStart` 取 `opts.owner ?? currentOwner` 兜底 ——
+ * 这样外部扩展/内部命令不传 owner 也能归到当前实例，卸载时能被正确作废。
+ */
+let currentOwner;
+/** 由插件 apply() 设置：本进程当前实例的归属 token（传 undefined = 清除） */
+export function setQunLoginOwner(owner) {
+    currentOwner = owner;
+}
+/**
+ * 卸载时清回默认值（S-a，复审建议）。
+ *
+ * ⚠️ 必须**只清自己的**：A、B 两实例共存时，A 卸载若无条件清成 undefined，
+ *   会把 B 的 currentOwner 也抹掉 → B 之后发起的登录又落回 undefined 桶，
+ *   M3 的代次检查对 B 就失效了。
+ */
+export function clearQunLoginOwner(owner) {
+    if (currentOwner === owner)
+        currentOwner = undefined;
+}
+function genOf(owner) {
+    // ⚠️ 2026-11-26（CodeRabbit PR #93）：读到没登记过的 owner 时要**顺手登记**。
+    //   否则该 owner 从未出现在 Map 里，无参 disposeQunLogin() 的「推所有桶」也推不到它，
+    //   它正在 await 的登录醒来后 stale() 仍为 false → 全局清理之后资源复活。
+    if (!lifecycleGenerations.has(owner))
+        lifecycleGenerations.set(owner, 0);
+    return lifecycleGenerations.get(owner) ?? 0;
+}
+function bumpGen(owner) {
+    lifecycleGenerations.set(owner, genOf(owner) + 1);
+}
+/** 清理本次调用自己造的句柄（还没进 sessions，不能靠 closeSession） */
+function closeOwned(handle, cdp) {
+    if (cdp) {
+        try {
+            cdp.close();
+        }
+        catch { /* ignore */ }
+    }
+    try {
+        handle.kill();
+    }
+    catch { /* ignore */ }
+}
 function closeSession(dataRoot) {
     const s = sessions.get(dataRoot);
     if (!s)
@@ -254,13 +319,55 @@ function installExitHook() {
     }
     catch { /* ignore */ }
 }
-/** 供插件 dispose 生命周期调用：清理全部登录浏览器会话与空闲定时扫描器 */
-export function disposeQunLogin() {
+/**
+ * 供插件 dispose 生命周期调用：清理登录浏览器会话与空闲定时扫描器。
+ *
+ * @param owner 传入时只关掉**该实例创建**的会话（多实例/热重载安全）；
+ *              不传则全局清理（进程级退出、历史外部调用保持旧行为）。
+ *
+ * 扫描器与退出钩子是**模块级共享资源**：只有当清理后已经没有任何会话了才撤掉，
+ * 否则会误伤其他实例仍在用的会话（CodeRabbit #92）。
+ */
+export function disposeQunLogin(owner) {
+    if (owner === undefined) {
+        // 进程级全局清理：所有会话 + 共享资源一起收
+        for (const dr of Array.from(sessions.keys())) {
+            try {
+                closeSession(dr);
+            }
+            catch { /* ignore */ }
+        }
+        // ★ N2（复审）：只推 undefined 桶是不够的 —— 带 owner 的进行中登录醒来后
+        //   仍会 sessions.set 并把刚撤掉的退出钩子重新装回去（全局清理之后资源又活了）。
+        //   这里把所有桶一起推一遍（先快照 keys，避免边迭代边改 Map）。
+        for (const k of Array.from(lifecycleGenerations.keys()))
+            bumpGen(k);
+        bumpGen(undefined);
+        releaseSharedIfIdle();
+        return;
+    }
+    // 单实例清理：只推进**自己这个桶**的代次（M3：不误杀别的实例正在进行的登录）
+    bumpGen(owner);
+    for (const [dr, sess] of Array.from(sessions.entries())) {
+        // 自己的；以及**无主**的（M6：外部扩展建的会话没人认领，谁卸载谁顺手收掉，
+        //   否则它们只会在进程退出时才被清 —— 热重载后浏览器进程一直挂着）
+        if (sess.owner === owner || sess.owner === undefined) {
+            try {
+                closeSession(dr);
+            }
+            catch { /* ignore */ }
+        }
+    }
+    releaseSharedIfIdle();
+}
+/** 没有任何会话了，才撤掉模块级共享资源（定时清扫器 + 退出钩子） */
+function releaseSharedIfIdle() {
+    if (sessions.size !== 0)
+        return;
     if (sweeper) {
         clearInterval(sweeper);
         sweeper = null;
     }
-    killAllSessions();
     if (exitHookInstalled) {
         try {
             process.off('exit', killAllSessions);
@@ -453,6 +560,13 @@ async function shotQr(cdp, dataRoot) {
  * 之后用 qunBrowserLoginWait 继续等。
  */
 export async function qunBrowserLoginStart(dataRoot, opts = {}) {
+    // 记下进场代次（按 owner 分桶）：后面每个 await 之后都可能已被卸载（CodeRabbit #92 / M3）
+    // N1：外部调用方（channel-tools / 扩展）通常不传 owner —— 兜到当前实例，
+    //     否则代次桶是 undefined，dispose 推进的是 instanceToken 桶，stale() 永远 false。
+    const owner = opts.owner ?? currentOwner;
+    const generation = genOf(owner);
+    /** 本次调用是否已被卸载作废 */
+    const stale = () => generation !== genOf(owner);
     const exe = findSystemBrowser();
     if (!exe) {
         return { ok: false, msg: '没找到系统浏览器（Edge/Chrome）。可设环境变量 QUN_BROWSER 指向浏览器可执行文件。' };
@@ -518,6 +632,13 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
         cdp = await connectCdp(wsUrl);
         await cdp.send('Runtime.enable');
         await cdp.send('Page.enable');
+        // ★ M4（审核）：浏览器已经起来了，先确认这次调用还有效。
+        //   否则后面几条"免扫码成功"会带着这对 handle/cdp 直接 return，
+        //   而它们还没进 sessions（closeSession 查不到）→ 浏览器进程泄漏。
+        if (stale()) {
+            closeOwned(handle, cdp);
+            return { ok: false, msg: '插件已卸载，本次登录已取消。' };
+        }
         // 有头模式下把窗口顶到最前面（不然可能被别的窗口盖住，用户找不到二维码）
         if (opts.headless === false) {
             try {
@@ -606,13 +727,19 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
                 break;
         }
         if (hit) {
-            closeSession(dataRoot);
+            closeOwned(handle, cdp);
+            // CodeRabbit PR #93：tryReadCookie 也是 await，这期间可能已卸载 —— 别把过期凭据交出去
+            if (stale())
+                return { ok: false, msg: '插件已卸载，本次登录已取消。' };
             return { ok: true, msg: `免扫码：profile 里的登录态还有效，直接取用（uin=${hit.uin}）`, cookie: hit };
         }
         // 再补一次（页面可能刚跳完）
         hit = await tryReadCookie(cdp);
         if (hit) {
-            closeSession(dataRoot);
+            closeOwned(handle, cdp);
+            // CodeRabbit PR #93：tryReadCookie 也是 await，这期间可能已卸载 —— 别把过期凭据交出去
+            if (stale())
+                return { ok: false, msg: '插件已卸载，本次登录已取消。' };
             return { ok: true, msg: `免扫码：profile 里的登录态还有效，直接取用（uin=${hit.uin}）`, cookie: hit };
         }
         // ★★ 需要人登录 → 必须**主动跳到 xlogin 面板页**。
@@ -624,7 +751,9 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
             await sleep(2800);
             hit = await tryReadCookie(cdp);
             if (hit) {
-                closeSession(dataRoot);
+                closeOwned(handle, cdp);
+                if (stale())
+                    return { ok: false, msg: '插件已卸载，本次登录已取消。' };
                 return { ok: true, msg: `登录态有效（uin=${hit.uin}）`, cookie: hit };
             }
         }
@@ -636,7 +765,9 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
                 await sleep(500);
                 const ck = await tryReadCookie(cdp);
                 if (ck) {
-                    closeSession(dataRoot);
+                    closeOwned(handle, cdp);
+                    if (stale())
+                        return { ok: false, msg: '插件已卸载，本次登录已取消。' };
                     return { ok: true, msg: `免扫码登录成功（点头像授权），uin=${ck.uin}`, cookie: ck };
                 }
             }
@@ -665,7 +796,13 @@ export async function qunBrowserLoginStart(dataRoot, opts = {}) {
         }
         catch { /* ignore */ }
         const qrPath = await shotQr(cdp, dataRoot);
-        sessions.set(dataRoot, { handle, cdp, dataRoot, at: Date.now(), qrPath, clicked: n > 0 });
+        // ★ 卸载发生在上面的 await 之间 → 本次调用已经过期，自己把刚造的资源收干净再失败，
+        //   绝不 sessions.set（否则就是 CodeRabbit 说的"资源复活"）。
+        if (stale()) {
+            closeOwned(handle, cdp);
+            return { ok: false, msg: '插件已卸载，本次登录已取消。' };
+        }
+        sessions.set(dataRoot, { handle, cdp, dataRoot, at: Date.now(), qrPath, clicked: n > 0, ...(owner ? { owner } : {}) });
         installExitHook(); // 宿主退出时把浏览器一起带走（不然会成孤儿进程）
         ensureSweeper(); // 空闲超时自动关（不然扫码没扫成会一直挂着）
         if (!qrPath) {

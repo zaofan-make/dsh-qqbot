@@ -23,7 +23,7 @@ void runQrSetup;
 void persistCredentialsToProfile;
 import { setOutboundModeWriter } from './features/outbound-mode-switch.js';
 import { setLexicalFallback } from './features/local-embed.js';
-import { disposeQunLogin } from './features/qun-login.js';
+import { clearQunLoginOwner, disposeQunLogin, setQunLoginOwner } from './features/qun-login.js';
 // ⚠️ @deepseek-ai/dsh-settings 的"注册 Web 可视化设置"入口在 harness 各版本间有差异：
 //   - rc.2 及更早：模块顶层具名导出 installSettingsSection(ctx, ns, schema, entry, hooks)
 //   - alpha / 0.1.2 线：改为 ctx.settings 服务，方法 installSection(ctx, ns, schema, entry, hooks)
@@ -40,8 +40,24 @@ export const Config = ConfigSchema;
 export async function apply(ctx, config) {
     const agents = ctx.agents;
     const logger = ctx.logger ?? console;
+    // ★ 2026-11-26（CodeRabbit #92）：dispose 只清理**本实例**创建的登录会话。
+    //   `sessions` 是模块级 Map，多实例/热重载时无条件全清会关掉别人正在等扫码的浏览器。
+    //   instanceToken 每次 apply 新建 ⇒ 天然区分实例；不传 token 的全局清理路径仍然保留给进程退出。
+    const instanceToken = {};
+    // ★ N1（复审）：把本实例 token 设为登录的默认归属 —— 生产入口 channel-tools 调
+    //   `qunBrowserLoginStart(dataRoot, { headless: true })` 不传 owner，
+    //   没有这一步的话它落在 undefined 桶，dispose 推进的是 instanceToken 桶 ⇒ 代次检查永远不触发。
+    try {
+        setQunLoginOwner(instanceToken);
+    }
+    catch { /* ignore */ }
     ctx.on?.('dispose', () => {
-        disposeQunLogin();
+        disposeQunLogin(instanceToken);
+        // 别把死 token 留成默认值 —— 但只清**自己的**（多实例时别误清别人的 currentOwner）
+        try {
+            clearQunLoginOwner(instanceToken);
+        }
+        catch { /* ignore */ }
     });
     // ── 扩展 UI 自动铺设（2026-10-27 主人要求）─────────────────────────────
     //   为什么要在启动时做：
@@ -608,6 +624,10 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             gates: live.sticker.gates,
             autoTagEnabled: live.sticker.autoTagEnabled,
             visionCli: live.sticker.visionCli,
+            // ★ N3（复审）：schema 里 fullDownload 的默认值是 true，而 sync() 是
+            //   `live.sticker = {...live.sticker, ...next.sticker}` 整块合并 —— entry 少这一行，
+            //   首次 sync 就会用默认 true 把用户手写的 false 静默掀回 true（= 悄悄开全量下载）。
+            fullDownload: live.sticker.fullDownload,
         },
         injectRules: live.injectRules,
         imageHint: live.imageHint,
@@ -616,6 +636,10 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
         //   而 entry 缺这几个键 ⇒ 用**默认值**覆盖用户的真实配置：
         //   例 extMetaTool 默认 true（用户关了会被掀回 true）、webTurnSilent 默认 false（用户开了会被关掉）。
         imageOffload: live.imageOffload,
+        // ★ 2026-11-26（审核 M2）：entry 不带这个字段 → 面板显示走 schema 默认 false，
+        //   用户配置里写了 true 也显示成 false。本文件的 CodeRabbit 注释已强调过：
+        //   「sync 里同步的字段 entry 必须也带上」。这是第五次踩同一个坑。
+        imagePathSurface: live.imagePathSurface,
         imageAggregate: live.imageAggregate,
         messageReference: live.messageReference,
         extMetaTool: live.extMetaTool,
@@ -668,6 +692,9 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             //   保存后旧值一直生效，只有重启才变。逐项补齐（与 schema 对齐）。
             if (typeof next.imageOffload === 'boolean')
                 live.imageOffload = next.imageOffload;
+            // ★ 2026-11-26（审核 M2）：不在这里同步 → 面板勾了保存，live 不变，必须重启才生效。
+            if (typeof next.imagePathSurface === 'boolean')
+                live.imagePathSurface = next.imagePathSurface;
             if (next.imageAggregate && typeof next.imageAggregate === 'object')
                 live.imageAggregate = next.imageAggregate;
             if (typeof next.messageReference === 'boolean')
@@ -739,7 +766,7 @@ async function installLiveSettings(ctx, live, logger, nsOverride) {
             //    (实测症状: dock 保存后 /botplay 报"还没有装配任何互动事件")。
             if (Array.isArray(next.botplayEvents) && next.botplayEvents.length > 0)
                 live.botplayEvents = next.botplayEvents;
-            logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
+            logger.info('[im-qqbot] 设置已同步(live): dataRoot/behavior/sticker/injectRules/imageHint/imageOffload/imagePathSurface/imageAggregate/messageReference/extMetaTool/webTurnSilent/localModel/groupPrompt/schedule/groupAdmin/approvals/botplayEvents');
         }
         catch (err) {
             logger.warn?.(`im-qqbot: 设置同步失败: ${err instanceof Error ? err.message : String(err)}`);
