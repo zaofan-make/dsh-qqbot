@@ -422,25 +422,31 @@ export async function handleInbound(
         }
       }
     }
-    for (const c of candidates) {
-      const hit = detectSelfDisclosure(c.text);
-      if (!hit) continue;
-      const personKey = `person:${c.senderId}`;
-      if (countWroteToday(personKey) > 0) continue;   // 这人今天已经记过 → 不唠叨
-      // 只有"她在意的人"才提醒（主人 2026-09-14 定）：
-      //   "每个人都提醒记录会不会太耗费 token…限制只有好感度高了才提醒，其余靠模型自觉，这样才真实"。
-      //   口径 = 好感度占其**范围**的比例 ≥ 20%（即"亲近"档；范围随熟识度变，陌生人 ±1 所以更容易达标）。
-      //   没达标的不提醒 —— 靠她自觉（真在意的人，她本来就会留神）。
-      const dRoot = dataRootOf(config);
-      const att = attitudeOf(dRoot, personKey);
-      const affEntry = getAffinityEntry(dRoot, personKey);
-      const f = affEntry ? memoryStrength(affEntry) : 0;
-      const ratio = (att?.a ?? 0) / attitudeRange(f);
-      if (ratio < 0.2) continue;
-      if (!bumpHint(personKey)) continue;             // 每人每天最多提醒 2 次
-      agentBody = `${agentBody}\n\n${selfDisclosureHint(hit, c.senderName || c.senderId)}`;
-      logger.debug(`[小传提醒] 命中"${hit.matched}": ${c.senderName || c.senderId}`);
-      break;                                          // 一轮最多提醒一条，别刷屏
+    // ★ 2026-11-26（issue #94 / 审核 P1-5）：开关放在**最外层**。
+    //   关掉就整段不跑 —— 否则仍在执行 detectSelfDisclosure / attitudeOf（读盘）/
+    //   getAffinityEntry / memoryStrength，而且 `bumpHint()` 会照旧**消耗每人每天 2 次配额**
+    //   （用户一关一开就会发现配额莫名用完了）。
+    if (config.selfDisclosureHint !== false) {
+      for (const c of candidates) {
+        const hit = detectSelfDisclosure(c.text);
+        if (!hit) continue;
+        const personKey = `person:${c.senderId}`;
+        if (countWroteToday(personKey) > 0) continue;   // 这人今天已经记过 → 不唠叨
+        // 只有"她在意的人"才提醒（主人 2026-09-14 定）：
+        //   "每个人都提醒记录会不会太耗费 token…限制只有好感度高了才提醒，其余靠模型自觉，这样才真实"。
+        //   口径 = 好感度占其**范围**的比例 ≥ 20%（即"亲近"档；范围随熟识度变，陌生人 ±1 所以更容易达标）。
+        //   没达标的不提醒 —— 靠她自觉（真在意的人，她本来就会留神）。
+        const dRoot = dataRootOf(config);
+        const att = attitudeOf(dRoot, personKey);
+        const affEntry = getAffinityEntry(dRoot, personKey);
+        const f = affEntry ? memoryStrength(affEntry) : 0;
+        const ratio = (att?.a ?? 0) / attitudeRange(f);
+        if (ratio < 0.2) continue;
+        if (!bumpHint(personKey)) continue;             // 每人每天最多提醒 2 次
+        agentBody = `${agentBody}\n\n${selfDisclosureHint(hit, c.senderName || c.senderId)}`;
+        logger.debug(`[小传提醒] 命中"${hit.matched}": ${c.senderName || c.senderId}`);
+        break;                                          // 一轮最多提醒一条，别刷屏
+      }
     }
   } catch { /* 提醒失败不影响主链 */ }
 

@@ -343,10 +343,12 @@ window.__ModuleLoader__.load({
           { t: 'note', label: '图库维护' },
           { k: 'sticker.autoTagEnabled', kw: '自动 打标 识图 视觉 标签 图库', t: 'bool', label: '新图自动后台识图打标(会花视觉额度;不勾=全靠人工手动补)', def: false },
           { k: 'sticker.visionCli', kw: '视觉 引擎 命令 cli 识图 ocr 高级', t: 'str', label: '视觉引擎命令(高级;留空自动探测)', wide: true, def: '' },
+          { t: 'note', label: '提示注入(2026-11-26)' },
+          { k: 'selfDisclosureHint', kw: '小传 提醒 记住 注入 自我披露 群友', t: 'bool', label: '注入「小传提醒」(默认开: 她在消息末尾问要不要把这个人记下来; 关掉=不再注入)', def: true },
           { t: 'note', label: '图片下载(2026-11-26)' },
           { k: 'sticker.fullDownload', kw: '图片 下载 全部 多图 九宫格 批量 本地 路径', t: 'bool', label: '一条消息里的图全部下载(不勾=老行为,每条只收前3张)', def: true },
           { k: 'imagePathSurface', kw: '图片 链接 本地 路径 上下文 改写 历史 surface 高级', t: 'bool', label: '把已进上下文的图片链接换成本地路径(默认关;每次多写一条会话事件)', def: false },
-        ],
+                  ],
       },
       {
         id: 'rules', icon: '④', title: '自定义小提醒(高级)',
@@ -1757,6 +1759,211 @@ window.__ModuleLoader__.load({
         imp ? h(ImportPanel, { storeDir: DD || undefined, onClose: function () { setImp(false); load() } }) : null)
     }
 
+
+    // ══════════════════════════════════════════════════════════════════════
+    // 「工具与界面」页（2026-11-26，issue #94）
+    // ══════════════════════════════════════════════════════════════════════
+    // 解决的问题：只用私聊的用户没有群，但 32 个内置工具和 7 个 dock 标签无条件全开 ——
+    //   群工具的描述每轮都挤占 context，以前只能每次升级手动改打包后的 dist。
+    //
+    // 交互照「QQ 扩展面板」那套：分类 + 每行一个勾 + 类标题右侧总勾。
+    // 判定顺序：单项 overrides ＞ 类开关 ＞ 默认可见（与 channel-tools 的 toolVisible 完全同源）。
+    var TOOL_CLASSES = [
+      { key: 'group', label: '群治理', desc: '没有群就是空壳；纯私聊用户可以整类关掉', tools: [
+        ['group_join_requests', '入群申请列表'], ['group_approve_join', '审批入群'],
+        ['group_join_auto', '按关键词自动批入群'], ['group_mute_state', '查禁言状态'],
+        ['group_mute_member', '禁言/解禁成员'], ['group_recall', '撤回群消息'],
+        ['group_msg_search', '搜群消息'], ['group_recall_batch', '批量撤回'],
+        ['recall_keywords', '自动撤回关键词'], ['group_kick', '踢人'],
+      ] },
+      { key: 'cross', label: '跨会话投递', desc: '主动找人说事的能力；私聊用户通常也要留', tools: [
+        ['session_list', '列会话'], ['session_wake', '唤醒某个会话'],
+        ['broadcast_send', '群发'], ['target_group', '目标分组'], ['id_lookup', '按昵称查 openid'],
+      ] },
+      { key: 'memo', label: '人物记忆', desc: '记群友小传；私聊主力', tools: [
+        ['people_memo', '群友小传'],
+      ] },
+      { key: 'base', label: '基础', desc: '媒体 / 表情包 / 会话控制 / 定时', tools: [
+        ['send_media', '发图/文件/语音'], ['recall_message', '撤回自己消息'],
+        ['text_break', '分段连发'], ['quote_view', '看引用内容'],
+        ['tools_reload', '热刷新工具'], ['reply_gate', '回复闸门'],
+        ['outbound_mode', '出站模式'], ['qq_material', 'QQ 图片素材'],
+        ['list_stickers', '搜表情包'], ['sticker_tag', '收藏表情'],
+        ['sticker_delete', '删表情'], ['sticker_restore', '恢复表情'],
+        ['sticker_stats', '表情库概况'], ['sticker_untagged', '未打标表情'],
+        ['schedule_timer', '定时任务'], ['schedule_cancel', '取消定时'],
+      ] },
+    ]
+    var DOCK_CLASSES = [
+      { key: 'group', label: '群管理标签', desc: '悬浮球里跟群有关的那几个', tabs: [
+        ['roster', '📇 群组管理'], ['join', '📥 入群审批'], ['mute', '🔨 锤子'],
+      ] },
+      { key: 'cross', label: '群发标签', desc: '跨会话投递', tabs: [
+        ['send', '📤 群发'],
+      ] },
+      { key: 'base', label: '基础标签', desc: '私聊也要用的', tabs: [
+        ['chat', '💬 聊天'], ['out', '⚙️ 出站'], ['session', '⚙ 单会话设置'],
+      ] },
+    ]
+    function VisibilityPage(props) {
+      var [cfg, setCfg] = useState(null)
+      var [msg, setMsg] = useState('')
+      var [dirty, setDirty] = useState(0)
+      var [rev, setRev] = useState(undefined)
+      var ns = props && props.acct && props.acct.ns ? props.acct.ns : ''
+
+      // ★ 2026-11-26（审核 P0-1 修正）：原来打的是 api/qqbot-settings/config —— **这个端点不存在**
+      //   （settings-host.js 里只有 /read 与 /update）。整页会永久卡在「读取配置中…」。
+      //   现改用项目里已有的契约：GET /read → { value, revision }，POST /update { ns, patch, expectedRevision }。
+      function load() {
+        var q = ns ? ('?ns=' + encodeURIComponent(ns)) : ''
+        setMsg('读取中…')
+        fetch(READ + q)
+          .then(function (r) { return r.json().catch(function () { return null }) })
+          .then(function (j) {
+            // ★ 审核 P1-6：读失败不能当成"没有配置" —— 那会让页面显示全默认，
+            //   用户一保存就把服务器上已有的 visibility 整个覆盖掉（静默数据丢失）。
+            if (!j || typeof j.value !== 'object' || j.value === null) {
+              setCfg(null); setMsg('✗ 读取配置失败（保存已禁用）'); return
+            }
+            setRev(j.revision)
+            var c = j.value || {}
+            if (!c.visibility) c.visibility = {}
+            // ★ P0-A-new ②：把 null / 非 boolean 的残留剔掉 —— 它们是「取消覆盖」的标记，
+            //   语义上等于"没配过"，不该出现在内存状态里（否则 UI 会显示成半选、保存时又会带回去）。
+            //   剔除只影响本次渲染；存储里那几条 null 无害（判定时被 typeof 挡掉）。
+            var cleanOv = function (ov) {
+              var o = {}
+              if (ov && typeof ov === 'object') {
+                Object.keys(ov).forEach(function (k) { if (typeof ov[k] === 'boolean') o[k] = ov[k] })
+              }
+              return o
+            }
+            if (!c.visibility.tools) c.visibility.tools = {}
+            if (!c.visibility.tools.classes) c.visibility.tools.classes = {}
+            if (!c.visibility.tools.overrides) c.visibility.tools.overrides = {}
+            if (!c.visibility.dock) c.visibility.dock = {}
+            if (!c.visibility.dock.classes) c.visibility.dock.classes = {}
+            if (!c.visibility.dock.overrides) c.visibility.dock.overrides = {}
+            c.visibility.tools.overrides = cleanOv(c.visibility.tools.overrides)
+            c.visibility.dock.overrides = cleanOv(c.visibility.dock.overrides)
+            setCfg(c); setDirty(0); setMsg('')
+          })
+          .catch(function () { setMsg('✗ 读取配置失败') })
+      }
+      useEffect(load, [ns])
+
+      // 判定：overrides ＞ classes ＞ true（与后端 toolVisible 完全同源）
+      function isOn(bucket, cls, name) {
+        if (!cfg) return true
+        var b = cfg.visibility[bucket] || {}
+        var ov = b.overrides || {}
+        if (typeof ov[name] === 'boolean') return ov[name]
+        var cs = b.classes || {}
+        if (typeof cs[cls] === 'boolean') return cs[cls]
+        return true
+      }
+      function setOne(bucket, name, val) {
+        var c = JSON.parse(JSON.stringify(cfg))
+        c.visibility[bucket].overrides[name] = val
+        setCfg(c); setDirty(function (d) { return d + 1 })
+      }
+      // 类总勾：把这一类全部设为 val（写进 classes，同时**清掉**该类成员的 overrides）
+      //
+      // ⚠️ 2026-11-26（审核 P0）：原来写的是 `delete overrides[n]`，**提交上去等于没删** ——
+      //   后端 `mergeDeepOne`（settings-host.js:477）是"只增不减"的：patch 里没有的键，
+      //   会保留 cur 的旧值。于是那条 overrides 永远活着，而判定又是 overrides 优先，
+      //   结果「类总勾」两个方向都失效：勾回全显示时单项 false 还顶事，勾全隐藏时单项 true 还顶事。
+      //   用户点完提示「已保存」，刷新一看纹丝不动，而且没法用 UI 自救。
+      //
+      // 修法：用 **null 表达"取消覆盖"**（键存在但值不是 boolean）——
+      //   · mergeDeepOne 会把 null 当普通值写下去（覆盖掉旧值）✓
+      //   · toolVisible / isOn 都用 `typeof === 'boolean'` 严格判 → null 自动落到 classes 分支 ✓
+      //   · load 时再把 null 剔掉，保持内存状态干净（见 cleanOv）
+      function setClass(bucket, cls, members, val) {
+        var c = JSON.parse(JSON.stringify(cfg))
+        c.visibility[bucket].classes[cls] = val
+        members.forEach(function (n) { c.visibility[bucket].overrides[n] = null })
+        setCfg(c); setDirty(function (d) { return d + 1 })
+      }
+      function classState(bucket, cls, members) {
+        var on = 0
+        members.forEach(function (n) { if (isOn(bucket, cls, n)) on += 1 })
+        return { on: on, total: members.length, all: on === members.length, none: on === 0 }
+      }
+      function doSave() {
+        if (!cfg) { setMsg('✗ 配置没读到，不能保存'); return }
+        fetch(UPDATE, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          // ★ ns 走 body（/update 从 body.ns 取；写 query 会写到主实例槽）
+          // ★ expectedRevision 必须带（其余 8 处保存点都带，防并发覆盖）
+          body: JSON.stringify({ patch: { visibility: cfg.visibility }, ns: ns || undefined, expectedRevision: rev }),
+        }).then(function (r) { return r.json().catch(function () { return null }) }).then(function (j) {
+          if (j && j.value) {
+            setRev(j.revision); setDirty(0)
+            setMsg('✓ 已保存。工具可见性需重启宿主生效（注册发生在启动时）；dock 标签刷新页面即可')
+          } else if (j && j.error) setMsg('✗ 保存失败: ' + j.error)
+          else setMsg('✗ 保存失败(未知响应)')
+        }).catch(function (e) { setMsg('✗ 保存失败: ' + (e && e.message)) })
+      }
+
+      // ★ 审核 P1-6：读失败要看得见（原来那句「读取配置中…」把错误信息也一起挡住了）
+      if (!cfg) {
+        return h('div', { style: { padding: 20, fontSize: 13 } },
+          h('div', { style: { color: T.text2, marginBottom: 10 } }, msg || '读取配置中…'),
+          h(SButton, { variant: 'ghost', onClick: load }, '重试读取'))
+      }
+
+      function row(bucket, cls, name, label) {
+        var on = isOn(bucket, cls, name)
+        return h('label', {
+          key: bucket + ':' + name,
+          style: { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', fontSize: 13, cursor: 'pointer', borderRadius: 8,
+                   background: on ? 'transparent' : 'rgba(0,0,0,.03)' },
+        },
+          h('input', { type: 'checkbox', checked: on, onChange: function (e) { setOne(bucket, name, e.target.checked) } }),
+          h('span', { style: { color: on ? T.text : T.text2 } }, label || name),
+          h('span', { style: { fontSize: 11, color: T.text2, marginLeft: 'auto', fontFamily: 'monospace' } }, name))
+      }
+      function classBlock(bucket, cls, cfgDef) {
+        var members = (cfgDef.tools || cfgDef.tabs || []).map(function (x) { return x[0] })
+        var st = classState(bucket, cls, members)
+        return h('div', { key: bucket + ':' + cls, style: { border: '1px solid rgba(0,0,0,.08)', borderRadius: 12, margin: '10px 0', overflow: 'hidden' } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', background: 'rgba(125,211,252,.10)' } },
+            h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 700, fontSize: 14 } },
+              h('input', {
+                type: 'checkbox', checked: st.all,
+                onChange: function (e) { setClass(bucket, cls, members, e.target.checked) },
+              }),
+              cfgDef.label),
+            h('span', { style: { fontSize: 11, color: T.text2 } }, st.all ? '全部显示' : (st.none ? '全部隐藏' : ('已隐藏 ' + (st.total - st.on) + ' 个'))),
+            h('span', { style: { fontSize: 11, color: T.text2, marginLeft: 'auto' } }, cfgDef.desc || '')),
+          h('div', { style: { padding: '6px 8px 10px' } },
+            (cfgDef.tools || cfgDef.tabs || []).map(function (x) { return row(bucket, cls, x[0], x[1]) })))
+      }
+
+      return h('div', null,
+        h('h2', null, '工具与界面'),
+        h('div', { style: { fontSize: 12, color: T.text2, lineHeight: 1.7, margin: '0 0 10px' } },
+          '决定「AI 能用哪些工具」和「悬浮球里显示哪些标签」。',
+          h('br'), '· 关掉的工具不会注册 —— AI 完全看不见，它的说明也不再每轮占 context。',
+          h('br'), '· 悬浮球本身不会消失（它还是容器），只是隐藏里面的标签；',
+          h('strong', null, '你自己装的扩展标签永远显示，不受这里控制'),
+          '。',
+          h('br'), '· 不勾任何东西 = 全部显示（与升级前完全一致）。'),
+        h('div', { style: { display: 'flex', gap: 8, margin: '12px 0 4px' } },
+          h(SButton, { variant: 'primary', onClick: doSave }, dirty ? ('保存(' + dirty + ' 项)') : '保存'),
+          h(SButton, { variant: 'ghost', onClick: load }, '放弃修改'),
+          msg ? h('span', { style: { fontSize: 12, color: T.text2, alignSelf: 'center' } }, msg) : null),
+        h('h3', { style: { margin: '16px 0 2px' } }, '工具可见性（32 个）'),
+        TOOL_CLASSES.map(function (c) { return classBlock('tools', c.key, c) }),
+        h('h3', { style: { margin: '20px 0 2px' } }, '悬浮球标签'),
+        DOCK_CLASSES.map(function (c) { return classBlock('dock', c.key, c) }),
+        h('div', { style: { fontSize: 12, color: T.text2, margin: '10px 0 20px', padding: '8px 10px', background: 'rgba(0,0,0,.03)', borderRadius: 8 } },
+          '💡 自定义扩展的标签（' , h('code', null, '__qqsDockTabs'),
+          '）始终显示 —— 它们是你自己装的，不跟内置标签一起隐藏。'))
+    }
+
     // ── 定时任务页(管理 AI 在 QQ 会话里建的定时任务: 一次性/每天) ──
     var API_TIMERS = 'api/qqbot-settings/timers'
     function fmtWhen(job) {
@@ -1930,6 +2137,8 @@ window.__ModuleLoader__.load({
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
           // ★ 2026-11-26：已进上下文的图片链接 → 本地路径（默认关）
           imagePathSurface: typeof v.imagePathSurface === 'boolean' ? v.imagePathSurface : undefined,
+          // ★ 2026-11-26（issue #94）：小传提醒注入开关
+          selfDisclosureHint: typeof v.selfDisclosureHint === 'boolean' ? v.selfDisclosureHint : undefined,
           // ★ 2026-11-19 issue #72/#73：出站清洗 + 回合异常策略。
           //   ⚠️ 必须在这里收集，否则面板改了也存不下去（老坑：questionsMode 就是这么漏的）。
           stripTimeHead: typeof v.stripTimeHead === 'boolean' ? v.stripTimeHead : undefined,
@@ -2178,7 +2387,7 @@ window.__ModuleLoader__.load({
       useEffect(function () {
         var saved = ''
         try { saved = localStorage.getItem(TAB_KEY) || '' } catch (e) {}
-        setTab(saved === 'gallery' || saved === 'timers' || saved === 'accounts' ? saved : 'settings')
+        setTab(saved === 'gallery' || saved === 'timers' || saved === 'accounts' || saved === 'visibility' ? saved : 'settings')
         fetch('api/qqbot-settings/accounts').then(function (r) { return r.json() }).then(function (d) {
           if (d && Array.isArray(d.instances)) {
             setAccts(d.instances)
@@ -2240,7 +2449,8 @@ window.__ModuleLoader__.load({
       } : null
       // key=账号: 切号即强制子页整页重挂(清掉旧账号 state, 全部重新拉取)
       var subKey = ac ? ac.id : 'main'
-      var sub = tab === 'gallery' ? h(GalleryPage, { key: subKey, close: props && props.close, acct: acctx })
+      var sub = tab === 'visibility' ? h(VisibilityPage, { key: subKey, acct: acctx })
+        : tab === 'gallery' ? h(GalleryPage, { key: subKey, close: props && props.close, acct: acctx })
         : tab === 'timers' ? h(TimersPage, { key: subKey, close: props && props.close, acct: acctx })
         : tab === 'accounts' ? h(AccountsPage, { close: props && props.close })
         : String(tab).indexOf('ext:') === 0
@@ -2317,7 +2527,7 @@ window.__ModuleLoader__.load({
           // 内置四页 + 扩展页签（2026-10-26）：扩展 tab 用青蓝色区分，放在最右边。
           // 容器从「四个 flex:1 平分」改成「按钮 flex:0 0 auto + 容器横向可滑」——
           // 否则扩展一多，按钮会被压成一条缝（这跟 .dk-tab 那套是同一个道理）。
-          [['settings', '设置', '#ff5d5d'], ['gallery', '表情包图库', '#ffd97a'], ['timers', '定时任务', '#5b9dff'], ['accounts', '账号与预设', '#b197fc']]
+          [['settings', '设置', '#ff5d5d'], ['gallery', '表情包图库', '#ffd97a'], ['timers', '定时任务', '#5b9dff'], ['accounts', '账号与预设', '#b197fc'], ['visibility', '工具与界面', '#7dd3fc']]
             .concat(extTabs.map(function (x) { return ['ext:' + x.extId, x.title, '#38bdf8'] }))
             .map(function (t) {
             var on = tab === t[0]
@@ -3136,6 +3346,26 @@ var QQS_THEME_CSS = [
       // ★ 2026-10-27：把 state 暴露到 window —— 模块级的 mountDockCard 拿不到这个闭包变量，
       //   扩展卡片要读当前 ns / gid 只能从这里取。
       try { window.__qqsDockState = state } catch (e) { /* ignore */ }
+      // ★ 2026-11-26（issue #94）：拉一次可见性配置，供 dockOn() 用。
+      //   失败就保持 undefined ⇒ dockOn 全部返回 true（与旧版一致）。
+      // ★ 复审 C：这里 state.ns 此刻必然是 ''（要等 loadAccts 的异步回调才赋值），
+      //   多账号时读的是主实例。所以封成函数，ns 确定后再调一次。
+      // ★ 复审 Q3：值没变就不重绘 —— renderPanel() 会连带 reDetectAndSelect()，
+      //   把用户正在操作的目标/光标重置掉。
+      function loadVisibility() {
+        try {
+          fetch(READ + (state.ns ? '?ns=' + encodeURIComponent(state.ns) : ''), { cache: 'no-store' })
+            .then(function (r) { return r.json().catch(function () { return null }) })
+            .then(function (j) {
+              var next = (j && j.value && j.value.visibility) || null
+              var same = JSON.stringify(next) === JSON.stringify(window.__qqsVisibility || null)
+              window.__qqsVisibility = next
+              if (!same) { try { if (typeof renderPanel === 'function') renderPanel() } catch (e) { /* ignore */ } }
+            })
+            .catch(function () { /* ignore */ })
+        } catch (e) { /* ignore */ }
+      }
+      loadVisibility()
       // 🗂 自定义目标分组(仿 QQ 分组): 2026-09-12 起**host 持久化**({dataRoot}/.qqbot/target-groups.json),
       // localStorage 只当秒开缓存 —— 这样 **AI 与主人共用同一份分组**(agent 侧 broadcast_send 可直接写分组名群发),
       // 顺带修掉"换个浏览器分组就没了"的老毛病。
@@ -4823,20 +5053,55 @@ var QQS_THEME_CSS = [
           return '<option value="' + esc(c.id) + '"' + (c.id === state.sendTo ? ' selected' : '') + '>' + esc(label) + '</option>'
         }).join('')
         ensureDockExtTabs()
+        // ★ 2026-11-26（issue #94 / 审核 P0-2）：
+        //   内置标签按 visibility.dock 过滤；**自定义扩展标签一个字都不动** ——
+        //   那是用户自己装的，不该被内置开关连坐。
+        //   判定与 src/channel-tools.ts 的 toolVisible **逐行同源**：overrides → classes → true。
+        var visOf = function (bucket, cls, key) {
+          var v = (window.__qqsVisibility || {})[bucket] || {}
+          var ov = v.overrides || {}
+          if (typeof ov[key] === 'boolean') return ov[key]
+          var cs = v.classes || {}
+          if (typeof cs[cls] === 'boolean') return cs[cls]
+          return true
+        }
+        var dockOn = function (key, cap) { return visOf('dock', cap, key) }
+        // ★ 复审 D：当前 tab 被隐藏时要回落，否则顶上没有激活标签、下面却还在渲染那个面板
+        // ★ 审核 D 补完：子 tab（broadcast/bp/card 是 send 的子页）也要映射，否则停在子页时
+        //   第一个 if 直接短路、不回落 → 顶部没有发送按钮、下面还在渲染广播面板。
+        var TAB_CAP = {
+          roster: 'group', join: 'group', mute: 'group',
+          send: 'cross', broadcast: 'cross', bp: 'cross', card: 'cross',
+          chat: 'base', out: 'base', session: 'base',
+        }
+        var MAIN_TABS = ['chat', 'roster', 'join', 'mute', 'out', 'send', 'session']
+        // ★ 审核 P1-1：`state.tab === ''` 之后**不会自己恢复** —— 因为 `TAB_CAP['']` 是 undefined，
+        //   `undefined && ...` 直接短路，第一个 if 永不进入。于是用户把标签全关掉、再打开几个、
+        //   切回 dock 时仍停在"没有可见标签"的提示上（看起来像设置没保存）。
+        //   所以要把「当前 tab 为空」也当作需要重新挑一个的情形。
+        if (!state.tab || (TAB_CAP[state.tab] && !dockOn(state.tab, TAB_CAP[state.tab]))) {
+          state.tab = MAIN_TABS.filter(function (k) { return dockOn(k, TAB_CAP[k]) })[0] || ''
+        }
         var tabs = '<div class="dk-tab">'
-          + '<button data-t="roster" class="' + (state.tab === 'roster' ? 'on' : '') + '">📇 群组管理</button>'
-          + '<button data-t="chat" class="' + (state.tab === 'chat' ? 'on' : '') + '">💬 聊天</button>'
-          + '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>'
-          + '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔨 锤子</button>'
-          + '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>'
-          + '<button data-t="send" class="' + (['send','broadcast','bp','card'].indexOf(state.tab) >= 0 ? 'on' : '') + '">📤 群发</button>'
-          + '<button data-t="session" class="' + (state.tab === 'session' ? 'on' : '') + '">⚙ 单会话设置</button>'
+          + (dockOn('roster', 'group') ? '<button data-t="roster" class="' + (state.tab === 'roster' ? 'on' : '') + '">📇 群组管理</button>' : '')
+          + (dockOn('chat', 'base') ? '<button data-t="chat" class="' + (state.tab === 'chat' ? 'on' : '') + '">💬 聊天</button>' : '')
+          + (dockOn('join', 'group') ? '<button data-t="join" class="' + (state.tab === 'join' ? 'on' : '') + '">📥 入群审批<span class="dk-join-badge" style="display:none;background:#ff4d4f;color:#fff;border-radius:8px;font-size:11px;padding:0 5px;margin-left:4px">0</span></button>' : '')
+          + (dockOn('mute', 'group') ? '<button data-t="mute" class="' + (state.tab === 'mute' ? 'on' : '') + '">🔨 锤子</button>' : '')
+          + (dockOn('out', 'base') ? '<button data-t="out" class="' + (state.tab === 'out' ? 'on' : '') + '">⚙️ 出站</button>' : '')
+          + (dockOn('send', 'cross') ? '<button data-t="send" class="' + (['send','broadcast','bp','card'].indexOf(state.tab) >= 0 ? 'on' : '') + '">📤 群发</button>' : '')
+          + (dockOn('session', 'base') ? '<button data-t="session" class="' + (state.tab === 'session' ? 'on' : '') + '">⚙ 单会话设置</button>' : '')
           // ★ 2026-10-26 扩展页签（slot=dock）：只收数据根下的 ui/<id>/，每个实例各一份
           + (window.__qqsDockTabs || []).map(function (x) {
               return '<button data-t="ext:' + esc(x.extId) + '" class="' + (state.tab === 'ext:' + x.extId ? 'on' : '') + '">' + esc(x.title || x.extId) + '</button>'
             }).join('')
           + '</div>'
         var body = tabs
+        // ★ 审核 D 补完：一个标签都不剩时，别再往下渲染某个面板（顶部空条 + 下面有内容 = 看起来像坏了）
+        if (!state.tab) {
+          return panel.innerHTML = tabs
+            + '<div class="dk-empty">悬浮球里没有可见标签了。<br>去「设置 → 工具与界面 → 悬浮球标签」打开几个（自定义扩展的标签不受影响）。</div>',
+            void 0
+        }
         var status = state.msg ? '<div class="dk-msg" style="color:#2f9e44;margin:4px 0">' + esc(state.msg) + '</div>' : ''
         if (!state.ns || state.accts.length === 0) {
           body += '<div class="dk-empty">还没有配置机器人账号 → 到「账号与预设」页添加后再回来</div>'
@@ -7180,6 +7445,10 @@ var QQS_THEME_CSS = [
           state.ns = list[0].ns || ''
         }
         refreshAll(); paintHead(); paintDetect()
+        // ★ 复审 C（补完）：ns 到这里才确定下来。首次 loadVisibility() 是在挂载时发的，
+        //   那时 state.ns 还是 ''，多账号会读成主实例的可见性。
+        //   loadVisibility 内部有"值没变就不重绘"的保护，这里再调一次是安全的。
+        if (typeof loadVisibility === 'function') loadVisibility()
       }
       loadAccts()
       // 首次自动展开?不——保持球形态(审批/提问仍走打断弹出)。主人点开才展开。

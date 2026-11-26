@@ -615,6 +615,11 @@ function stickerStoreOf(exec) {
  *   调用方（session-manager）知道自己是谁，必须把根传进来。
  * @param opts.cwd 本实例的工作目录（扩展 runner 的 env.cwd）
  */
+/**
+ * @param opts.config 当前插件配置（2026-11-26，issue #94 加）。
+ *   装载方 SessionManager 手里有 `this.config`，沿参数链传进来即可 ——
+ *   这样工具可见性判定能读到用户配置，不必去猜或读全局。
+ */
 export async function apply(ctx, opts) {
     // ★★★ 2026-10-31：记住本插件的 apply ctx —— expose:'all' 的工具必须注册到**这个** ctx 上，
     //   才能和普通扩展工具（下面的 `ctx.tools.register`）处在同一个作用域。
@@ -3014,47 +3019,83 @@ export async function apply(ctx, opts) {
     //   ✅ 全局注册统一交给 session-manager 的 pre-step 用**插件根 ctx** 做：
     //      `ensureContextToolsGlobal(this.ctx)` —— 它内部用 `ctx.get('tools')` 取服务，绕开 inject 限制。
     //   这里只保留下面 ②段"QQ 群管理工具"的按会话注册（那本来就是会话级工具）。
+    /**
+     * 工具定义（2026-11-26，issue #94）。
+     *
+     * ★ `scope` 是**必填**的：它决定这个工具在「只要私聊」这类配置下会不会被注册。
+     *   必填的意义 —— 新增工具时忘了标记，TypeScript 直接报错，而不是运行时静默漏掉，
+     *   让用户再提一次「XX 工具关不掉」（这正是 issue #94 的成因）。
+     *     · group  纯群治理（没有群就是空壳）
+     *     · cross  跨会话投递（私聊用户也可能要）
+     *     · memo   人物记忆
+     *     · base   其余：媒体 / 表情 / 会话控制 / 定时
+     */
     const toolDefs = [
-        { name: 'send_media', tool: sendMediaTool },
-        { name: 'recall_message', tool: recallTool },
-        { name: 'text_break', tool: textBreakTool },
-        { name: 'quote_view', tool: quoteViewTool },
-        { name: 'people_memo', tool: peopleMemoTool },
+        { name: 'send_media', tool: sendMediaTool, scope: 'base' },
+        { name: 'recall_message', tool: recallTool, scope: 'base' },
+        { name: 'text_break', tool: textBreakTool, scope: 'base' },
+        { name: 'quote_view', tool: quoteViewTool, scope: 'base' },
+        { name: 'people_memo', tool: peopleMemoTool, scope: 'memo' },
         // 无上下文模式·智能判断专用（全局开关 config.contextlessSmart 开启时才出现）
         ...(getContextlessSmartGlobal() === true
             ? []
             : []),
-        { name: 'tools_reload', tool: toolsReloadTool },
-        { name: 'reply_gate', tool: replyGateTool },
-        { name: 'outbound_mode', tool: outboundModeTool },
-        { name: 'group_join_requests', tool: listJoinRequestsTool },
-        { name: 'group_approve_join', tool: approveJoinTool },
-        { name: 'group_join_auto', tool: autoApproveJoinTool },
-        { name: 'group_mute_state', tool: muteStateTool },
-        { name: 'group_mute_member', tool: muteMemberTool },
-        { name: 'group_recall', tool: groupRecallTool },
-        { name: 'group_msg_search', tool: msgSearchTool },
-        { name: 'group_recall_batch', tool: recallBatchTool },
-        { name: 'recall_keywords', tool: recallKeywordsTool },
-        { name: 'group_kick', tool: kickMemberTool },
-        { name: 'qq_material', tool: materialTool },
-        { name: 'id_lookup', tool: idLookupTool },
-        { name: 'session_list', tool: sessionListTool },
-        { name: 'session_wake', tool: sessionWakeTool },
-        { name: 'broadcast_send', tool: broadcastSendTool },
-        { name: 'target_group', tool: targetGroupTool },
-        { name: 'list_stickers', tool: listStickersTool },
-        { name: 'sticker_tag', tool: tagStickerTool },
-        { name: 'sticker_delete', tool: deleteStickerTool },
-        { name: 'sticker_restore', tool: restoreStickerTool },
-        { name: 'sticker_stats', tool: statsStickerTool },
-        { name: 'sticker_untagged', tool: untaggedStickerTool },
-        { name: 'schedule_timer', tool: scheduleTimerTool },
-        { name: 'schedule_cancel', tool: scheduleCancelTool },
+        { name: 'tools_reload', tool: toolsReloadTool, scope: 'base' },
+        { name: 'reply_gate', tool: replyGateTool, scope: 'base' },
+        { name: 'outbound_mode', tool: outboundModeTool, scope: 'base' },
+        { name: 'group_join_requests', tool: listJoinRequestsTool, scope: 'group' },
+        { name: 'group_approve_join', tool: approveJoinTool, scope: 'group' },
+        { name: 'group_join_auto', tool: autoApproveJoinTool, scope: 'group' },
+        { name: 'group_mute_state', tool: muteStateTool, scope: 'group' },
+        { name: 'group_mute_member', tool: muteMemberTool, scope: 'group' },
+        { name: 'group_recall', tool: groupRecallTool, scope: 'group' },
+        { name: 'group_msg_search', tool: msgSearchTool, scope: 'group' },
+        { name: 'group_recall_batch', tool: recallBatchTool, scope: 'group' },
+        { name: 'recall_keywords', tool: recallKeywordsTool, scope: 'group' },
+        { name: 'group_kick', tool: kickMemberTool, scope: 'group' },
+        { name: 'qq_material', tool: materialTool, scope: 'base' },
+        { name: 'id_lookup', tool: idLookupTool, scope: 'cross' },
+        { name: 'session_list', tool: sessionListTool, scope: 'cross' },
+        { name: 'session_wake', tool: sessionWakeTool, scope: 'cross' },
+        { name: 'broadcast_send', tool: broadcastSendTool, scope: 'cross' },
+        { name: 'target_group', tool: targetGroupTool, scope: 'cross' },
+        { name: 'list_stickers', tool: listStickersTool, scope: 'base' },
+        { name: 'sticker_tag', tool: tagStickerTool, scope: 'base' },
+        { name: 'sticker_delete', tool: deleteStickerTool, scope: 'base' },
+        { name: 'sticker_restore', tool: restoreStickerTool, scope: 'base' },
+        { name: 'sticker_stats', tool: statsStickerTool, scope: 'base' },
+        { name: 'sticker_untagged', tool: untaggedStickerTool, scope: 'base' },
+        { name: 'schedule_timer', tool: scheduleTimerTool, scope: 'base' },
+        { name: 'schedule_cancel', tool: scheduleCancelTool, scope: 'base' },
     ];
+    // ★ 2026-11-26（issue #94）：内置工具终于也有「条件可见」了 ——
+    //   照抄扩展工具那套 `enabled(env)` 的语义（见 extension-store.ts 的同名注释）：
+    //   **注册前判定，返回 false 就 continue ⇒ AI 完全看不见**，
+    //   而不是"看得见但报错"。这样它的 describe 也不再每轮占 context。
+    //   判定为假时顺手回收旧句柄（若之前注册过），实现「关了就是真关」。
+    const skipped = [];
+    const myDisposers = disposerBucketOf(ctx); // ★ P0-4：按本 agent 分桶
+    let okCount = 0; // ★ P1-4：真实注册成功数（原口径把失败也算进去了）
     for (const t of toolDefs) {
+        if (!toolVisible(t.name, t.scope, opts?.config)) {
+            const stale = myDisposers.get(t.name);
+            if (stale) {
+                try {
+                    stale();
+                }
+                catch { /* 旧句柄已失效 */ }
+                myDisposers.delete(t.name);
+            }
+            skipped.push(t.name);
+            diag(`条件隐藏(配置关闭): ${t.name}`);
+            continue;
+        }
         try {
-            ctx.tools.register(t.tool);
+            // ★ 收下 disposer（original 是直接丢弃的，于是「热关闭」不可能 —— issue #94 的另一半）
+            const dispose = ctx.tools.register(t.tool);
+            if (typeof dispose === 'function')
+                myDisposers.set(t.name, dispose);
+            okCount += 1;
             ctx.logger?.info?.(`[channel-tools] 已注册: ${t.name}`);
             diag(`注册成功: ${t.name}`);
         }
@@ -3068,6 +3109,22 @@ export async function apply(ctx, opts) {
             ctx.logger?.warn?.(`[channel-tools] 注册失败 ${t.name}: ${msg}`);
             diag(`注册失败: ${t.name} → ${msg}`);
         }
+    }
+    // 一行可验证的收尾日志（issue #94 的验收标准：从「能关」变成「能验证关了」）
+    // ★ P1-3：ensureChannelTools 是**每条入站消息**调一次，全量打 info 会把日志淹掉。
+    //   只在「本次有隐藏」或「隐藏集合变了」时打 info，其余降到 diag。
+    const sig = skipped.join(',') || '(none)';
+    if (sig !== lastVisibilitySig) {
+        lastVisibilitySig = sig;
+        if (skipped.length > 0) {
+            ctx.logger?.info?.(`[channel-tools] 按配置隐藏 ${skipped.length} 个工具（${okCount}/${toolDefs.length} 已注册）: ${skipped.join(', ')}`);
+        }
+        else {
+            ctx.logger?.info?.(`[channel-tools] 全部 ${toolDefs.length} 个工具已注册（未配置隐藏）`);
+        }
+    }
+    else {
+        diag(`可见性未变: ${okCount}/${toolDefs.length} 已注册, 隐藏 ${skipped.length}`);
     }
     // ══════════════════════════════════════════════════════════════════════════
     // expose:'all' 支撑（2026-10-10 主人定）—— 扩展工具的"跨通道"能力
@@ -3820,6 +3877,68 @@ var contextDropTool = defineTool({
  *   而"某个人到底是哪个 QQ"这种需求只有这条老网页版通道能满足。
  *   所以 `group_kick`（官方 API）和它**并存**，各管一边，不要互相替代。
  */
+// ══════════════════════════════════════════════════════════════════════════
+// 工具可见性（2026-11-26，issue #94）
+// ══════════════════════════════════════════════════════════════════════════
+//
+// 语义与扩展工具的 `enabled(env)` 完全一致（见 extension-store.ts:211-221）：
+//   **注册前判定，false ⇒ 不注册**，AI 完全看不见，其 schema 也不再占 context。
+//   不配置 = 永远可见 ⇒ 存量用户行为逐字不变。
+//
+// 两层结构：类开关给默认值，单项 overrides 给它做例外。
+/**
+ * 已注册内置工具的 disposer，用于「改配置后真的能撤销」（原来 register 的返回值被直接丢弃）。
+ *
+ * ⚠️ 2026-11-26（审核 P0-4）：必须**按 agentCtx 分桶**。
+ *   `ctx.tools.register()` 是 per-agent 各注册一份，若只用工具名做 key（模块级 Map），
+ *   会话 B 的 apply 会把会话 A 的句柄覆盖掉 ⇒ A 的那份永远撤不掉，还会出现
+ *   「撤掉的是别的会话的工具」。
+ *   用 WeakMap 查（不阻止 ctx 回收）+ Map 登记桶（需要枚举时用）。
+ */
+/** 上一次的隐藏集合签名（用于抑制重复 info 日志，见 P1-3） */
+let lastVisibilitySig = '';
+const builtinDisposerBuckets = new WeakMap();
+function disposerBucketOf(ctx) {
+    const key = ctx;
+    let m = builtinDisposerBuckets.get(key);
+    if (!m) {
+        m = new Map();
+        builtinDisposerBuckets.set(key, m);
+    }
+    return m;
+}
+/**
+ * 这个工具在**当前配置**下是否可见。
+ *
+ * 判定顺序：单项覆盖 → 类开关 → 默认可见。
+ * `overrides` 优先是刻意的：用户先按类关掉 10 个群工具，再单独把 group_kick 勾回来，是可预期的。
+ */
+export function toolVisible(name, scope, config) {
+    const vis = config?.visibility?.tools;
+    const ov = vis?.overrides;
+    if (ov && typeof ov[name] === 'boolean')
+        return ov[name];
+    const cls = vis?.classes;
+    if (cls && typeof cls[scope] === 'boolean')
+        return cls[scope];
+    return true; // 未配置 ⇒ 可见（与旧版行为一致）
+}
+/**
+ * dock 标签的可见性。语义基准：**client 的 dockOn() 必须与此逐行一致**
+ * （overrides → classes → true，且都用 `typeof === 'boolean'` 严格判）。
+ * client 是手写 bundle（不 import dist），两者是**双源同步**关系 ——
+ * 改这里记得同步改 `client/qqbot-settings.js` 的 visOf()。
+ */
+export function dockTabVisible(key, cap, config) {
+    const vis = config?.visibility?.dock;
+    const ov = vis?.overrides;
+    if (ov && typeof ov[key] === 'boolean')
+        return ov[key];
+    const cls = vis?.classes;
+    if (cls && typeof cls[cap] === 'boolean')
+        return cls[cap];
+    return true;
+}
 var qunAdminTool = defineTool({
     name: 'qq_group_admin',
     description: '【老网页版通道 · 唯一能看 QQ 号】用主人自己的 QQ 号管理群（我创建/我管理的群）：登录、看群列表、查群成员、踢人。'
@@ -4062,6 +4181,11 @@ export function setCtxEnv(agentCtx, env) {
     }
     catch { /* ignore */ }
 }
+/**
+ * ⚠️ 2026-11-26：**已废弃**（全仓无调用点）。qq_group_admin 现在只经
+ * `syncChannelScopedTools` 注册，可见性由那里的 `toolVisible` 判定。
+ * 若将来要复活本函数，必须补上同样的 toolVisible 判定，否则 issue #94 的洞会重新打开。
+ */
 export function syncContextTools(agentCtx, shouldHave, env, reminderText) {
     void reminderText; // 保留签名（提示文本改由主 ctx 的 systemPrompt.context 提供，见 index.ts）
     if (!agentCtx || typeof agentCtx !== 'object')
@@ -4777,6 +4901,11 @@ export function ensureExtToolsGlobal(globalCtx) {
         }
     })();
 }
+/**
+ * ⚠️ 2026-11-26：**已废弃**（全仓无调用点）。理由同 syncContextTools ——
+ * 它内部 `for (const t of [...ctxToolsRef(), ...qunAdminRef()])` 是无条件注册，
+ * 复活前必须先接 toolVisible。
+ */
 export function ensureContextToolsGlobal(globalCtx) {
     // 2026-10-21 修（trace 实证）：restrict 报 "names unknown global tools" => 我们注册的层不是「全局层」。
     //   cordis 的 ctx.root 才是根作用域；拿不到就退回传入值（行为不变）。
@@ -4956,7 +5085,13 @@ export function syncChannelScopedTools(agentCtx, opts) {
         if (opts.dataRoot) {
             ctxEnvMap.set(key, { dataRoot: String(opts.dataRoot), sessionKey: String(opts.sessionKey ?? '') });
         }
-        const sig = `${opts.ctxTools ? '1' : '0'}${opts.groupAdmin ? '1' : '0'}`;
+        // ★ 2026-11-26（审核 R2 同类坑）：sig 只有两位时，新增的判定维度改了它也不会变
+        //   ⇒ `if (st.sig === sig) return` 直接跳过 ⇒ 静默不生效。把可见性也并进来。
+        // ★ 复审 A 的防御：**不影响 want 的维度不要进 sig**。
+        //   groupAdmin 关着时 want 本来就不含 qq_group_admin，此时若 qunVisible 仍随配置变化，
+        //   任何一处漏传 config 的调用点都会算出不同 sig → 每 step 抖动。
+        const qunVisible = opts.groupAdmin && !toolVisible('qq_group_admin', 'group', opts.config) ? '0' : '1';
+        const sig = `${opts.ctxTools ? '1' : '0'}${opts.groupAdmin ? '1' : '0'}${qunVisible}`;
         const st = ctxScopeState.get(key);
         if (st && st.sig === sig)
             return; // 状态一致 → 不动（这是"不抖"的关键）
@@ -4974,9 +5109,12 @@ export function syncChannelScopedTools(agentCtx, opts) {
                 }
                 catch { /* ignore */ }
             }
+        // ★ 2026-11-26（issue #94 / 审核 P1-2）：qq_group_admin 是**最像群治理**的工具
+        //   （描述很长，每轮都占 context），以前只受 groupAdmin.enabled 管，
+        //   用户把 visibility.tools.classes.group 关掉它还在。现在两者都要过。
         const want = [
             ...(opts.ctxTools ? ctxToolsRef() : []),
-            ...(opts.groupAdmin ? qunAdminRef() : []),
+            ...(opts.groupAdmin && qunVisible === '1' ? qunAdminRef() : []),
         ];
         const disposers = [];
         for (const t of want) {
@@ -4990,7 +5128,7 @@ export function syncChannelScopedTools(agentCtx, opts) {
         // 全成功才认这个 sig；否则标 __retry，下一 step 重来
         const okAll = disposers.length === want.length;
         ctxScopeState.set(key, { sig: okAll ? sig : `__retry-${sig}`, disposers });
-        traceToolReg(`[scoped-tool] 按会话注册 ctx=${opts.ctxTools ? 1 : 0} groupAdmin=${opts.groupAdmin ? 1 : 0}`
+        traceToolReg(`[scoped-tool] 按会话注册 ctx=${opts.ctxTools ? 1 : 0} groupAdmin=${opts.groupAdmin ? 1 : 0} qunVisible=${qunVisible}`
             + ` want=${want.length} ok=${disposers.length}`
             + ` dataRoot=${String(opts.dataRoot ?? '')} sk=${String(opts.sessionKey ?? '')}`);
     }
