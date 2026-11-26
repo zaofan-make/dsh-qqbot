@@ -1076,7 +1076,18 @@ export async function handleInbound(
     }
     // 无 append 能力 → 兜底照常 followup(保证消息不丢, 但会唤醒; 罕见路径)
     record.lastInboundAt = Date.now();
+    // ★ issue #90：先记下进来时回合是否已在跑 —— 必须在下面置 true 之前，置完就判断不出来了
+    const wasTurnActiveNothink = record.turnActive === true;
     record.turnActive = true;
+    // ★ issue #90：回合进行中 → inject 插进当前回合，不 followup。
+    //   理由：followup 进 next-turn 队列，而宿主 `claim()` 对 next-turn **每次只取 1 条**
+    //   （next-step 才是全取）⇒ 同回合堆多条会被静默挤掉。inject 走的正是 next-step。
+    //   语义对齐本仓库既有正确写法：src/features/qq-user-questions.ts 的「忙 → inject」那一档。
+    if (wasTurnActiveNothink && typeof record.agent.inject === 'function') {
+      record.agent.inject(message);
+      logger.debug(`→ inject sent(回合中, nothink 兜底): key=${scope}:${peerId}`);
+      return;
+    }
     // 唤醒 = 这一段结束：先定格快照（含本条）再清空（主人定：唤醒即清空）
     try {
       captureSegment(segKey, {
@@ -1091,6 +1102,8 @@ export async function handleInbound(
   }
 
   record.lastInboundAt = Date.now();
+  // ★ issue #90：先记下进来时回合是否已在跑（必须在下面置 true 之前）。
+  const wasTurnActive = record.turnActive === true;
   // 置回合活跃(消息聚合, 2026-09-07): followup 发出即算回合开始, debounce 见忙攒消息; turn/end 由 outbound 复位
   record.turnActive = true;
   // ★ 2026-11-05：标记**本回合由 QQ 入站触发**（配合设置项 `webTurnSilent`：
@@ -1116,6 +1129,23 @@ export async function handleInbound(
     }
   } catch (e) {
     logger.warn(`[图片聚合] 注入失败(不影响唤醒): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // ★ issue #90：回合进行中 → inject 插进当前回合，不 followup。
+  //   followup 进 next-turn（每次只 claim 1 条），inject 进 next-step（一次全 claim）。
+  //   位置在图片聚合**之后**：插话也要带上本批攒的图，否则这条会丢图。
+  //   跳过 captureSegment：那条说的是「唤醒 = 这一段结束」，插话没唤醒，不该把分段定格清空。
+  //   ⚠️ 判断要用「聚合之后」的实时状态，不能只看进来时存的 wasTurnActive ——
+  //      buildAggregateBlocks 是 await，期间完全可能收到 turn/end 把 record.turnActive 置回 false；
+  //      若那时仍走 inject，消息会躺在 next-step 里等下一次外部唤醒（等于漏回）。
+  if (wasTurnActive && record.turnActive === true && typeof record.agent.inject === 'function') {
+    record.agent.inject(message);
+    logger.debug(`→ inject sent(回合中): key=${scope}:${peerId}`);
+    // 插话分支提前 return，别漏掉群历史缓存清理：否则这批内容下次还会被当 [历史] 再打包一遍。
+    if (scope === 'group') {
+      clearGroupHistory(config.appId, msg.groupOpenid ?? msg.senderId);
+    }
+    return;
   }
 
   // 唤醒 = 这一段结束：先定格快照（含本条）再清空（主人定：唤醒即清空）
