@@ -99,6 +99,59 @@ describe('replaceImagePathsInSurface', () => {
     expect(opts.sourceEventSeqs).toEqual([1]);
   });
 
+  it('旧版宿主（认 start/end 不认 startSeq/endSeq）时自动回退，仍然替换成功', async () => {
+    mockLookup.mockReturnValue(LOCAL);
+    const events = new Map<number, { type: string; seq: number; data?: any }>();
+    events.set(0, { type: 'system', seq: 0 });
+    events.set(1, { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: `[图片: ${QQ_URL}]` }] } });
+
+    const okShape: any[] = [];
+    let attempts = 0;
+    const sess = {
+      surface: { nodes: [0, 1] },
+      eventAt: (seq: number) => events.get(seq),
+      append: (type: string, data: any, opts: any) => {
+        attempts += 1;
+        // 模拟 0.1.0-rc.6：只认 { op, start, end }，其他形状抛 invalid
+        const keys = Object.keys(opts.surfaceOp ?? {}).sort().join(',');
+        if (keys !== 'end,op,start') {
+          throw new Error('session event "user/message" carries an invalid replace surfaceOp');
+        }
+        okShape.push(opts);
+        return { seq: 99 };
+      },
+    };
+
+    const n = await replaceImagePathsInSurface({ session: sess } as never, undefined, 1);
+
+    expect(n).toBe(1);            // 回退之后仍然替换成功
+    expect(attempts).toBe(2);     // 先试 rc.3 写法失败，再试旧写法成功
+    expect(okShape[0].surfaceOp).toEqual({ op: 'replace', start: 1, end: 1 });
+  });
+
+  it('非字段名错误（如 seq 已不在 surface）不回退，直接抛给上层 catch', async () => {
+    mockLookup.mockReturnValue(LOCAL);
+    const events = new Map<number, { type: string; seq: number; data?: any }>();
+    events.set(0, { type: 'system', seq: 0 });
+    events.set(1, { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: `[图片: ${QQ_URL}]` }] } });
+
+    let attempts = 0;
+    const sess = {
+      surface: { nodes: [0, 1] },
+      eventAt: (seq: number) => events.get(seq),
+      append: () => {
+        attempts += 1;
+        throw new Error('start seq 1 not found in surface');
+      },
+    };
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+
+    const n = await replaceImagePathsInSurface({ session: sess } as never, logger as never, 1);
+
+    expect(n).toBe(0);
+    expect(attempts).toBe(1);     // 只试一次，没有盲目回退
+  });
+
   it('普通链接不该被替换（N4 反向断言：只认 QQ 图片域名）', async () => {
     mockLookup.mockReturnValue(LOCAL);
     const { sess, appended } = makeSession(

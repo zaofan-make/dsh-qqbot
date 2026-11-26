@@ -24,9 +24,11 @@
  *     已被替换过的再换会抛错
  *
  *   ⚠️ 宿主对字段名**严格校验**（`isReplaceOp`）：键集合必须与版本完全匹配，多一个少一个都 invalid。
- *      · 运行时 @deepseek-ai/dsh-session@0.2.2-rc.3 → `{ op, startSeq, endSeq }`（已实测 foldSurface 通过）
- *      · 仓库 devDependency 0.1.0-rc.6 与新源码仓库     → `{ op, start, end }`
- *      两者互斥。**不要照源码仓库改成 start/end** —— 运行期会静默失效（只留一条 debug 日志）。
+ *      · 运行时 dsh-session@0.2.2-rc.3（本轮实测）→ `{ op, startSeq, endSeq }`
+ *      · 仓库 devDependency 0.1.0-rc.6 与新源码仓库 → `{ op, start, end }`
+ *      两者互斥，且写错只留一条 debug 日志（静默失效）。
+ *      ⇒ 本文件用 {@link appendReplaceOne} **运行时自适应**：先试 rc.3 写法，被拒再试旧写法。
+ *        不依赖"宿主恰好是哪个版本"，也不依赖锁文件（锁文件是编译用的 devDependency，不是运行时）。
  *
  * ## 处理范围（2026-11-26 主人定）
  *
@@ -139,6 +141,43 @@ export interface ReplaceImagePathsOptions {
 }
 
 /**
+ * 追加一条「替换单个 surface 节点」的消息，**自动适配宿主版本的字段名**。
+ *
+ * 为什么需要自适应（CodeRabbit PR #93 提出的核心风险）：
+ *   · 运行时 @deepseek-ai/dsh-session@0.2.2-rc.3 → `isReplaceOp` 要求 `{ op, startSeq, endSeq }`
+ *   · 仓库 devDependency 0.1.0-rc.6（以及更早的版本）     → 要求 `{ op, start, end }`
+ *   两者**严格 3 键校验**，多一个键都 invalid；而且写错不会崩，只会被 catch 吞成 debug 日志 ——
+ *   静默失效，最难查。
+ *
+ * 插件运行时用的是**宿主提供**的那份（peerDependency），与仓库 devDependency 无关。
+ * 但为了不依赖"宿主恰好是哪个版本"，这里直接试：先按 rc.3 的写法，被拒再按旧写法。
+ *
+ * 试错是安全的：宿主在 `validateSurfaceMetadata` 阶段就同步抛错，**日志不会被写入**，
+ * 所以第一次失败不会留下任何痕迹。
+ *
+ * 只对「字段名不认」这一种错误回退；其他错误（如 seq 已不在 surface 上）照常抛 ——
+ * 不要用一个宽泛的 catch 掩盖真问题。
+ */
+function appendReplaceOne(sess: SurfaceSessionLike, seq: number, data: Record<string, unknown>): void {
+  const append = sess.append as (t: string, d: unknown, o?: unknown) => unknown;
+  try {
+    append('user/message', data, {
+      surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq },
+      sourceEventSeqs: [seq],
+    });
+    return;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/invalid replace surfaceOp/i.test(msg)) throw e;
+  }
+  // 旧版写法（0.1.0-rc.6 及更早）
+  append('user/message', data, {
+    surfaceOp: { op: 'replace', start: seq, end: seq },
+    sourceEventSeqs: [seq],
+  });
+}
+
+/**
  * 用 surfaceOp replace 把 session 尾部消息里的 QQ 图片 URL 替换成本地路径。
  *
  * @param agent 目标会话的 agent
@@ -202,21 +241,10 @@ export async function replaceImagePathsInSurface(
     if (!rewritten) continue;
 
     try {
-      sess.append(
-        'user/message',
-        {
-          ...(ev.data as Record<string, unknown>),
-          content: rewritten.blocks,
-        },
-        {
-          // ⚠️ 字段名随宿主版本变：
-          //   运行时 @deepseek-ai/dsh-session@0.2.2-rc.3 认 **startSeq/endSeq**（严格 3 键校验）；
-          //   较新的源码仓库改成了 start/end。二者只能传其一（多一个键就 invalid）。
-          //   本仓库 image-offload.ts 一直用 startSeq/endSeq 且线上有效 ⇒ 跟随运行时写法。
-          surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq },
-          sourceEventSeqs: [seq],
-        },
-      );
+      appendReplaceOne(sess, seq, {
+        ...(ev.data as Record<string, unknown>),
+        content: rewritten.blocks,
+      });
       totalReplaced += rewritten.replaced;
       messagesTouched += 1;
     } catch (e) {
