@@ -343,6 +343,7 @@ export const EditableConfigSchema = Schema.object({
     toolErrorModeByScope: Schema.object({ group: Schema.string().default(''), c2c: Schema.string().default('') }).description('按渠道覆盖工具报错策略(issue #77): 群聊 silent + 私聊 notify 是常见组合；空串=不覆盖'),
     outboundLastCtxFallback: Schema.boolean().default(false).description('出站扩展未指定 target 时是否回落到最近活跃会话(issue #78, 默认关=拒发)。开启=旧行为, 多会话并发会串台'),
     imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
+    imagePathSurface: Schema.boolean().default(false).description('把已进上下文的图片链接换成本地路径(默认关, 2026-11-26): 图是后台下的, 组装时可能还没下完 → 上下文里留的是 QQ 临时长链接; 开=每回合开始前把尾部消息里能命中的 URL 改成本地路径(surfaceOp replace)。只动尾部几条, 不动历史深处'),
     imageAggregate: Schema.object({
         enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
         max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),
@@ -403,6 +404,7 @@ const ConfigSchemaRaw = Schema.object({
         gates: stickerGatesSchema,
         autoTagEnabled: Schema.boolean().default(false).description('新图后台自动识图打标(耗视觉额度,默认关;开需可用视觉CLI)'),
         visionCli: Schema.string().default('').description('视觉CLI命令模板(含{img}占位), 空=自动探测本机视觉CLI'),
+        fullDownload: Schema.boolean().default(true).description('一条消息里的图全部下载入库(默认开, 2026-11-26): 原来每条只收前 3 张, 开=全部入队后台慢慢下, 回合开始前(pre-step)把已下完的换成局部路径; 关=老行为'),
     }).default({
         collectEnabled: true,
         dataDir: '',
@@ -420,6 +422,7 @@ const ConfigSchemaRaw = Schema.object({
         },
         autoTagEnabled: false,
         visionCli: '',
+        fullDownload: true,
     }).description('表情包图库'),
     injectRules: Schema.array(injectRuleItemSchema).default([]).description('条件注入规则:消息含图片/链接/自定义文本时自动插入系统提示'),
     imageHint: Schema.boolean().default(true).description('图片消息自动追加「看图」内置提示(默认开; 关掉=不再注入那条「把 URL 传给识图工具」)'),
@@ -435,6 +438,7 @@ const ConfigSchemaRaw = Schema.object({
     toolErrorModeByScope: Schema.object({ group: Schema.string().default(''), c2c: Schema.string().default('') }).description('按渠道覆盖工具报错策略(issue #77): 群聊 silent + 私聊 notify 是常见组合；空串=不覆盖'),
     outboundLastCtxFallback: Schema.boolean().default(false).description('出站扩展未指定 target 时是否回落到最近活跃会话(issue #78, 默认关=拒发)。开启=旧行为, 多会话并发会串台'),
     imageOffload: Schema.boolean().default(true).description('历史图片不重发(默认开): 每轮只把「本插件聚合出来的图」在历史里换成文字占位, 其余图片一律不动 —— 避免同一张图每轮重传、越聊越慢'),
+    imagePathSurface: Schema.boolean().default(false).description('把已进上下文的图片链接换成本地路径(默认关, 2026-11-26): 图是后台下的, 组装时可能还没下完 → 上下文里留的是 QQ 临时长链接; 开=每回合开始前把尾部消息里能命中的 URL 改成本地路径(surfaceOp replace)。只动尾部几条, 不动历史深处'),
     imageAggregate: Schema.object({
         enabled: Schema.boolean().default(false).description('图片聚合(默认关): 把连续收到的几张图竖向拼成一张长图, 随唤醒消息一起进上下文(只对支持读图的模型生效)'),
         max: Schema.number().default(4).description('聚合数量上限 1~8(默认 4): 环形缓冲, 最新的排最下面, 最旧的排最上面; 已聚合过的图不再重复聚合'),

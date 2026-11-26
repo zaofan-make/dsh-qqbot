@@ -1,0 +1,208 @@
+/**
+ * image-path-surface.ts — 把 **已进上下文** 的 QQ 图片 URL 换成本地路径（2026-11-26 主人要求）
+ *
+ * 背景：图片下载是后台 fire-and-forget，消息组装时可能还没下完，于是上下文里留的是
+ *   `https://multimedia.nt.qq.com.cn/download?fileid=…&rkey=…` 这种又长又会过期的临时链接。
+ *   等下载完了再想补，就必须改 **session 里已经写下的消息**。
+ *
+ * ## 改历史上下文的正规姿势（参考 dsh-context-shaping / zeranhub）
+ *
+ *   一条带 `surfaceOp` 的 append 就够了，**不需要 compaction 四事件**：
+ *
+ *   ```js
+ *   session.append(type, data, {
+ *     surfaceOp: { op: 'replace', startSeq, endSeq },
+ *     sourceEventSeqs: shadowedSeqs,
+ *   })
+ *   ```
+ *
+ *   · `startSeq` / `endSeq` 就是 **seq 本身**（相等时只替换一个节点）
+ *     ⚠️ 字段名按宿主版本变：运行时 0.2.2-rc.3 用 `startSeq/endSeq`，
+ *        较新的源码仓库改成了 `start/end`。本仓库跟随运行时。
+ *   · `sourceEventSeqs` 必须列全被遮蔽的 seq（宿主 `assertProvenance` 校验）
+ *   · 被替换的 seq **必须还在当前 surface 上**（`surface.nodes.indexOf(seq) !== -1`），
+ *     已被替换过的再换会抛错
+ *
+ *   ⚠️ 宿主对字段名是**严格校验**的（`isReplaceOp`）：必须恰好 `{ op, start, end }` 三个键。
+ *      写成 `startSeq/endSeq` 会被判为 invalid 并抛错 —— 这正是本仓库
+ *      `image-offload.ts` 的现存问题（它的调用处把异常吞成 debug 日志了）。
+ *
+ * ## 处理范围（2026-11-26 主人定）
+ *
+ *   **只处理尾部**：上一个回合结束（最后一条 `assistant/message`）之后、下一个回合开始前的
+ *   那几条消息。历史深处的旧链接不动 —— 那些多半已经被 offload 压成文字占位，
+ *   而且改它们只会在会话日志里堆更多事件。
+ *
+ * ## 开关
+ *
+ *   `config.imagePathSurface`，默认 **false**。开启后每次 pre-step 跑一次；
+ *   缓存里有本地路径的才换，没有的原样留着（回退 QQ 链接）。
+ */
+import { lookupImagePath } from './image-path-cache.js';
+
+interface MsgContentBlock {
+  type?: string;
+  text?: string;
+  [k: string]: unknown;
+}
+
+/** 插件侧用到的最小 session 抽象 */
+interface SurfaceSessionLike {
+  surface?: { nodes?: number[] };
+  eventAt?: (seq: number) => unknown;
+  append?: (type: string, data: unknown, opts?: unknown) => unknown;
+}
+
+interface SurfaceAgentLike {
+  session?: SurfaceSessionLike;
+}
+
+interface SurfaceLogger {
+  info?: (m: string) => void;
+  debug?: (m: string) => void;
+  warn?: (m: string) => void;
+}
+
+/** 只认 QQ 图片下载链接（别的 URL 一律不碰，避免误伤正文里的普通链接） */
+const QQ_IMAGE_URL_RE = /https:\/\/[^\s)]*(?:multimedia\.nt\.qq\.com\.cn[^\s)]*|qq\.com\/download[^\s)]*)/g;
+
+/** 这条消息的文本块里有没有 QQ 图片 URL */
+function hasQqImageUrl(content: MsgContentBlock[]): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((b) => {
+    if (b?.type !== 'text' || typeof b.text !== 'string') return false;
+    QQ_IMAGE_URL_RE.lastIndex = 0;
+    return QQ_IMAGE_URL_RE.test(b.text);
+  });
+}
+
+/** 把一条消息里能命中的 QQ 图片 URL 换成本地路径；没换成就返回 null */
+function rewriteContent(content: MsgContentBlock[]): { blocks: MsgContentBlock[]; replaced: number } | null {
+  if (!Array.isArray(content)) return null;
+  let replaced = 0;
+  let changed = false;
+  const blocks = content.map((b) => {
+    if (b?.type !== 'text' || typeof b.text !== 'string') return b;
+    QQ_IMAGE_URL_RE.lastIndex = 0;
+    if (!QQ_IMAGE_URL_RE.test(b.text)) return b;
+    let blockChanged = false;
+    QQ_IMAGE_URL_RE.lastIndex = 0;
+    const nextText = b.text.replace(QQ_IMAGE_URL_RE, (u: string) => {
+      const local = lookupImagePath(u);
+      if (!local) return u;
+      replaced += 1;
+      blockChanged = true;
+      return local;
+    });
+    QQ_IMAGE_URL_RE.lastIndex = 0;
+    if (!blockChanged) return b;
+    changed = true;
+    return { ...b, text: nextText };
+  });
+  return changed ? { blocks, replaced } : null;
+}
+
+export interface ReplaceImagePathsOptions {
+  /** 单次最多替换几条消息（防御：避免一次追加太多事件）。默认 8 */
+  maxMessages?: number;
+  /**
+   * 扫描范围：
+   *   'tail'（默认）= 只扫最后一条 assistant/message 之后（本回合新来的那几条）
+   *   'all'        = 连历史一起扫（一般用不上）
+   */
+  scope?: 'tail' | 'all';
+}
+
+/**
+ * 用 surfaceOp replace 把 session 尾部消息里的 QQ 图片 URL 替换成本地路径。
+ *
+ * @param agent 目标会话的 agent
+ * @param logger 日志
+ * @param turn 当前轮次号（仅用于日志；surfaceOp 本身不需要）
+ * @param opts 范围控制
+ * @returns 实际替换掉的 URL 个数
+ */
+export async function replaceImagePathsInSurface(
+  agent: SurfaceAgentLike | undefined,
+  logger?: SurfaceLogger,
+  turn?: number,
+  opts?: ReplaceImagePathsOptions,
+): Promise<number> {
+  const sess = agent?.session;
+  if (!sess || typeof sess.eventAt !== 'function' || typeof sess.append !== 'function') return 0;
+  const nodes = sess.surface?.nodes;
+  if (!Array.isArray(nodes) || nodes.length < 2) return 0;
+
+  // 起点：默认只扫尾部（最后一条 assistant/message 之后）
+  const scope = opts?.scope ?? 'tail';
+  let start = scope === 'tail' ? nodes.length : 1;
+  if (scope === 'tail') {
+    for (let i = nodes.length - 1; i >= 1; i -= 1) {
+      const sq = nodes[i];
+      if (sq === undefined) continue;
+      const ev = sess.eventAt(sq) as { type?: string } | undefined;
+      if (ev && ev.type === 'assistant/message') {
+        start = i + 1;
+        break;
+      }
+    }
+  }
+
+  const maxMessages = Math.max(1, Math.min(24, opts?.maxMessages ?? 8));
+  const onSurface = new Set(nodes);
+  let totalReplaced = 0;
+  let messagesTouched = 0;
+
+  // 从后往前：最新的消息最可能是"刚下载完、正等着换成路径"的那条
+  for (let i = nodes.length - 1; i >= start; i -= 1) {
+    if (messagesTouched >= maxMessages) break;
+    const seq = nodes[i];
+    if (seq === undefined) continue;
+    const ev = sess.eventAt(seq) as
+      | { type?: string; data?: { content?: MsgContentBlock[]; [k: string]: unknown } }
+      | undefined;
+    if (!ev || ev.type !== 'user/message') continue;
+    const content = ev.data?.content;
+    if (!Array.isArray(content) || !hasQqImageUrl(content)) continue;
+
+    const rewritten = rewriteContent(content);
+    if (!rewritten) continue;
+
+    // 关键校验：被替换的 seq 必须还在当前 surface 上，否则宿主会抛
+    if (!onSurface.has(seq)) {
+      logger?.debug?.(`[img-path-surface] seq=${seq} 已不在 surface 上，跳过`);
+      continue;
+    }
+
+    try {
+      sess.append(
+        'user/message',
+        {
+          ...(ev.data as Record<string, unknown>),
+          content: rewritten.blocks,
+        },
+        {
+          // ⚠️ 字段名随宿主版本变：
+          //   运行时 @deepseek-ai/dsh-session@0.2.2-rc.3 认 **startSeq/endSeq**（严格 3 键校验）；
+          //   较新的源码仓库改成了 start/end。二者只能传其一（多一个键就 invalid）。
+          //   本仓库 image-offload.ts 一直用 startSeq/endSeq 且线上有效 ⇒ 跟随运行时写法。
+          surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq },
+          sourceEventSeqs: [seq],
+        },
+      );
+      totalReplaced += rewritten.replaced;
+      messagesTouched += 1;
+    } catch (e) {
+      logger?.debug?.(
+        `[img-path-surface] 替换 seq=${seq} 失败: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  if (totalReplaced > 0) {
+    logger?.info?.(
+      `[img-path-surface] 已把 ${totalReplaced} 个图片 URL 换成本地路径（${messagesTouched} 条消息，turn=${String(turn ?? '?')}）`,
+    );
+  }
+  return totalReplaced;
+}

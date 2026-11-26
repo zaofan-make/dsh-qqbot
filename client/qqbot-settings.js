@@ -343,6 +343,9 @@ window.__ModuleLoader__.load({
           { t: 'note', label: '图库维护' },
           { k: 'sticker.autoTagEnabled', kw: '自动 打标 识图 视觉 标签 图库', t: 'bool', label: '新图自动后台识图打标(会花视觉额度;不勾=全靠人工手动补)', def: false },
           { k: 'sticker.visionCli', kw: '视觉 引擎 命令 cli 识图 ocr 高级', t: 'str', label: '视觉引擎命令(高级;留空自动探测)', wide: true, def: '' },
+          { t: 'note', label: '图片下载(2026-11-26)' },
+          { k: 'sticker.fullDownload', kw: '图片 下载 全部 多图 九宫格 批量 本地 路径', t: 'bool', label: '一条消息里的图全部下载(不勾=老行为,每条只收前3张)', def: true },
+          { k: 'imagePathSurface', kw: '图片 链接 本地 路径 上下文 改写 历史 surface 高级', t: 'bool', label: '把已进上下文的图片链接换成本地路径(默认关;每次多写一条会话事件)', def: false },
         ],
       },
       {
@@ -1918,9 +1921,13 @@ window.__ModuleLoader__.load({
             gates: (v.sticker && v.sticker.gates) || {},
             autoTagEnabled: !!(v.sticker && v.sticker.autoTagEnabled),
             visionCli: (v.sticker && typeof v.sticker.visionCli === 'string') ? v.sticker.visionCli : '',
+            // ★ 2026-11-26：图片全量下载。不在这里收集 = 面板存了也不生效（老坑）
+            fullDownload: !!(v.sticker && v.sticker.fullDownload !== false),
           },
           injectRules: Array.isArray(v.injectRules) ? v.injectRules : [],
           imageHint: typeof v.imageHint === 'boolean' ? v.imageHint : undefined,
+          // ★ 2026-11-26：已进上下文的图片链接 → 本地路径（默认关）
+          imagePathSurface: typeof v.imagePathSurface === 'boolean' ? v.imagePathSurface : undefined,
           // ★ 2026-11-19 issue #72/#73：出站清洗 + 回合异常策略。
           //   ⚠️ 必须在这里收集，否则面板改了也存不下去（老坑：questionsMode 就是这么漏的）。
           stripTimeHead: typeof v.stripTimeHead === 'boolean' ? v.stripTimeHead : undefined,
