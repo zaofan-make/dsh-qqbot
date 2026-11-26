@@ -13,6 +13,8 @@ export interface StartResult {
 }
 /** 找系统浏览器（Edge 优先：Windows 必装）。可用 QUN_BROWSER 环境变量覆盖。 */
 export declare function findSystemBrowser(): string | null;
+/** 供插件 dispose 生命周期调用：清理全部登录浏览器会话与空闲定时扫描器 */
+export declare function disposeQunLogin(): void;
 export declare function qunLoginSessionAlive(dataRoot: string): boolean;
 export declare function qunLoginSessionClose(dataRoot: string): void;
 /**

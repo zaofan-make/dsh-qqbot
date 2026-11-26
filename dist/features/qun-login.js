@@ -233,35 +233,41 @@ function closeSession(dataRoot) {
 /** 会话空闲多久自动关掉（与 wait 的 5 分钟上限一致） */
 const SESSION_IDLE_MS = 5 * 60 * 1000;
 /**
- * 宿主退出时把所有浏览器一起带走。
- * ⚠️ 不装这个钩子的话，宿主一退出子进程就成**孤儿**，会一直挂在后台（而且锁着 profile，
- *    下次启动还会 code=21）。
+ * 宿主退出或插件卸载时把所有浏览器会话一起清理，避免残留孤儿进程。
+ * 不注册 SIGINT/SIGTERM 并调用 process.exit(0)，以免绕过 DSH 宿主优雅停机直接强杀宿主进程。
  */
 let exitHookInstalled = false;
+function killAllSessions() {
+    for (const dr of Array.from(sessions.keys())) {
+        try {
+            closeSession(dr);
+        }
+        catch { /* ignore */ }
+    }
+}
 function installExitHook() {
     if (exitHookInstalled)
         return;
     exitHookInstalled = true;
-    const killAll = () => {
-        for (const dr of Array.from(sessions.keys())) {
-            try {
-                closeSession(dr);
-            }
-            catch { /* ignore */ }
+    try {
+        process.once('exit', killAllSessions);
+    }
+    catch { /* ignore */ }
+}
+/** 供插件 dispose 生命周期调用：清理全部登录浏览器会话与空闲定时扫描器 */
+export function disposeQunLogin() {
+    if (sweeper) {
+        clearInterval(sweeper);
+        sweeper = null;
+    }
+    killAllSessions();
+    if (exitHookInstalled) {
+        try {
+            process.off('exit', killAllSessions);
         }
-    };
-    try {
-        process.on('exit', killAll);
+        catch { /* ignore */ }
+        exitHookInstalled = false;
     }
-    catch { /* ignore */ }
-    try {
-        process.on('SIGINT', () => { killAll(); process.exit(0); });
-    }
-    catch { /* ignore */ }
-    try {
-        process.on('SIGTERM', () => { killAll(); process.exit(0); });
-    }
-    catch { /* ignore */ }
 }
 /** 空闲清理：每分钟扫一次，超过 SESSION_IDLE_MS 没动静的会话连浏览器一起关掉 */
 let sweeper = null;
