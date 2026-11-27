@@ -1,3 +1,29 @@
+## 1.13.30 (2026-11-28)
+
+### 你会感觉到的变化
+
+**1. 宿主把 DSH 主目录搬到别处（`DSH_HOME`）之后，插件不再「读不到自己的配置」**
+
+以前有几处路径是写死的 `~/.dsh/...`。宿主支持用环境变量 `DSH_HOME` 把主目录搬走，
+搬完之后这些读取点全都指向一个**已经不存在的旧目录**，表现是：
+
+| 现象 | 以前写死的位置 |
+|---|---|
+| 设置面板里「默认模型」填了不生效 | `~/.dsh/settings.yaml` |
+| 自动撤回 / 自动禁言规则读不到面板值，只剩旧闭包值 | `~/.dsh/qqbot-settings/<profile>/<ns>.json` |
+| 多开实例时 2 号、3 号机的 cwd 全指到主实例（工具、命令、扩展全串号） | 同上（读实例 cwd/dataRoot） |
+| 自动撤回配置工具报「找不到设置文件」 | 同上 |
+| 打开诊断日志开关后，`~/.dsh` 下找不到 `qqbot-dispatch-diag.log` / `md-media-diag.log` | 同上 |
+
+现在这些读取点统一走 `resolveDshHome()` / `dshHomePath()`：**先看 `DSH_HOME`，没有再回落 `~/.dsh`**。
+没设 `DSH_HOME` 的老机器行为完全不变。
+
+### 内部
+
+- `shared/utils.ts` 新增 `resolveDshHome()` / `dshHomePath()`，并复用到 `scanDshProfiles()`；
+- 逐个替换写死点：`model/settings-reader.ts`、`features/auto-recall.ts`、`index.ts`（实例 cwd 补正两处）、
+  `channel-tools.ts`（自动撤回配置工具）、`features/ext-tool-interaction.ts`、`features/md-media-rewrite.ts`。
+
 ## 1.13.29 (2026-11-26)
 
 ### 你会感觉到的变化
