@@ -894,6 +894,10 @@ export class SessionManager {
         });
         agent = resumed.agent;
         handle = resumed;
+        // ★ 2026-11-27：resume 沿用会话档案里记录的 header（那时还没写 reasoningEffort），
+        //   agentOptions 只对**新建**会话生效 ⇒ 已存在的会话恢复出来仍是 thinking:disabled。
+        //   这里显式再下发一次强度（实测：22:07–22:08 那批旧会话就是因此一直没有思考）。
+        this.applyModelRoute(agent, resumeRoute ?? route, 'resume-effort');
         this.logger.info(`resumed session: key=${key} preset=${agentPreset ?? 'none'} route=${resumeRoute ? `${resumeRoute.provider}/${resumeRoute.model}` : 'session-own'}`);
         // 更新配置指纹(会话已存在且配置一致 → 指纹刷新为当前值)
         try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
@@ -917,6 +921,8 @@ export class SessionManager {
             ...(composed.setup ? { setup: composed.setup } : {}),
           });
           agent = created.agent;
+          // ★ 2026-11-27：agentOptions 之外再显式写一次强度（新宿主按 agent.model.select 走每轮下发）
+          this.applyModelRoute(agent, route, 'create-effort');
           handle = created;
           this.logger.info(`created new session: key=${key} preset=${agentPreset ?? 'none'}`);
           // 记录配置指纹(create 用当前 cwd/preset; 下次配置变更据此弃旧开新)
@@ -939,6 +945,7 @@ export class SessionManager {
             ...(composed.setup ? { setup: composed.setup } : {}),
           });
           agent = created2.agent;
+          this.applyModelRoute(agent, route, 'create-effort');
           handle = created2;
           this.logger.info(`created new session(轮换后): key=${key} sessionId=${rotated} preset=${agentPreset ?? 'none'}`);
           try { this.modelResolver.setSessionCfg(key, { cwd: wantCwd }); } catch { /* ignore */ }
