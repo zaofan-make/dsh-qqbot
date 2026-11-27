@@ -192,7 +192,7 @@ export async function setupMiddlewares(
   //     （官方文档有这字段，实测元素里根本没有），SDK 的 quoteRef 又因为
   //     `preferMsgElements: true` 从不查 store（`quote.entry` 恒 undefined）。
   //     三条路全断，只能自己记。
-  bot.use(attributionLedger(logger));
+  bot.use(attributionLedger(config, logger));
 
   // 3.93. 写消息历史台账（2026-11-15）
   //   ★ 顺序：**先查归属（3.92）→ 再写历史（这里）→ 才轮到 early-inbound 扩展（3.95）**。

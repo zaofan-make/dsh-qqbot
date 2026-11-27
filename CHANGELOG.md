@@ -1,3 +1,39 @@
+## 1.13.31 (2026-11-28)
+
+### 你会感觉到的变化
+
+**同一个 DSH 里跑两个 QQ 机器人，不再互相把对方说的话当成「自己说过」**
+
+现象：小傻龙和大肥鱼两个实例同时在线时，机器人甲的群消息台账会写进乙的数据目录，
+于是乙去查「谁引用了我」「我上次说过什么」时，查到的是甲的消息，回复口吻也跟着串。
+
+原因是三处模块级单例（同一个宿主进程里模块只加载一次，后启动的实例覆盖先启动的）：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `features/msg-history.ts` 的台账根目录 | 一个 `historyRoot` 变量，最后 init 的赢 | 按 dataRoot 分别记根目录，读写都带本实例数据根 |
+| `features/image-aggregate.ts` 的附件 id 台账 | 一个文件路径 + 一个 Set，写进别人的文件，重启后自己那份丢 | 每个 dataRoot 一份文件 + 一份 Set |
+| `features/contextless-store.ts` | —— | 核查后确认已于 2026-09-27 改成多根合并 + 按 key 写回，本次不动 |
+
+两个实例的 `msg-history` 目录、`aggregate-ids.json` 从此各归各的。
+引用归属、群消息搜索、撤回目标、清图判断都按本实例台账走。
+
+### 技术细节
+
+- `msg-history`：新增 `roots: Map<dataRoot, 根目录>` + `defaultRoot` 兜底；
+  `dirOf / groupNameOf / refreshIndex / writeDownloadLinks` 改为显式收 `root`；
+  对外 API（`pruneOld / markSession / exportLinksForMessage / appendMsgHistory / findSenderByQuote /
+  readMsgHistory / latestMsgHistory / historyDebug / latestGroupId`）末尾追加可选 `dataRoot`，
+  不传时退回最后 init 的那份 —— 单实例场景行为完全不变。
+- `marked` 集合键加 root 前缀，避免两个实例对同一个群只写一次名字文件。
+- `attributionLedger(config, logger)`：工厂补收 config，`findSenderByQuote` 与本实例台账对齐，
+  `appendMsgHistory` 写本实例台账。
+- 群管理工具 11 处调用（`latestGroupId / latestMsgHistory / readMsgHistory / historyDebug`）
+  先 `resolveCtxDataRoot(exec)` 再传下去。
+- 入站链路：`buildUserContent(..., dataRoot)` → `exportLinksForMessage(...)`；
+  `lookupSenderByHistoryText(..., dataRoot)` → `findSenderByQuote(...)`。
+- `noteOurAttachment(id, dataRoot)` / `isOurAttachment(id, dataRoot?)`：给了数据根只看该实例，
+  没给则按全部实例并集（附件 id 内容寻址，同 id 必是同一张图）。
 ## 1.13.30 (2026-11-28)
 
 ### 你会感觉到的变化

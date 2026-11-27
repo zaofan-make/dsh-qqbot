@@ -2101,7 +2101,8 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const r = await ga.client.getMuteState(gid);
       if (!r.ok) return { ok: false, msg: r.err.human };
@@ -2138,13 +2139,14 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       let msgId = String(args.msg_id ?? '').trim();
       let who = '';
       if (msgId === '') {
         const member = String(args.member ?? '').trim();
-        const rec = latestMsgHistory('group', gid, { senderId: member || undefined, withinMs: 120_000 });
+        const rec = latestMsgHistory('group', gid, { senderId: member || undefined, withinMs: 120_000 }, ctxRoot);
         if (!rec) {
           return {
             ok: false,
@@ -2187,15 +2189,16 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
       const list = readMsgHistory('group', gid, {
         keyword: args.keyword ? String(args.keyword) : undefined,
         kind: (args.kind ? String(args.kind) : undefined) as MsgKind | undefined,
         fromSelf: typeof args.from_self === 'boolean' ? args.from_self : undefined,
         limit: Number(args.limit) || 20,
-      });
-      if (list.length === 0) return { ok: true, msg: '台账里没有命中的消息（默认只查最近 2 小时）。' + historyDebug('group', gid) };
+      }, ctxRoot);
+      if (list.length === 0) return { ok: true, msg: '台账里没有命中的消息（默认只查最近 2 小时）。' + historyDebug('group', gid, ctxRoot) };
       const lines = list.map((m, i) => `${i + 1}. ${m.me ? '🤖' : '👤'}${m.n || m.s} [${m.k ?? 'text'}] ${m.x || '(无正文)'}｜id=${String(m.id).slice(0, 16)}…｜${new Date(m.t).toLocaleTimeString('zh-CN')}`);
       return {
         ok: true,
@@ -2313,7 +2316,8 @@ export async function apply(
       try {
         const ga = groupAdminOf(exec);
         if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-        const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+        const ctxRoot = await resolveCtxDataRoot(exec);
+        const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
         if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
         const ids = (Array.isArray(args.member_openids) ? args.member_openids : [])
           .map((x) => String(x).trim())
@@ -2461,7 +2465,8 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
       const brief = (m: { me?: boolean; s: string; n: string; k?: MsgKind; x?: string }): string =>
         `${m.me ? '🤖' : '👤'}${m.n || m.s} [${m.k ?? 'text'}] ${(m.x ?? '').slice(0, 24)}`;
@@ -2473,10 +2478,10 @@ export async function apply(
           keyword: args.keyword ? String(args.keyword) : undefined,
           kind: (args.kind ? String(args.kind) : undefined) as MsgKind | undefined,
           limit: 20,
-        }).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
+        }, ctxRoot).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
         ids = picked.map((p) => p.msgId);
       } else {
-        const all = readMsgHistory('group', gid, { withinMs: 120_000, limit: 200 }).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
+        const all = readMsgHistory('group', gid, { withinMs: 120_000, limit: 200 }, ctxRoot).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
         picked = all.filter((p) => ids.includes(p.msgId));
       }
       ids = ids.slice(0, 20);
@@ -2544,7 +2549,8 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
       const pad = (n: number): string => String(n).padStart(2, '0');
