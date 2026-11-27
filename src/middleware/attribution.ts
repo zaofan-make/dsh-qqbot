@@ -73,7 +73,7 @@ function classifyForHistory(msg: {
   return { k, x, f };
 }
 
-export function attributionLedger(logger: Logger) {
+export function attributionLedger(config: ImQQBotConfig, logger: Logger) {
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     try {
       const msg = ctx.message as {
@@ -132,7 +132,7 @@ export function attributionLedger(logger: Logger) {
             for (const a of Array.isArray(el?.attachments) ? el.attachments : []) push(a?.filename);
           }
 
-          const hit = findSenderByQuote(kind as 'group' | 'c2c', peerId, q.text, probe);
+          const hit = findSenderByQuote(kind as 'group' | 'c2c', peerId, q.text, probe, dataRootOf(config));
           if (hit) {
             if (hit.senderName) q.senderName = hit.senderName;
             if (hit.senderId) q.senderId = hit.senderId;
@@ -195,7 +195,7 @@ export function historyRecorder(config: ImQQBotConfig, logger: Logger) {
           x: h.x,
           ...(h.f.length ? { f: h.f } : {}),
           ...(msg.me ? { me: true } : {}),
-        });
+        }, dataRootOf(config));
 
         // ── 分段台账（2026-11-17，CodeRabbit Major 修正）──
         //   ⚠️ 必须记在**防抖聚合之前**的逐条位置。原来放在 handleInbound 里，
