@@ -1087,13 +1087,17 @@ export class SessionManager {
       this.lastHostModel.set(key, hostKey);
 
       const sameRoute = !!stored && stored.provider === cur.provider && stored.model === cur.model;
-      const sameEffort = (stored?.effort ?? '') === (hostEffort ?? '');
+        const effectiveEffort = hostEffort ?? stored?.effort ?? DEFAULT_REASONING_EFFORT;
+        const sameEffort = (stored?.effort ?? '') === effectiveEffort;
       if (sameRoute && sameEffort) return false;
 
       const route: ModelRoute = {
         provider: cur.provider,
         model: cur.model,
-        ...(hostEffort ? { effort: hostEffort } : {}),
+        // ★ 2026-11-27 修：宿主**没带**思考强度时，不能把已存的强度抹掉 ——
+        //   原来这里写成 ...(hostEffort ? { effort: hostEffort } : {})，于是 model-prefs.json 里
+        //   手工写好的 effort=medium 会被宿主的一次无档位选择清空，下一轮又是 thinking:disabled。
+        effort: effectiveEffort,
       };
       // 直接写偏好：**不能走 setModelOverride** —— 它现在"同模型同强度就 return"（防白 fork），
       //   而这里正是要把宿主的新值落盘（含 effort 变化），所以绕过去，只写存储。
