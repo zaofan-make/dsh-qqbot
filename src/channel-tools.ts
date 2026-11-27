@@ -15,8 +15,8 @@ import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import type { Context } from '@deepseek-ai/cordis';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
+import { dshHomePath } from './shared/utils.js';
 import { dataRootOf } from './gateway/data-root.js';
-import { homedir } from 'node:os';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
 import { getStickerStore } from './features/sticker-store.js';
@@ -2235,7 +2235,7 @@ export async function apply(
     execute: async (args: { action?: string; words?: string; muteSeconds?: number; enable?: boolean }) => {
       try {
         const prof = process.env.DSH_PROFILE || 'web';
-        const base = join(homedir(), '.dsh', 'qqbot-settings', prof);
+        const base = dshHomePath('qqbot-settings', prof);
         let file = join(base, 'im-qqbot-2.json');
         if (!existsSync(file)) {
           const cands = existsSync(base) ? readdirSync(base).filter((f) => /^im-qqbot-.*\.json$/.test(f)) : [];
