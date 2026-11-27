@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { ModelRoute, ModelEntry } from './types.js';
+import { DEFAULT_REASONING_EFFORT } from './types.js';
 import { PrefsStore } from './prefs-store.js';
 import { dataRootOf } from '../gateway/data-root.js';
 import { SettingsReader } from './settings-reader.js';
@@ -51,7 +52,8 @@ export class ModelResolver {
    *    sessionId 缺省时兼容旧 peer 级读取(回退/单会话用)。
    */
   getEffectiveRoute(sessionKey: string, sessionId?: string): ModelRoute | undefined {
-    return this.prefs.getOverride(this.overrideKey(sessionKey, sessionId)) ?? this.resolveDefault();
+    const route = this.prefs.getOverride(this.overrideKey(sessionKey, sessionId)) ?? this.resolveDefault();
+    return route ? this.withEffort(route) : undefined;
   }
 
   /**
@@ -68,13 +70,14 @@ export class ModelResolver {
    */
   getResumeRoute(sessionKey: string, sessionId?: string): ModelRoute | undefined {
     const override = this.prefs.getOverride(this.overrideKey(sessionKey, sessionId));
-    if (override) return override;
+    if (override) return this.withEffort(override);
 
     if (this.config.provider && this.config.model) {
-      return { provider: this.config.provider, model: this.config.model };
+      return this.withEffort({ provider: this.config.provider, model: this.config.model });
     }
 
-    return this.resolveDefault();
+    const route = this.resolveDefault();
+    return route ? this.withEffort(route) : undefined;
   }
 
   /**
@@ -255,6 +258,14 @@ export class ModelResolver {
   }
 
   // ── 私有方法 ──
+
+  /**
+   * 路由缺思考强度时补默认档（原因见 types.ts 的 DEFAULT_REASONING_EFFORT）。
+   * 宿主只认 provider/model/reasoningEffort；缺档 ⇒ anthropic 适配器发 thinking:{type:'disabled'}。
+   */
+  private withEffort(route: ModelRoute): ModelRoute {
+    return route.effort ? route : { ...route, effort: DEFAULT_REASONING_EFFORT };
+  }
 
   /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
   private overrideKey(sessionKey: string, sessionId?: string): string {

@@ -1,3 +1,38 @@
+## 1.13.32 (2026-11-28)
+
+### 你会感觉到的变化
+
+**机器人不再「满屏 tool call aborted 且一个字不回」，思考强度也不会再自己消失**
+
+现象一：群里 @ 机器人，它连着调 `reply_gate` 传 `reply:false`（理由写着「要回复」），整轮被
+「reply_gate: 本轮静默」取消，用户只看到 `Error: tool call aborted`、没有任何输出。
+
+现象二：`model-prefs.json` 里明明写了 `effort: medium`，跑起来请求体却是
+`thinking: {"type": "disabled"}`，日志里 `usage.reasoning` 全是 0。
+
+两个现象是同一个根因链：
+
+| 环节 | 原来 | 现在 |
+|---|---|---|
+| 宿主建会话 / 恢复会话时下发的 `agentOptions` | 直接把内部路由 `{ provider, model, effort }` 当 `agentOptions` 传，宿主只认 `provider/model/reasoningEffort`，`effort` 被丢掉 ⇒ 按「没开思考」建会话 | `toAgentOptions()` 显式映射成 `reasoningEffort`，缺档补 `medium` |
+| 已存在会话的 resume | `agentOptions` 只对**新建**会话生效，旧档案 header 里没有 `reasoningEffort` ⇒ 恢复出来永远 disabled | resume 后显式 `applyModelRoute(..., 'resume-effort')` 再下发一次；create 同理 |
+| `adoptHostModel` 反向同步 | 宿主当前选择**没带**强度时，按宿主值重写偏好 ⇒ 已存的 `effort` 被清空 | 宿主没带就沿用已存值（`hostEffort ?? stored?.effort ?? 'medium'`） |
+| `applyModelRoute` | 路由没带 `effort` 时 select 里就不写这一项 | 补默认档后再写，`sameEffort` 比较也用补后的值 |
+| `model-resolver` 路由出口 | override / 实例配置 / 全局默认三条路都可能不带 `effort` | `withEffort()` 统一补 `DEFAULT_REASONING_EFFORT`（`medium`） |
+
+本地 27B 在 `thinking: disabled` 下会把 `reply_gate` 当成「开口开关」而不是「闭嘴开关」，
+于是「想回复」被翻译成 `reply: false` —— 这是现象一为什么总在无思考的回合出现。
+
+### 技术细节
+
+- `model/types.ts`：新增 `DEFAULT_REASONING_EFFORT = 'medium'`。
+- `model/model-resolver.ts`：`getEffectiveRoute` / `getResumeRoute` 的每个出口都过 `withEffort(route)`。
+- `session/session-manager.ts`：新增 `toAgentOptions(route)`（唯一一处把内部路由翻译成宿主字段的地方），
+  替换 fork / resume / create / create-轮换 四处 `agentOptions`；
+  `applyModelRoute` 与 `adoptHostModel` 按上表改。
+- 宿主侧对应代码：`dsh-api-session-controller` 的 `agentOptions()` 只解析 `provider/model/reasoningEffort`；
+  anthropic 适配器在 `reasoningEffort` 缺失时下发 `thinking: { type: 'disabled' }`。
+
 ## 1.13.31 (2026-11-28)
 
 ### 你会感觉到的变化
