@@ -9,14 +9,13 @@
  * 只处理本地路径；http(s)/qqbot-media 原样放过。失败保留原样，绝不吞正文。
  */
 import { appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { uploadMarkdownImage, listMarkdownImages, deleteMarkdownImage, type MdMediaTarget } from './md-media.js';
 import { mdAltSafe } from '../shared/md-alt.js';
+import { dshHomePath } from '../shared/utils.js';
 
 function diag(msg: string): void {
   try {
-    appendFileSync(join(homedir(), '.dsh', 'md-media-diag.log'), new Date().toISOString() + ' ' + msg + String.fromCharCode(10));
+    appendFileSync(dshHomePath('md-media-diag.log'), new Date().toISOString() + ' ' + msg + String.fromCharCode(10));
   } catch { /* ignore */ }
 }
 

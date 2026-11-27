@@ -12,7 +12,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { ConfigSchema, EditableConfigSchema, type EditableConfig, type ImQQBotConfig, type VisibilityConfig } from './config.js';
 import { bootstrapGateway } from './gateway/index.js';
 import type { DshAgentRegistry } from './session/index.js';
-import { getProfileDir, resolveEnv, resolveProfileName } from './shared/index.js';
+import { getProfileDir, resolveEnv, resolveProfileName, dshHomePath } from './shared/index.js';
 import { warmSessions } from './features/warm-sessions.js';
 import { setOutboundLastCtxFallback, outboundSenderOf } from './features/ext-outbound.js';
 import { applyExtToolVisibility } from './channel-tools.js';
@@ -108,7 +108,6 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
     try {
       const { readdirSync, readFileSync, existsSync } = await import('node:fs');
       const { join } = await import('node:path');
-      const { homedir } = await import('node:os');
       // ★ 2026-10-27 修（主人指出）：设置按 **profile 分层**！
       //   真源是 ~/.dsh/qqbot-settings/<profileName>/<ns>.json，
       //   根目录下那几个 *.json 是旧版遗留，读了会拿到过期的 cwd/appId。
@@ -121,7 +120,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
       //   第三方桌面版读它自己的 profile 名。
       //   拿不到 profile 名时**不读任何额外实例** —— 宁可少铺，也不要跨 profile 乱读
       //   （根目录下那几个 *.json 是旧版遗留，内容可能是过期的）。
-      const settingsDir = profileName ? join(homedir(), '.dsh', 'qqbot-settings', profileName) : '';
+      const settingsDir = profileName ? dshHomePath('qqbot-settings', profileName) : '';
       if (settingsDir && existsSync(settingsDir)) {
         const files = readdirSync(settingsDir).filter((f) => f.endsWith('.json')).slice(0, 6);
         for (const f of files) {
@@ -219,8 +218,6 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
   if (true) {
     try {
       const { readFileSync: rf, existsSync: ex } = await import('node:fs');
-      const { join: jn } = await import('node:path');
-      const { homedir: hd } = await import('node:os');
       // profile 名：环境变量（早于此段已回写）→ 宿主服务 → 留空
       let profName = String(process.env.DSH_PROFILE_NAME || '').trim();
       if (!profName) {
@@ -236,7 +233,7 @@ export async function apply(ctx: Context, config: ImQQBotConfig): Promise<void> 
       }
       const ns = String((config as { settingsNs?: string }).settingsNs || 'im-qqbot').trim();
       if (profName && ns) {
-        const f = jn(hd(), '.dsh', 'qqbot-settings', profName, ns + '.json');
+        const f = dshHomePath('qqbot-settings', profName, ns + '.json');
         if (ex(f)) {
           const j = JSON.parse(rf(f, 'utf8')) as { cwd?: string; dataRoot?: string };
           // dataRoot 优先（显式配过就用它，插件侧另有 dataRootOf 会读 config.dataRoot）
