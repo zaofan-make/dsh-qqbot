@@ -1147,7 +1147,8 @@ export class SessionManager {
         const cur = m.current();
         // ★ 2026-11-08 修：这里原来只看 provider/model —— 同模型只改**思考强度**时直接 return，
         //   强度根本没写进宿主 ⇒ 下一轮 adoptHostModel 又按宿主的旧强度把偏好改回去（主人实测：切 high 又变回 low）。
-        const sameEffort = (cur?.reasoningEffort ?? '') === (route.effort ?? '');
+        const effectiveEffort = route.effort ?? DEFAULT_REASONING_EFFORT;
+        const sameEffort = (cur?.reasoningEffort ?? '') === effectiveEffort;
         if (cur?.provider === route.provider && cur?.model === route.model && sameEffort) return;
         // 保留宿主可能存在的其它字段（reasoningEffort 等），只换 provider/model
         // 2026-11-08：模型路由里带思考强度就一起写进去（宿主 ModelSelection 支持 reasoningEffort）
@@ -1155,7 +1156,7 @@ export class SessionManager {
           ...(cur ?? {}),
           provider: route.provider,
           model: route.model,
-          ...(route.effort ? { reasoningEffort: route.effort } : {}),
+          reasoningEffort: effectiveEffort,
         });
         this.logger.info(
           `getOrCreate: ${label} 模型覆盖(agent.model.select) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`,
