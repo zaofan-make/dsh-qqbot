@@ -12,6 +12,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PLUGIN_ROOT = resolve(__dirname, '../..');
 
+/**
+ * DSH 主目录（宿主配置/存储的根）。
+ *
+ * 2026-11-28（fork）：宿主支持 `DSH_HOME` 环境变量把主目录搬离 `~/.dsh`，
+ * 但插件里有多处写死 `join(homedir(), '.dsh', ...)` —— 迁移后那些读取点
+ * 永远读不到文件，表现为「设置面板改了没用」「实例 cwd 读不到」。
+ * 统一从这里取，读配置的每一处都只认这个函数。
+ */
+export function resolveDshHome(): string {
+  const env = (process.env.DSH_HOME ?? '').trim();
+  return env || join(os.homedir(), '.dsh');
+}
+
+/** `{DSH_HOME}/<segments...>` —— 别自己拼 `join(homedir(), '.dsh', ...)` */
+export function dshHomePath(...segments: string[]): string {
+  return join(resolveDshHome(), ...segments);
+}
+
 /** 插件包名（从 package.json 读取，随发布名自动对齐） */
 const PLUGIN_NAME = readPluginName();
 
@@ -140,7 +158,7 @@ export function resolveProfileName(): string {
 /** 遍历 ~/.dsh/profiles/<name>，返回装着本插件的 profile 根目录（找不到返回 null） */
 function scanDshProfiles(): string | null {
   // 与宿主保持一致: 优先环境变量 DSH_HOME, 否则回落 ~/.dsh
-  const dshHome = ((process.env.DSH_HOME ?? '').trim()) || join(os.homedir(), '.dsh');
+  const dshHome = resolveDshHome();  // 与宿主一致: DSH_HOME 优先，否则 ~/.dsh
   const profilesRoot = join(dshHome, 'profiles');
   let entries: string[];
   try {
