@@ -1,3 +1,32 @@
+## 1.13.33 (2026-11-28)
+
+### 你会感觉到的变化
+
+**私聊不再「一句话不回」：闸门在私聊恒开**
+
+现象：私聊里发一句「复活吧」，机器人一个字的正文都没有，只丢回
+`Error: tool call aborted`；同一个模型在群里被 @ 时也是同样表现。
+
+原因是它调 `reply_gate` 传了 `reply:false`（自己的 `reason` 里却写着「对方私聊说复活吧，直接接梗回复」）。
+本工具的实现是「调 `agent.cancel({kind:'hook', reason:'reply_gate: 本轮静默'})` 硬终止回合」，
+所以在无思考档位下的本地 27B 一旦把闸门理解成「开口开关」，整轮就被取消掉了，用户侧只剩一个 tool call aborted。
+而私聊本来就是主人一对一找它说话，静默没有任何合理场景。
+
+改动：
+
+- 私聊（`sessionKey` 含 `:c2c:`）调用 `reply_gate` 传 `reply:false` 时**不再 cancel**，
+  改为返回 `{ ok:true, stopped:false, note:'(私聊必须开口：闸门在私聊恒开 —— 直接写你要说的那句话，不要静默)' }`，
+  回执文本直接把这句说明交给模型，让它继续开口。
+- 群聊行为不变：`reply:false` 照旧静默终止本回合。
+- 工具描述新增一条醒目规则：**私聊里、或被 @ 时，永远不要调用本工具**；被 @ 是明确在叫你。
+- 输出 schema 增加可选 `note`，渲染时优先显示它（而不是「已静默」）。
+
+### 技术细节
+
+- `channel-tools.ts` 的 `replyGateTool.execute`：先 `resolveCtxMemoEnv(exec)` 取 `sessionKey`（与备忘/压缩同一套会话坐标），
+  c2c 分支提前返回；`output.schema.properties` 增加 `note: { type: 'string' }`（非 required）。
+- 群聊判定失败（拿不到 sessionKey）时按群聊处理 —— 与旧行为一致，不会把群里的静默弄丢。
+
 ## 1.13.32 (2026-11-28)
 
 ### 你会感觉到的变化

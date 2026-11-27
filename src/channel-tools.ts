@@ -1142,7 +1142,8 @@ export async function apply(
     description: '回复闸门（**只在你不回复时**才调用）: 每轮先自己判断"这一轮该不该说话"——判断要回，就**直接回复**，不要调用本工具; 判断这一轮不该说话(没@你、话题与你无关、没必要插嘴)，就调用它传 reply:false，本回合立即静默终止，你不会再输出任何内容(这条消息就像没发生过)。默认行为是"正常回复"，所以不调用它 = 照常说话。' +
       '\n✅ **收到 reply:false 后，你会看到一条 `tool call aborted` 之类的"报错" —— 那正是「静默成功」本身**（本工具就是靠中断输出实现的，设计如此），不是工具坏了、也不是调用失败。看到它请直接收手，什么都不用做、也不用重试。' +
       '\n⛔ **不要为了"想安静"去动别的开关**（例如把出站模式切成 silent/静默）：那会影响**后续所有回合**，而你要的只是"这一轮别说话"。要静默，只走本工具。' +
-      '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。',
+      '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。' +
+      '\n🚫 **私聊(c2c)里、或被 @ 时，永远不要调用本工具**：私聊是主人一对一找你说话，静默等于不回话；被 @ 是明确在叫你。这两种情况直接回，闸门只用于群里「旁观」的回合。',
     parameters: {
       reply: { type: 'boolean', required: true, description: 'false=静默终止本回合(不再输出任何内容); true=正常继续(一般用不到 —— 想说话就直接说, 不必调本工具)' },
       reason: { type: 'string', required: true, description: '为什么这一轮不说话, 如"未@且话题无关" / "只是别人在聊天" / "已经问过她了"' },
@@ -1153,10 +1154,11 @@ export async function apply(
         properties: {
           ok: { type: 'boolean', required: true },
           stopped: { type: 'boolean', required: true },
+          note: { type: 'string', description: '被私聊拦下时的回执说明（此时 stopped=false，本回合照常开口）' },
         },
       },
-      render: (_a, v: { ok: boolean; stopped: boolean }) => [
-        { type: 'text' as const, text: v.stopped
+      render: (_a, v: { ok: boolean; stopped: boolean; note?: string }) => [
+        { type: 'text' as const, text: v.note ? String(v.note) : v.stopped
           ? '(已静默: 本回合终止, 不再回复)'
           // ★ 2026-10-29（issue #28）：原来是「(继续回复)」—— 括号舞台提示体，天然被读成"接着演"，
           //   而闸门把回合劈成两段后，待回的那条消息已被挤到上下文中间，末尾只剩这句提示 ⇒
@@ -1166,6 +1168,15 @@ export async function apply(
     },
     async execute(args, exec) {
       if (args.reply === false) {
+        // ★ 2026-11-27（实测事故）：私聊里闸门恒开 —— 私聊是主人一对一找它说话，静默等于不回话。
+        //   本地 27B 在无思考档位下会把本工具当成"开口开关"，连传 reply:false（reason 里却写着"要回复"），
+        //   cancel 掉整个回合 ⇒ 用户只看到 tool call aborted、一个字都没收到（11-27 夜里连续复现）。
+        //   所以在真正取消之前先判会话类型：c2c 一律放行（stopped:false + 回执说清楚），不 cancel。
+        let sessionKey = '';
+        try { sessionKey = (await resolveCtxMemoEnv(exec))?.sessionKey ?? ''; } catch { /* ignore */ }
+        if (sessionKey.includes(':c2c:')) {
+          return { ok: true, stopped: false, note: '(私聊必须开口：闸门在私聊恒开 —— 直接写你要说的那句话，不要静默)' };
+        }
         try {
           const agent = (exec as unknown as { agent?: unknown }).agent as
             | { cancel?: (kind: unknown, opts?: unknown) => unknown }
