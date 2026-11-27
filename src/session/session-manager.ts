@@ -54,6 +54,7 @@ import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
 import type { ModelRoute, ModelEntry } from '../model/types.js';
+import { DEFAULT_REASONING_EFFORT } from '../model/types.js';
 import { IdleEvictor } from './idle-evictor.js';
 import type {
   SessionEventLike,
@@ -557,7 +558,7 @@ export class SessionManager {
         ...(seed ? { seedLength: seed.length } : {}),
         ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
       },
-      ...(route ? { agentOptions: route } : {}),
+      ...(route ? { agentOptions: this.toAgentOptions(route) } : {}),
       ...(composed.setup ? { setup: composed.setup } : {}),
     });
 
@@ -888,7 +889,7 @@ export class SessionManager {
         const resumeRoute = this.modelResolver.getResumeRoute(key, sessionId);
         const resumed = await this.agents.resume({
           resumeSessionId: sessionId,
-          ...(resumeRoute ? { agentOptions: resumeRoute } : {}),
+          ...(resumeRoute ? { agentOptions: this.toAgentOptions(resumeRoute) } : {}),
           ...(composed.setup ? { setup: composed.setup } : {}),
         });
         agent = resumed.agent;
@@ -912,7 +913,7 @@ export class SessionManager {
               cwd: absCwdOf(this.config.cwd) || process.cwd(),
               ...(agentPreset ? { agentPreset } : {}),
             },
-            ...(route ? { agentOptions: route } : {}),
+            ...(route ? { agentOptions: this.toAgentOptions(route) } : {}),
             ...(composed.setup ? { setup: composed.setup } : {}),
           });
           agent = created.agent;
@@ -934,7 +935,7 @@ export class SessionManager {
               cwd: absCwdOf(this.config.cwd) || process.cwd(),
               ...(agentPreset ? { agentPreset } : {}),
             },
-            ...(route ? { agentOptions: route } : {}),
+            ...(route ? { agentOptions: this.toAgentOptions(route) } : {}),
             ...(composed.setup ? { setup: composed.setup } : {}),
           });
           agent = created2.agent;
@@ -1105,6 +1106,23 @@ export class SessionManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 把内部模型路由转成宿主认识的 agentOptions。
+   *
+   * 宿主的 agentOptions 只有 provider/model/reasoningEffort 三个字段（见 dsh-api-session-controller 的
+   * agentOptions()）。原来这里把内部路由 `{ provider, model, effort }` 直接当 agentOptions 传，
+   * effort 被宿主丢掉 ⇒ 宿主按"没开思考"建会话，第一轮 body 就是 thinking:{type:'disabled'}。
+   * 本地 27B 在无思考档位时会把 reply_gate 当成"开口开关"连传 reply:false，整轮被 hook 取消，
+   * 用户看到的是满屏 tool call aborted 且一个字不回（2026-11-27 实测）。缺档时补默认档。
+   */
+  private toAgentOptions(route: ModelRoute): { provider: string; model: string; reasoningEffort: string } {
+    return {
+      provider: route.provider,
+      model: route.model,
+      reasoningEffort: route.effort ?? DEFAULT_REASONING_EFFORT,
+    };
   }
 
   private applyModelRoute(agent: DshAgent, route: ModelRoute | undefined, label: string): void {
