@@ -283,6 +283,21 @@ export class ModelResolver {
    *      `effort:'medium'` 就是靠这一条止血的；不校验的话那句
    *      `does not support reasoning effort "medium"` 会永远跟着用户）。
    */
+  /**
+   * **写路径**用的清洗：先 `await` 一次能力缓存，再按它校验 / 补档。
+   *
+   * ⚠️ 为什么写路径也要（CodeRabbit 2026-11-29 · 严重）：
+   *   `/bot-model provider/model medium` 这类**用户显式指定**的档位，原来直接落进
+   *   `setOverride` / `applyModelRoute` / `forkCurrentSession`，**绕过了所有校验** ⇒
+   *   一句不支持的档位就能把宿主喂坏（`does not support reasoning effort "medium"` 原样复现）。
+   *   读路径（`getEffectiveRoute`）早就过 `withEffort` 了，写路径没有 —— 这个不对称最要命，
+   *   因为"用户手打"恰恰是最常见的入口。
+   */
+  async sanitizeRouteAsync(route: ModelRoute): Promise<ModelRoute> {
+    try { await this.loadEffortCaps(route.provider, route.model); } catch { /* 拿不到按空处理 */ }
+    return this.withEffort(route);
+  }
+
   private withEffort(route: ModelRoute): ModelRoute {
     const key = `${route.provider}/${route.model}`;
     const rec = this.modelCaps.get(key);
@@ -322,11 +337,12 @@ export class ModelResolver {
   /**
    * 拉一次某模型支持的思考档位。
    *
-   * ⚠️ 两个细节都是 CodeRabbit 2026-11-29 提的：
+   * ⚠️ 三个细节都是踩出来的：
    *   ① **整条记录替换**（不是"有就跳过"）—— 宿主后来把某模型改成"不支持思考"时，
-   *      旧档位必须被覆盖掉，否则我们会继续按老能力补档；
-   *   ② **失败也记时间戳**（`levels: []`）—— 5 分钟后自动重试，不会"一次失败永久卡死"；
-   *      同时也不会在失败瞬间被热路径反复重拉。
+   *      旧档位必须被覆盖掉，否则会继续按老能力补档；
+   *   ② **失败也记时间戳**（`levels: []`）—— TTL 到期自动重试，不会"一次失败永久卡死"，
+   *      也不会在失败瞬间被热路径反复重拉；
+   *   ③ **`capsInflight` 的清理必须挂在外面**（见下面注释），否则早退分支会让它永久泄漏。
    */
   private loadEffortCaps(provider: string, model: string): Promise<void> {
     const key = `${provider}/${model}`;
@@ -334,32 +350,43 @@ export class ModelResolver {
     if (rec && Date.now() - rec.at < ModelResolver.CAPS_TTL_MS) return Promise.resolve();
     const inflight = this.capsInflight.get(key);
     if (inflight) return inflight;
-    const task = (async () => {
-      try {
-        const llm = this.getService('llm') as
-          | { resolveModelInfo?: (p: string, m: string) => Promise<unknown> }
-          | undefined;
-        if (!llm || typeof llm.resolveModelInfo !== 'function') {
-          this.modelCaps.set(key, { levels: [], at: Date.now() });
-          return;
-        }
-        const info = await llm.resolveModelInfo(provider, model);
-        const efforts = (info as { reasoning?: { efforts?: Array<{ id?: unknown }> } } | undefined)
-          ?.reasoning?.efforts;
-        const ids = Array.isArray(efforts)
-          ? efforts.map((e) => String(e?.id ?? '')).filter(Boolean)
-          : [];
-        this.modelCaps.set(key, { levels: ids, at: Date.now() });
-        this.logger?.debug?.(`[effort] ${key} 支持的档位: ${JSON.stringify(ids)}`);
-      } catch {
-        // 拿不到：记空 + 时间戳（5 分钟后重试），比"猜一个可能错的"安全
-        this.modelCaps.set(key, { levels: [], at: Date.now() });
-      } finally {
-        this.capsInflight.delete(key);
-      }
-    })();
+
+    // ⚠️ **不要在 async IIFE 内部写 `finally { delete }`**（CodeRabbit 2026-11-29 · 严重）：
+    //   若 body 在第一个 `await` 之前就返回（比如宿主没有 resolveModelInfo 那条早退），
+    //   `finally` 会先于下面的 `set` 执行 ⇒ delete 是空操作 ⇒ 然后才 set 一个**早已 resolve 的 promise**
+    //   ⇒ 它永久占着 `capsInflight`，此后该模型**再也不会重拉**（TTL 等于失效），
+    //   而且 `modelCaps` 里那条记录永不刷新 ⇒ 该模型整个进程生命周期内一律不传档位，且**无任何日志**。
+    //   用 `.finally()` 挂在外面：回调是微任务，一定在 `set` 之后执行。
+    const task = this.doLoadCaps(key, provider, model).finally(() => {
+      if (this.capsInflight.get(key) === task) this.capsInflight.delete(key);
+    });
     this.capsInflight.set(key, task);
     return task;
+  }
+
+  private async doLoadCaps(key: string, provider: string, model: string): Promise<void> {
+    try {
+      const llm = this.getService('llm') as
+        | { resolveModelInfo?: (p: string, m: string) => Promise<unknown> }
+        | undefined;
+      if (!llm || typeof llm.resolveModelInfo !== 'function') {
+        this.modelCaps.set(key, { levels: [], at: Date.now() });
+        this.logger?.debug?.('[effort] 宿主没有 resolveModelInfo ⇒ 一律不传思考档位');
+        return;
+      }
+      const info = await llm.resolveModelInfo(provider, model);
+      const efforts = (info as { reasoning?: { efforts?: Array<{ id?: unknown }> } } | undefined)
+        ?.reasoning?.efforts;
+      const ids = Array.isArray(efforts)
+        ? efforts.map((e) => String(e?.id ?? '')).filter(Boolean)
+        : [];
+      this.modelCaps.set(key, { levels: ids, at: Date.now() });
+      this.logger?.debug?.(`[effort] ${key} 支持的档位: ${JSON.stringify(ids)}`);
+    } catch {
+      // 拿不到：记空 + 时间戳（TTL 到期自动重试），比"猜一个可能错的"安全
+      this.modelCaps.set(key, { levels: [], at: Date.now() });
+      this.logger?.debug?.(`[effort] ${key} 能力查询失败，按"不支持档位"处理（TTL 后会重试）`);
+    }
   }
 
   /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */

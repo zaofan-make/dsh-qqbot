@@ -109,8 +109,14 @@ export function modelCommand({ manager, config }: CommandDeps): SlashCommand {
         const parts3 = args.trim().split(/\s+/);
         const explicitEffort = parts3.length >= 2 ? parts3[parts3.length - 1] : '';
         if (explicitEffort && explicitEffort.indexOf('/') < 0) {
-          await manager.setModelOverride(scope, peerId, { provider, model: hit.id, effort: explicitEffort });
-          return '✅ 模型已切换: ' + provider + '/' + model + '\n思考强度: ' + explicitEffort + '\n立即生效，对话上下文保留。';
+          // ★ 2026-11-29：回执必须**如实** —— setModelOverride 会按宿主真实能力清洗档位，
+          //   原来这里无条件回 "思考强度: xxx / 已生效"，可那句档位可能已经被丢掉了
+          //   （模型不支持），用户按假回执去排查只会更困惑。
+          const applied = await manager.setModelOverride(scope, peerId, { provider, model: hit.id, effort: explicitEffort });
+          const effortLine = applied.effort
+            ? '思考强度: ' + applied.effort
+            : '思考强度: （该模型不支持 "' + explicitEffort + '"，已不设档位）';
+          return '✅ 模型已切换: ' + provider + '/' + model + '\n' + effortLine + '\n立即生效，对话上下文保留。';
         }
         // ★ 2026-11-08：手动指定也走「两步」——先弹思考强度卡再落定
         const nsEff = String((config as { settingsNs?: string }).settingsNs ?? '').trim() || 'im-qqbot';

@@ -255,15 +255,23 @@ export class SessionManager {
      * ⚠️ 2026-09-11 主人定: 模型偏好改为绑定会话(sessionId)——override 存到 fork 后的
      *    新会话 id, 使新会话/新档不再继承 peer 级旧偏好(修复"新建会话默认火山")。
      */
-    async setModelOverride(scope, peerId, route) {
+    async setModelOverride(scope, peerId, inputRoute) {
         const key = this.sessionKey(scope, peerId);
+        // ★ 2026-11-29（CodeRabbit 严重）：**写路径也必须清洗档位**。
+        //   原来只有读路径（`getEffectiveRoute`）过 `withEffort`；而 `/bot-model provider/model medium`
+        //   这类**用户显式指定**的 route 直接落进 `setOverride` / `applyModelRoute` / `forkCurrentSession`，
+        //   绕过了所有校验 ⇒ 一句不支持的档位就能把宿主喂坏：
+        //      本轮运行失败  provider "opencode" model "…" does not support reasoning effort "medium"
+        //   而这个不对称最要命的地方是："用户手打"恰恰是最常见的入口。
+        //   返回清洗后的 route，好让命令层回执如实（别报"已生效"其实是丢掉了）。
+        const route = await this.modelResolver.sanitizeRouteAsync(inputRoute);
         const record = this.sessions.get(key);
         if (!record) {
             // 无活跃会话：挂到当前/派生 sessionId(下次 create/resume 会命中)
             const sid = this.currentSessionId(key);
             this.modelResolver.setOverride(key, sid, route);
             this.logger.info(`model pref saved (no active session): key=${key} sid=${sid} → ${route.provider}/${route.model}`);
-            return;
+            return route;
         }
         // ★ 2026-11-08：**同模型同强度 → 什么都不用做**（原来会白 fork 一个新会话）。
         //   仅"思考强度"变化也不 fork —— 强度是随请求下发的，改活动 agent 的选择即可。
@@ -272,7 +280,7 @@ export class SessionManager {
             const sameEffort = (cur.effort ?? '') === (route.effort ?? '');
             if (sameEffort) {
                 this.logger.info(`model pref unchanged: key=${key} → ${route.provider}/${route.model}${route.effort ? ` effort=${route.effort}` : ''}`);
-                return;
+                return route;
             }
             try {
                 this.applyModelRoute(record.agent, route, 'effort-only');
@@ -280,13 +288,14 @@ export class SessionManager {
             catch { /* fail-soft：拿不到 agent 就走下面的 fork */ }
             this.modelResolver.setOverride(key, record.sessionId, route);
             this.logger.info(`model effort updated (no fork): key=${key} effort=${route.effort}`);
-            return;
+            return route;
         }
         // fork 旧会话历史作为 seed → 子会话保留上下文继续聊(换模型不丢记忆)
         await this.forkCurrentSession(key, record, route, true);
         // fork 后 record.sessionId = childId；override 挂到新会话(会话级绑定)
         this.modelResolver.setOverride(key, record.sessionId, route);
         this.logger.info(`model pref saved (forked): key=${key} sid=${record.sessionId} → ${route.provider}/${route.model}`);
+        return route;
     }
     /**
      * 开新会话(2026-09-08 修 /bot-new 假实现; 同日加 preset 切换):
