@@ -39,4 +39,10 @@ export interface ModelEntry {
   provider: string;
   id: string;
   name?: string;
+  // ⚠️ **不要**指望从 `llm.listModels()` 的返回里拿「这个模型支持哪些思考档位」——
+  //   门面的 `listModels` 会用**白名单对象重建**每个条目（只留 provider/id/name/
+  //   inputModalities/badge…），适配器多给的字段一律到不了调用方。
+  //   （1.13.38 第一稿就栽在这上面：以为有 `reasoningEfforts`，改完等于没改。）
+  //   要档位就调 `llm.resolveModelInfo(provider, model)` → `reasoning.efforts[].id`，
+  //   见 `ModelResolver.withEffort` / `loadEffortCaps`。
 }

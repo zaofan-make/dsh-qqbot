@@ -96,23 +96,50 @@ export declare class ModelResolver {
      */
     listProviders(): string[];
     /**
-     * 路由缺思考强度时 —— **原样返回，不补任何默认档**。
+     * 思考强度的**校验与挑选**（缺档补、已存档但模型不认的丢掉）。
      *
-     * ⚠️⚠️ 2026-11-28 紧急回退（主人实测报错）：
-     *   `本轮运行失败  provider "opencode" model "deepseek-v4.1-flash" does not support reasoning effort "medium"`
+     * 数据源：宿主门面的 `llm.resolveModelInfo(provider, model)` → `info.reasoning.efforts[].id`。
+     * ⚠️ **不是** `listModels()` —— 门面的 `listModels` 会重建白名单对象（只留
+     * `provider/id/name/inputModalities/badge…`），`reasoningEfforts` 那类字段到不了我们手里。
+     * 这条坑踩过一整版（1.13.38 第一稿：改了等于没改）。
      *
-     * 上一版（外部贡献 #96）在这里硬编码补 `'medium'`，问题是：
-     *   ① **不同 provider/模型支持的档位不一样**，一个全局常量必然踩雷；
-     *   ② 它自己的 fallback 档位列表是 `['off','low','high','max']`（deepseek 适配器），
-     *      **里面根本没有 medium** —— 自相矛盾；
-     *   ③ 宿主根本没提供"某模型支持哪些档"的查询（`llm.reasoningEfforts()` 是全局的），
-     *      所以**没法安全地猜**。
-     *
-     * 现在的取舍：**宁可让宿主按自己的默认走（thinking 可能 disabled），
-     * 也不要塞一个它会直接报错的值** —— 前者是行为偏差，后者是整轮跑不起来。
-     * 需要思考档位的人在模型路由里显式写 `effort`（面板 / 命令都能设），那条路径不受影响。
+     * 三种情况：
+     *   ① **还不知道**（缓存空）⇒ 触发一次异步拉取，**本回合不传 effort**（宁可没档位，也别报错）；
+     *   ② **知道**、路由没带档 ⇒ 按该模型支持的挑（medium → low → high → max → 任一非 off）；
+     *   ③ **知道**、路由带了档但该模型不支持 ⇒ **丢掉**（1.13.36 写进 model-prefs 的
+     *      `effort:'medium'` 就是靠这一条止血的；不校验的话那句
+     *      `does not support reasoning effort "medium"` 会永远跟着用户）。
      */
+    /**
+     * **写路径**用的清洗：先 `await` 一次能力缓存，再按它校验 / 补档。
+     *
+     * ⚠️ 为什么写路径也要（CodeRabbit 2026-11-29 · 严重）：
+     *   `/bot-model provider/model medium` 这类**用户显式指定**的档位，原来直接落进
+     *   `setOverride` / `applyModelRoute` / `forkCurrentSession`，**绕过了所有校验** ⇒
+     *   一句不支持的档位就能把宿主喂坏（`does not support reasoning effort "medium"` 原样复现）。
+     *   读路径（`getEffectiveRoute`）早就过 `withEffort` 了，写路径没有 —— 这个不对称最要命，
+     *   因为"用户手打"恰恰是最常见的入口。
+     */
+    sanitizeRouteAsync(route: ModelRoute): Promise<ModelRoute>;
     private withEffort;
+    /** 思考档位缓存的存活时间 —— 过期后重拉（宿主能力声明可能在运行期变，CodeRabbit 2026-11-29）。 */
+    private static readonly CAPS_TTL_MS;
+    /** `provider/model` → 支持的档位 id + 拉取时间（由 `resolveModelInfo` 填充）。 */
+    private modelCaps;
+    /** 正在拉的 key → Promise（去重，防同一模型并发多次请求）。 */
+    private capsInflight;
+    /**
+     * 拉一次某模型支持的思考档位。
+     *
+     * ⚠️ 三个细节都是踩出来的：
+     *   ① **整条记录替换**（不是"有就跳过"）—— 宿主后来把某模型改成"不支持思考"时，
+     *      旧档位必须被覆盖掉，否则会继续按老能力补档；
+     *   ② **失败也记时间戳**（`levels: []`）—— TTL 到期自动重试，不会"一次失败永久卡死"，
+     *      也不会在失败瞬间被热路径反复重拉；
+     *   ③ **`capsInflight` 的清理必须挂在外面**（见下面注释），否则早退分支会让它永久泄漏。
+     */
+    private loadEffortCaps;
+    private doLoadCaps;
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     private overrideKey;
     private readFromHost;

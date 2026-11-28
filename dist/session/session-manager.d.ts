@@ -79,7 +79,7 @@ export declare class SessionManager {
      * ⚠️ 2026-09-11 主人定: 模型偏好改为绑定会话(sessionId)——override 存到 fork 后的
      *    新会话 id, 使新会话/新档不再继承 peer 级旧偏好(修复"新建会话默认火山")。
      */
-    setModelOverride(scope: ChatScope, peerId: string, route: ModelRoute): Promise<void>;
+    setModelOverride(scope: ChatScope, peerId: string, inputRoute: ModelRoute): Promise<ModelRoute>;
     /**
      * 开新会话(2026-09-08 修 /bot-new 假实现; 同日加 preset 切换):
      * 当前会话 fork 成 childId(旧会话存档为 parent, 磁盘记录仍在可回看),
