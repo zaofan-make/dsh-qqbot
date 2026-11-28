@@ -35,4 +35,27 @@ describe('isGateSilence — 认得出"闸门判定静默"', () => {
     expect(isGateSilence('not json')).toBe(false);
     expect(isGateSilence('')).toBe(false);
   });
+
+  // ★ 2026-11-28（CodeRabbit Major）：**否定语境不能被当成"想回复"**
+  //   「不需要回复」里同时含「需要回复」，只按关键词判就会把正常静默判成矛盾。
+  it('reason 是否定语境 → 仍是静默', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '未@我，不需要回复', reply: false }))).toBe(true);
+    expect(isGateSilence(JSON.stringify({ reason: '不用搭理他', reply: false }))).toBe(true);
+    expect(isGateSilence(JSON.stringify({ reason: '没必要回', reply: false }))).toBe(true);
+  });
+
+  // 「已经有群友回答了」里含「回答」，同样不能判成"想回复"
+  it('reason 是已答语境 → 仍是静默', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '已经有群友回答了', reply: false }))).toBe(true);
+    expect(isGateSilence(JSON.stringify({ reason: '别人已经回了', reply: false }))).toBe(true);
+  });
+
+  // ★ 2026-11-28（CodeRabbit Major）：**私聊里闸门恒放行** —— 工具返回 stopped:false、
+  //   也不会 agent.cancel，即"静默"根本没发生。这里若返回 true，调用方会记进 gateSilenced，
+  //   后续工具结果与回合结束通知全被吞掉，而模型其实正在开口。
+  it('私聊(c2c)：reply:false 也不算出站静默；同一 reason 在群里照旧静默', () => {
+    const args = JSON.stringify({ reason: '只是别人在聊天', reply: false });
+    expect(isGateSilence(args, 'c2c')).toBe(false);
+    expect(isGateSilence(args, 'group')).toBe(true);
+  });
 });

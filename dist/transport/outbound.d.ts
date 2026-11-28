@@ -6,10 +6,23 @@
  */
 import type { SessionManager } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
-import type { Logger } from '../types.js';
+import type { ChatScope, Logger } from '../types.js';
 import { type QQBotSender } from './outbound-buffer.js';
 import { type ToolsRegistryLike } from './tool-presenter.js';
-export declare function isGateSilence(rawArgs: string): boolean;
+/**
+ * 判定「这次 `reply_gate` 是不是真的把回合静默了」。
+ *
+ * 为什么要静音：闸门一关就是 `agent.cancel`，模型后面"顺手记一笔"之类的调用会被连带中止，
+ * 刷出一串 `❌ 工具 ... 执行失败 / Error: tool call aborted`。那些 abort **不是故障、
+ * 是有意行为**（关闸就是要停），不该当报错展示给用户看。
+ *
+ * @param scope 会话类型。**私聊必须传 'c2c'** —— 闸门在私聊恒放行（工具侧返回
+ *   `stopped:false` 且**不会** `agent.cancel`），即"静默"根本没发生。
+ *   这里要是照样返回 true，调用方会把 sessionKey 记进 `gateSilenced`，
+ *   后续所有工具结果 / 回合结束通知全被静音，而模型其实正在开口
+ *   （CodeRabbit 2026-11-28 · Major）。
+ */
+export declare function isGateSilence(rawArgs: string, scope?: ChatScope): boolean;
 import { type RawSessionEvent, type StreamDelta } from './events.js';
 /**
  * 正文被 QQ 判「内容违规」时，把这件事**立刻注入上下文**告诉 AI。
