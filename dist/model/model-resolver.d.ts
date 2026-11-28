@@ -111,11 +111,21 @@ export declare class ModelResolver {
      *      `does not support reasoning effort "medium"` 会永远跟着用户）。
      */
     private withEffort;
-    /** `provider/model` → 该模型支持的档位 id（由 `resolveModelInfo` 填充）。 */
+    /** 思考档位缓存的存活时间 —— 过期后重拉（宿主能力声明可能在运行期变，CodeRabbit 2026-11-29）。 */
+    private static readonly CAPS_TTL_MS;
+    /** `provider/model` → 支持的档位 id + 拉取时间（由 `resolveModelInfo` 填充）。 */
     private modelCaps;
     /** 正在拉的 key → Promise（去重，防同一模型并发多次请求）。 */
     private capsInflight;
-    /** 拉一次某模型支持的思考档位。失败/拿不到 ⇒ 记空数组（= 一律不传档位）。 */
+    /**
+     * 拉一次某模型支持的思考档位。
+     *
+     * ⚠️ 两个细节都是 CodeRabbit 2026-11-29 提的：
+     *   ① **整条记录替换**（不是"有就跳过"）—— 宿主后来把某模型改成"不支持思考"时，
+     *      旧档位必须被覆盖掉，否则我们会继续按老能力补档；
+     *   ② **失败也记时间戳**（`levels: []`）—— 5 分钟后自动重试，不会"一次失败永久卡死"；
+     *      同时也不会在失败瞬间被热路径反复重拉。
+     */
     private loadEffortCaps;
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     private overrideKey;

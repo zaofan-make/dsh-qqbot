@@ -285,13 +285,17 @@ export class ModelResolver {
    */
   private withEffort(route: ModelRoute): ModelRoute {
     const key = `${route.provider}/${route.model}`;
-    const caps = this.modelCaps.get(key);
+    const rec = this.modelCaps.get(key);
+    const fresh = !!rec && Date.now() - rec.at < ModelResolver.CAPS_TTL_MS;
 
-    if (caps === undefined) {
-      // ① 还不知道：拉一次（去重），本回合先不传
+    if (!fresh) {
+      // ① 还不知道 / 已过期：拉一次（去重），本回合先不传。
+      //    过期但旧值还在时**不沿用** —— 宿主可能刚改过能力声明（CodeRabbit 2026-11-29），
+      //    沿用旧值就可能又把它不认的档位塞回去。
       void this.loadEffortCaps(route.provider, route.model);
       return route.effort ? { ...route, effort: undefined } : route;
     }
+    const caps = rec!.levels;
     if (caps.length === 0) {
       // 该模型不支持思考（或拿不到能力信息）⇒ 任何档位都不传
       return route.effort ? { ...route, effort: undefined } : route;
@@ -307,15 +311,27 @@ export class ModelResolver {
     return caps.includes(route.effort) ? route : { ...route, effort: undefined };
   }
 
-  /** `provider/model` → 该模型支持的档位 id（由 `resolveModelInfo` 填充）。 */
-  private modelCaps = new Map<string, string[]>();
+  /** 思考档位缓存的存活时间 —— 过期后重拉（宿主能力声明可能在运行期变，CodeRabbit 2026-11-29）。 */
+  private static readonly CAPS_TTL_MS = 5 * 60_000;
+
+  /** `provider/model` → 支持的档位 id + 拉取时间（由 `resolveModelInfo` 填充）。 */
+  private modelCaps = new Map<string, { levels: string[]; at: number }>();
   /** 正在拉的 key → Promise（去重，防同一模型并发多次请求）。 */
   private capsInflight = new Map<string, Promise<void>>();
 
-  /** 拉一次某模型支持的思考档位。失败/拿不到 ⇒ 记空数组（= 一律不传档位）。 */
+  /**
+   * 拉一次某模型支持的思考档位。
+   *
+   * ⚠️ 两个细节都是 CodeRabbit 2026-11-29 提的：
+   *   ① **整条记录替换**（不是"有就跳过"）—— 宿主后来把某模型改成"不支持思考"时，
+   *      旧档位必须被覆盖掉，否则我们会继续按老能力补档；
+   *   ② **失败也记时间戳**（`levels: []`）—— 5 分钟后自动重试，不会"一次失败永久卡死"；
+   *      同时也不会在失败瞬间被热路径反复重拉。
+   */
   private loadEffortCaps(provider: string, model: string): Promise<void> {
     const key = `${provider}/${model}`;
-    if (this.modelCaps.has(key)) return Promise.resolve();
+    const rec = this.modelCaps.get(key);
+    if (rec && Date.now() - rec.at < ModelResolver.CAPS_TTL_MS) return Promise.resolve();
     const inflight = this.capsInflight.get(key);
     if (inflight) return inflight;
     const task = (async () => {
@@ -324,7 +340,7 @@ export class ModelResolver {
           | { resolveModelInfo?: (p: string, m: string) => Promise<unknown> }
           | undefined;
         if (!llm || typeof llm.resolveModelInfo !== 'function') {
-          this.modelCaps.set(key, []);
+          this.modelCaps.set(key, { levels: [], at: Date.now() });
           return;
         }
         const info = await llm.resolveModelInfo(provider, model);
@@ -333,11 +349,11 @@ export class ModelResolver {
         const ids = Array.isArray(efforts)
           ? efforts.map((e) => String(e?.id ?? '')).filter(Boolean)
           : [];
-        this.modelCaps.set(key, ids);
+        this.modelCaps.set(key, { levels: ids, at: Date.now() });
         this.logger?.debug?.(`[effort] ${key} 支持的档位: ${JSON.stringify(ids)}`);
       } catch {
-        // 拿不到就记空 —— 比"猜一个可能错的"安全得多
-        this.modelCaps.set(key, []);
+        // 拿不到：记空 + 时间戳（5 分钟后重试），比"猜一个可能错的"安全
+        this.modelCaps.set(key, { levels: [], at: Date.now() });
       } finally {
         this.capsInflight.delete(key);
       }
