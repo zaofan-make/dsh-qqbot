@@ -19,10 +19,18 @@ import { formatToolResult } from './tool-presenter.js';
  * 那些 abort **不是故障，是有意行为**（关闸就是要停），不该当报错展示。
  * 所以这里只看参数、不解析结果 —— 闸门一关就把整个回合的工具展示全部静音。
  */
+/** reason 含这些词说明模型其实想回复，却把 reply 传成了 false（27B 无思考时的布尔语义反转）。 */
+const CONTRADICTORY_REPLY_FALSE_RE = /需要回复|要回复|该回|回复一下|回一下|回答|必须回|得回|需要回/u;
 export function isGateSilence(rawArgs) {
     try {
         const a = JSON.parse(String(rawArgs ?? ''));
-        return a?.reply === false;
+        if (a?.reply !== false)
+            return false;
+        const reason = typeof a?.reason === 'string' ? a.reason : '';
+        // reason 与 reply 自相矛盾：模型想回却传了 false —— 不当静默，避免误吞后续 aborted 并让回合有机会继续。
+        if (CONTRADICTORY_REPLY_FALSE_RE.test(reason))
+            return false;
+        return true;
     }
     catch {
         return false;

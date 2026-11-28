@@ -1213,7 +1213,8 @@ export async function apply(ctx, opts) {
             '\n✅ **收到 reply:false 后，你会看到一条 `tool call aborted` 之类的"报错" —— 那正是「静默成功」本身**（本工具就是靠中断输出实现的，设计如此），不是工具坏了、也不是调用失败。看到它请直接收手，什么都不用做、也不用重试。' +
             '\n⛔ **不要为了"想安静"去动别的开关**（例如把出站模式切成 silent/静默）：那会影响**后续所有回合**，而你要的只是"这一轮别说话"。要静默，只走本工具。' +
             '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。' +
-            '\n🚫 **私聊(c2c)里、或被 @ 时，永远不要调用本工具**：私聊是主人一对一找你说话，静默等于不回话；被 @ 是明确在叫你。这两种情况直接回，闸门只用于群里「旁观」的回合。',
+            '\n🚫 **私聊(c2c)里、或被 @ 时，永远不要调用本工具**：私聊是主人一对一找你说话，静默等于不回话；被 @ 是明确在叫你。这两种情况直接回，闸门只用于群里「旁观」的回合。' +
+            '\n⚠️ **reply 语义只看布尔值**：reply:false = 这一轮静默；reply:true = 继续回复。reason 必须与 reply 一致 —— 如果 reason 里写着"需要回复/要回复/该回"，就不要传 reply:false；自相矛盾的 reply:false 会被闸门拦下并要求你直接开口。',
         parameters: {
             reply: { type: 'boolean', required: true, description: 'false=静默终止本回合(不再输出任何内容); true=正常继续(一般用不到 —— 想说话就直接说, 不必调本工具)' },
             reason: { type: 'string', required: true, description: '为什么这一轮不说话, 如"未@且话题无关" / "只是别人在聊天" / "已经问过她了"' },
@@ -1238,17 +1239,27 @@ export async function apply(ctx, opts) {
         },
         async execute(args, exec) {
             if (args.reply === false) {
-                // ★ 2026-11-27（实测事故）：私聊里闸门恒开 —— 私聊是主人一对一找它说话，静默等于不回话。
-                //   本地 27B 在无思考档位下会把本工具当成"开口开关"，连传 reply:false（reason 里却写着"要回复"），
-                //   cancel 掉整个回合 ⇒ 用户只看到 tool call aborted、一个字都没收到（11-27 夜里连续复现）。
-                //   所以在真正取消之前先判会话类型：c2c 一律放行（stopped:false + 回执说清楚），不 cancel。
                 let sessionKey = '';
                 try {
                     sessionKey = (await resolveCtxMemoEnv(exec))?.sessionKey ?? '';
                 }
                 catch { /* ignore */ }
+                // ★ 2026-11-27（实测事故）：私聊里闸门恒开 —— 私聊是主人一对一找它说话，静默等于不回话。
+                //   本地 27B 在无思考档位下会把本工具当成"开口开关"，连传 reply:false（reason 里却写着"要回复"），
+                //   cancel 掉整个回合 ⇒ 用户只看到 tool call aborted、一个字都没收到（11-27 夜里连续复现）。
+                //   所以在真正取消之前先判会话类型：c2c 一律放行（stopped:false + 回执说清楚），不 cancel。
                 if (sessionKey.includes(':c2c:')) {
                     return { ok: true, stopped: false, note: '(私聊必须开口：闸门在私聊恒开 —— 直接写你要说的那句话，不要静默)' };
+                }
+                // ★ 2026-11-28（实测事故）：小傻龙群里 @ 提问，模型传 reply:false 且 reason="用户直接@我提问，需要回复"，
+                //   闸门照单 cancel ⇒ turn/end aborted(hook reply_gate: 本轮静默)，用户只看到 tool call aborted。
+                //   这是 27B 无思考档位下的布尔语义反转：reason 说要回，reply 却传了 false。真正要静默的 reason
+                //   不会写"需要回复/要回复/该回/回复一下/回一下/回答/必须回/得回/需要回"。命中矛盾时不 cancel，
+                //   返回明确回执让模型直接开口；正常静默（reason 不含这些词）仍走原 cancel 路径，零额外开销。
+                const reason = typeof args.reason === 'string' ? args.reason : '';
+                const CONTRADICTORY_REPLY_FALSE = /需要回复|要回复|该回|回复一下|回一下|回答|必须回|得回|需要回/u;
+                if (CONTRADICTORY_REPLY_FALSE.test(reason)) {
+                    return { ok: true, stopped: false, note: '(自相矛盾：reason 说要回复却传 reply=false —— 直接写你要说的那句话，不要再调本工具，也不要静默)' };
                 }
                 try {
                     const agent = exec.agent;
