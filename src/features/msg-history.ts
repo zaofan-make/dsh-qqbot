@@ -277,9 +277,27 @@ export interface HistoryRec {
   f?: string[];
 }
 
-let historyRoot = '';
+let defaultRoot = '';
+/** 各实例的历史根（dataRoot → {dataRoot}/.qqbot/msg-history） */
+const roots = new Map<string, string>();
 let writeTick = 0;
 
+
+/**
+ * 取某个实例的历史根。
+ * ★ 2026-11-28（fork）：多实例共用一个宿主进程时本模块只加载一次 —— 原来只有一个
+ *   `historyRoot`，后启动的实例直接覆盖前一个，于是 A 机器人写进 B 机器人的目录、
+ *   读也读对方的消息（实测：两个 bot 的台账互相串味，都把自己的发言算成对方的）。
+ *   现在按 dataRoot 分根；不传 dataRoot 的旧调用才回落到最近一次 init 的那个根。
+ */
+function historyRootOf(dataRoot?: string): string {
+  if (dataRoot) {
+    const known = roots.get(dataRoot);
+    if (known !== undefined) return known;
+    return join(dataRoot, '.qqbot', 'msg-history');
+  }
+  return defaultRoot;
+}
 const pad = (n: number): string => String(n).padStart(2, '0');
 
 /** 本地日期 YYYY-MM-DD（不能用 toISOString，那是 UTC 会错日） */
@@ -292,36 +310,38 @@ function safeId(id: string): string {
   return String(id).replace(/[^0-9A-Za-z_-]/gu, '');
 }
 
-function dirOf(scope: 'group' | 'c2c', peerId: string): string {
-  return join(historyRoot, `${scope}_${safeId(peerId)}`);
+function dirOf(root: string, scope: 'group' | 'c2c', peerId: string): string {
+  return join(root, `${scope}_${safeId(peerId)}`);
 }
 
 /** 初始化（bootstrap 启动时调一次）：建目录 + 清过期 */
 export function initMsgHistory(dataRoot: string): void {
   if (!dataRoot) return;
-  historyRoot = join(dataRoot, '.qqbot', 'msg-history');
+  const root = join(dataRoot, '.qqbot', 'msg-history');
   try {
-    mkdirSync(historyRoot, { recursive: true });
+    mkdirSync(root, { recursive: true });
   } catch {
-    historyRoot = '';
     return;
   }
-  pruneOld();
+  roots.set(dataRoot, root);
+  defaultRoot = root;
+  pruneOld(dataRoot);
 }
 
 /** 删掉超过 KEEP_DAYS 天的日期文件（顺带删空目录） */
-export function pruneOld(): void {
-  if (!historyRoot) return;
+export function pruneOld(dataRoot?: string): void {
+  const root = historyRootOf(dataRoot);
+  if (!root) return;
   const cutoff = Date.now() - KEEP_DAYS * 24 * 60 * 60 * 1000;
   const cutoffDay = dayOf(cutoff);
   let dirs: string[] = [];
   try {
-    dirs = readdirSync(historyRoot);
+    dirs = readdirSync(root);
   } catch {
     return;
   }
   for (const d of dirs) {
-    const dir = join(historyRoot, d);
+    const dir = join(root, d);
     let files: string[] = [];
     try {
       const st = statSync(dir);
@@ -367,7 +387,7 @@ export function pruneOld(): void {
         // 这样下次 markSession 会重建名字文件。
         const base = dir.split(/[\\/]/).pop() ?? '';
         const us = base.indexOf('_');
-        if (us > 0) marked.delete(base.slice(0, us) + ':' + base.slice(us + 1));
+        if (us > 0) marked.delete(root + '|' + base.slice(0, us) + ':' + base.slice(us + 1));
         rmSync(dir, { recursive: true, force: true });
       } catch { /* ignore */ }
     }
@@ -378,9 +398,9 @@ export function pruneOld(): void {
 const marked = new Set<string>();
 
 /** 读 {dataRoot}/.qqbot/groups.json 拿群名 */
-function groupNameOf(gid: string): string {
+function groupNameOf(root: string, gid: string): string {
   try {
-    const f = join(historyRoot, '..', 'groups.json');
+    const f = join(root, '..', 'groups.json');
     const j = JSON.parse(readFileSync(f, 'utf8')) as Record<string, { name?: string }>;
     const n = j?.[gid]?.name;
     if (n) return String(n).trim();
@@ -389,32 +409,33 @@ function groupNameOf(gid: string): string {
 }
 
 /** 根目录索引：所有群文件夹 ↔ 群名 对照（方便肉眼找） */
-function refreshIndex(): void {
-  if (!historyRoot) return;
+function refreshIndex(root: string): void {
+  if (!root) return;
   let dirs: string[] = [];
-  try { dirs = readdirSync(historyRoot); } catch { return; }
+  try { dirs = readdirSync(root); } catch { return; }
   const lines: string[] = ['QQ 消息历史台账索引', '', '目录 → 群名（本目录只保留最近 ' + KEEP_DAYS + ' 天）', ''];
   for (const d of dirs.sort()) {
     if (!d.startsWith('group_') && !d.startsWith('c2c_')) continue;
     const id = d.slice(6);
-    const name = d.startsWith('group_') ? (groupNameOf(id) || '未命名群') : ('私聊 ' + id.slice(0, 8));
+    const name = d.startsWith('group_') ? (groupNameOf(root, id) || '未命名群') : ('私聊 ' + id.slice(0, 8));
     lines.push('  ' + d + '  →  ' + name);
   }
   lines.push('');
-  try { writeFileSync(join(historyRoot, '_索引.txt'), lines.join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8'); } catch { /* ignore */ }
+  try { writeFileSync(join(root, '_索引.txt'), lines.join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8'); } catch { /* ignore */ }
 }
 
 /**
  * 在该会话目录里放一个「<群名>.txt」（主人要求：打开文件夹一眼认出是哪个群）。
  * 群名变了会顺手删掉旧名字文件；同时刷新根目录 _索引.txt。
  */
-export function markSession(scope: 'group' | 'c2c', peerId: string): void {
-  if (!historyRoot || !peerId) return;
-  const key = scope + ':' + peerId;
+export function markSession(scope: 'group' | 'c2c', peerId: string, dataRoot?: string): void {
+  const root = historyRootOf(dataRoot);
+  if (!root || !peerId) return;
+  const key = root + '|' + scope + ':' + peerId;
   if (marked.has(key)) return;
-  const dir = dirOf(scope, peerId);
+  const dir = dirOf(root, scope, peerId);
   try { mkdirSync(dir, { recursive: true }); } catch { return; }
-  const rawName = scope === 'group' ? (groupNameOf(peerId) || '未命名群') : ('私聊_' + peerId.slice(0, 8));
+  const rawName = scope === 'group' ? (groupNameOf(root, peerId) || '未命名群') : ('私聊_' + peerId.slice(0, 8));
   const BAD = String.fromCharCode(92) + '/:*?"<>|' + String.fromCharCode(13) + String.fromCharCode(10);
   const safe = rawName.split('').map((ch) => (BAD.indexOf(ch) >= 0 ? '_' : ch)).join('').slice(0, 40) || '未命名';
   try {
@@ -433,7 +454,7 @@ export function markSession(scope: 'group' | 'c2c', peerId: string): void {
   ].join(String.fromCharCode(10));
   try { writeFileSync(join(dir, safe + '.txt'), body, 'utf8'); } catch { /* ignore */ }
   marked.add(key);
-  refreshIndex();
+  refreshIndex(root);
 }
 
 
@@ -446,7 +467,7 @@ export function markSession(scope: 'group' | 'c2c', peerId: string): void {
  *   —— `wget -i 文件` 原生支持这种格式；curl 用户 grep -v "^#" 即可。
  * 保留：7 天（按文件名日期前缀清理）。
  */
-function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: string; t: number; n?: string; x?: string }): { fp: string; script: boolean } | undefined {
+function writeDownloadLinks(root: string, scope: 'group' | 'c2c', peerId: string, rec: { id?: string; t: number; n?: string; x?: string }): { fp: string; script: boolean } | undefined {
   const urls = extractUrls(String(rec.x ?? ''));
   if (!urls.length) return undefined;
   // 幂等：同一条消息只落一次（入站拼提示先调一次，台账写入时再调一次）
@@ -456,7 +477,7 @@ function writeDownloadLinks(scope: 'group' | 'c2c', peerId: string, rec: { id?: 
     if (hit) return { fp: hit, script: existsSync(hit.replace(/\.txt$/, '-dl.mjs')) };
   }
   try {
-    const dir = join(dirOf(scope, peerId), LINK_DIR);
+    const dir = join(dirOf(root, scope, peerId), LINK_DIR);
     ensureDir(dir);
     const day = dayOf(rec.t);
     let seq = 1;
@@ -501,9 +522,11 @@ export function exportLinksForMessage(
   scope: 'group' | 'c2c',
   peerId: string,
   rec: { id?: string; t: number; n?: string; x?: string },
+  dataRoot?: string,
 ): { fp: string; script: boolean } | undefined {
-  if (!historyRoot || !peerId) return undefined;
-  return writeDownloadLinks(scope, peerId, rec);
+  const root = historyRootOf(dataRoot);
+  if (!root || !peerId) return undefined;
+  return writeDownloadLinks(root, scope, peerId, rec);
 }
 
 /** 删掉 LINK_KEEP_DAYS 天前的链接文件（按文件名日期前缀判断） */
@@ -533,9 +556,11 @@ export function appendMsgHistory(
   scope: 'group' | 'c2c',
   peerId: string,
   rec: Partial<HistoryRec> & { id: string },
+  dataRoot?: string,
 ): void {
-  if (!historyRoot || !peerId || !rec?.id) return;
-  markSession(scope, peerId);
+  const root = historyRootOf(dataRoot);
+  if (!root || !peerId || !rec?.id) return;
+  markSession(scope, peerId, dataRoot);
   const now = Date.now();
   const row: HistoryRec = {
     id: String(rec.id),
@@ -548,16 +573,16 @@ export function appendMsgHistory(
     ...(rec.f && rec.f.length ? { f: rec.f.map((v) => String(v).toLowerCase()).filter(Boolean).slice(0, 4) } : {}),
   };
   try {
-    const dir = dirOf(scope, peerId);
+    const dir = dirOf(root, scope, peerId);
     ensureDir(dir);
     const fp = join(dir, `${dayOf(row.t)}.jsonl`);
     // ★ 2026-11-14：这里原来是 appendFileSync —— 实测 1465µs/次，而每条群消息都会走一遍。
     //   换成常开 WriteStream 后 4µs（差 366 倍）。
     appendLine(fp, JSON.stringify(row));
     // ★ 含链接的记录另存一份（一行一个 URL），便于批量下载
-    writeDownloadLinks(scope, peerId, { id: row.id, t: row.t, n: row.n, x: String(rec.x ?? '') });
+    writeDownloadLinks(root, scope, peerId, { id: row.id, t: row.t, n: row.n, x: String(rec.x ?? '') });
     // ★ 含链接的记录另存一份（一行一个 URL），便于批量下载
-    writeDownloadLinks(scope, peerId, { t: row.t, n: row.n, x: String(rec.x ?? '') });
+    writeDownloadLinks(root, scope, peerId, { t: row.t, n: row.n, x: String(rec.x ?? '') });
     // ★ 增量更新当天缓存：否则"写一条 → 下次查询判定 mtime 变了 → 重扫 1000 行"，
     //   群消息密集时等于每次查询都重扫一遍，缓存就白加了。
     // ★ 2026-11-15（CodeRabbit 抓到）：如果还没有缓存，**先载入一次**再增量加 ——
@@ -600,7 +625,7 @@ export function appendMsgHistory(
     return;
   }
   writeTick = (writeTick + 1) % 200;
-  if (writeTick === 0) pruneOld();
+  if (writeTick === 0) pruneOld(dataRoot);
 }
 
 /**
@@ -619,8 +644,10 @@ export function findSenderByQuote(
   peerId: string,
   text: string | undefined,
   imageMd5s?: string[],
+  dataRoot?: string,
 ): { senderName?: string; senderId?: string } | undefined {
-  if (!historyRoot || !peerId) return undefined;
+  const root = historyRootOf(dataRoot);
+  if (!root || !peerId) return undefined;
 
   // ── ① 图片指纹：走 byMd5 索引，O(1) ──
   const mds = md5sInText(text);
@@ -630,7 +657,7 @@ export function findSenderByQuote(
   }
   if (mds.length) {
     const now0 = Date.now();
-    const dir0 = dirOf(scope, peerId);
+    const dir0 = dirOf(root, scope, peerId);
     for (const day of [dayOf(now0), dayOf(now0 - 86400000)]) {
       const file = join(dir0, `${day}.jsonl`);
       if (!existsSync(file)) continue;
@@ -656,7 +683,7 @@ export function findSenderByQuote(
   const q = normQuoteText(text);
   if (q.length < 2) return undefined;
   const now = Date.now();
-  const dir = dirOf(scope, peerId);
+  const dir = dirOf(root, scope, peerId);
   // 只看最近两天：引用目标几乎不会是更早的（群里一天上千条，两天足够）
   for (const day of [dayOf(now), dayOf(now - 86400000)]) {
     const file = join(dir, `${day}.jsonl`);
@@ -780,9 +807,10 @@ export interface HistoryQuery {
 }
 
 /** 读该会话的历史（**只碰它自己的目录**），新→旧 */
-export function readMsgHistory(scope: 'group' | 'c2c', peerId: string, q: HistoryQuery = {}): HistoryRec[] {
-  if (!historyRoot || !peerId) return [];
-  const dir = dirOf(scope, peerId);
+export function readMsgHistory(scope: 'group' | 'c2c', peerId: string, q: HistoryQuery = {}, dataRoot?: string): HistoryRec[] {
+  const root = historyRootOf(dataRoot);
+  if (!root || !peerId) return [];
+  const dir = dirOf(root, scope, peerId);
   if (!existsSync(dir)) return [];
   const now = Date.now();
   const within = q.withinMs ?? KEEP_DAYS * 24 * 60 * 60 * 1000;
@@ -831,14 +859,16 @@ export function latestMsgHistory(
   scope: 'group' | 'c2c',
   peerId: string,
   opts: { senderId?: string; withinMs?: number; kind?: MsgKind } = {},
+  dataRoot?: string,
 ): HistoryRec | undefined {
-  return readMsgHistory(scope, peerId, { ...opts, limit: 1 })[0];
+  return readMsgHistory(scope, peerId, { ...opts, limit: 1 }, dataRoot)[0];
 }
 
 /** 诊断：会话目录 + 今天文件行数 */
-export function historyDebug(scope: 'group' | 'c2c', peerId: string): string {
-  if (!historyRoot) return '(台账未初始化)';
-  const dir = dirOf(scope, peerId);
+export function historyDebug(scope: 'group' | 'c2c', peerId: string, dataRoot?: string): string {
+  const root = historyRootOf(dataRoot);
+  if (!root) return '(台账未初始化)';
+  const dir = dirOf(root, scope, peerId);
   if (!existsSync(dir)) return `(该会话还没有台账目录: ${dir})`;
   const f = join(dir, `${dayOf(Date.now())}.jsonl`);
   let n = 0;
@@ -852,14 +882,15 @@ export function historyDebug(scope: 'group' | 'c2c', peerId: string): string {
  * 最近有消息写入的群目录对应的 gid（2026-10-20）。
  * 用途：web 会话里拿不到群会话记录时的兜底 —— 一般就是"当前正在聊的群"。
  */
-export function latestGroupId(): string {
-  if (!historyRoot) return '';
+export function latestGroupId(dataRoot?: string): string {
+  const root = historyRootOf(dataRoot);
+  if (!root) return '';
   let best = '';
   let bestT = 0;
   try {
-    for (const d of readdirSync(historyRoot)) {
+    for (const d of readdirSync(root)) {
       if (!d.startsWith('group_')) continue;
-      const st = statSync(join(historyRoot, d));
+      const st = statSync(join(root, d));
       if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = d.slice(6); }
     }
   } catch { /* ignore */ }

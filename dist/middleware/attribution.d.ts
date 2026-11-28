@@ -1,7 +1,7 @@
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
-export declare function attributionLedger(logger: Logger): (ctx: MiddlewareContext, next: () => Promise<void>) => Promise<void>;
+export declare function attributionLedger(config: ImQQBotConfig, logger: Logger): (ctx: MiddlewareContext, next: () => Promise<void>) => Promise<void>;
 /**
  * 写消息历史台账 —— **必须挂在 early-inbound 扩展之后**（2026-11-15 CodeRabbit 第四轮）。
  *

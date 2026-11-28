@@ -14,8 +14,7 @@
  * 位置还在 debounce **之前**，直接阻塞整条入站链。这里加 1 秒 TTL 缓存。
  */
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dshHomePath } from '../shared/utils.js';
 /** 磁盘快照缓存（TTL 1s）：同一条消息链上两处调用只会读一次盘 */
 let cache = {
     key: '',
@@ -32,7 +31,7 @@ function settingsFileOf(cfg) {
     //   'im-qqbot-2' ⇒ 主实例（settingsNs 未设置）会去读**别人的** im-qqbot-2.json：
     //   读不到 → 回退闭包（面板设置不生效）；读得到 → 直接用另一台机器人的撤回/禁言规则。
     const ns = String(c?.settingsNs || c?.ns || 'im-qqbot').trim();
-    return join(homedir(), '.dsh', 'qqbot-settings', prof, `${ns}.json`);
+    return dshHomePath('qqbot-settings', prof, `${ns}.json`);
 }
 /**
  * 解析自动撤回配置：**磁盘（面板值）优先 → 闭包兜底**。

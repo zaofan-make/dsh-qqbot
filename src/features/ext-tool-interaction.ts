@@ -21,11 +21,10 @@
  *   · ack 统一由 bootstrap 的交互处理器做（本控制器不碰 `PUT /interactions/{id}`）。
  */
 import type { Logger } from '../types.js';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { loadExtensionTools, loadExtensionCommands } from './extension-store.js';
+import { dshHomePath } from '../shared/utils.js';
 import { lookupExtToolCard, parseExtToolButtonData } from './ext-tool-cards.js';
 
 /**
@@ -39,7 +38,7 @@ import { lookupExtToolCard, parseExtToolButtonData } from './ext-tool-cards.js';
  * 优先用环境变量覆盖，否则落到 ~/.dsh 下。
  */
 const DISPATCH_DIAG = process.env.QQBOT_DISPATCH_DIAG
-  || join(homedir(), '.dsh', 'qqbot-dispatch-diag.log');
+  || dshHomePath('qqbot-dispatch-diag.log');
 /** 诊断文件大小上限；超了就轮转成 .1（只留一份，避免无限涨） */
 const DIAG_MAX_BYTES = 512 * 1024;
 /** 每次 append 都 stat 太浪费：每 N 次检查一次 */

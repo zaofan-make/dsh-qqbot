@@ -48,12 +48,12 @@ export interface HistoryRec {
 /** 初始化（bootstrap 启动时调一次）：建目录 + 清过期 */
 export declare function initMsgHistory(dataRoot: string): void;
 /** 删掉超过 KEEP_DAYS 天的日期文件（顺带删空目录） */
-export declare function pruneOld(): void;
+export declare function pruneOld(dataRoot?: string): void;
 /**
  * 在该会话目录里放一个「<群名>.txt」（主人要求：打开文件夹一眼认出是哪个群）。
  * 群名变了会顺手删掉旧名字文件；同时刷新根目录 _索引.txt。
  */
-export declare function markSession(scope: 'group' | 'c2c', peerId: string): void;
+export declare function markSession(scope: 'group' | 'c2c', peerId: string, dataRoot?: string): void;
 /**
  * ★ 2026-11-23（主人要求）：**入站时就把链接落盘并拿到路径**，
  * 好在消息正文里告诉模型「链接存在这个文件里」，它读文件即可批量下载。
@@ -63,14 +63,14 @@ export declare function exportLinksForMessage(scope: 'group' | 'c2c', peerId: st
     t: number;
     n?: string;
     x?: string;
-}): {
+}, dataRoot?: string): {
     fp: string;
     script: boolean;
 } | undefined;
 /** 记一条（写入当天文件） */
 export declare function appendMsgHistory(scope: 'group' | 'c2c', peerId: string, rec: Partial<HistoryRec> & {
     id: string;
-}): void;
+}, dataRoot?: string): void;
 /**
  * ★ 按「被引用的内容」反查原主（2026-11-14，主人定：归属就用历史台账，不另开独立账）。
  *
@@ -82,7 +82,7 @@ export declare function appendMsgHistory(scope: 'group' | 'c2c', peerId: string,
  *
  * @param imageMd5s 额外指纹（从 `quote.attachments[].filename` 拿到的）
  */
-export declare function findSenderByQuote(scope: 'group' | 'c2c', peerId: string, text: string | undefined, imageMd5s?: string[]): {
+export declare function findSenderByQuote(scope: 'group' | 'c2c', peerId: string, text: string | undefined, imageMd5s?: string[], dataRoot?: string): {
     senderName?: string;
     senderId?: string;
 } | undefined;
@@ -115,18 +115,18 @@ export interface HistoryQuery {
     maxScan?: number;
 }
 /** 读该会话的历史（**只碰它自己的目录**），新→旧 */
-export declare function readMsgHistory(scope: 'group' | 'c2c', peerId: string, q?: HistoryQuery): HistoryRec[];
+export declare function readMsgHistory(scope: 'group' | 'c2c', peerId: string, q?: HistoryQuery, dataRoot?: string): HistoryRec[];
 /** 找「某人最近一条」/「最近一条」 */
 export declare function latestMsgHistory(scope: 'group' | 'c2c', peerId: string, opts?: {
     senderId?: string;
     withinMs?: number;
     kind?: MsgKind;
-}): HistoryRec | undefined;
+}, dataRoot?: string): HistoryRec | undefined;
 /** 诊断：会话目录 + 今天文件行数 */
-export declare function historyDebug(scope: 'group' | 'c2c', peerId: string): string;
+export declare function historyDebug(scope: 'group' | 'c2c', peerId: string, dataRoot?: string): string;
 /**
  * 最近有消息写入的群目录对应的 gid（2026-10-20）。
  * 用途：web 会话里拿不到群会话记录时的兜底 —— 一般就是"当前正在聊的群"。
  */
-export declare function latestGroupId(): string;
+export declare function latestGroupId(dataRoot?: string): string;
 //# sourceMappingURL=msg-history.d.ts.map

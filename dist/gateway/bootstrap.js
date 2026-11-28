@@ -242,7 +242,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
                 try {
                     const id = ref?.attachmentId;
                     if (id)
-                        noteOurAttachment(id);
+                        noteOurAttachment(id, dataRootOf(config));
                 }
                 catch { /* ignore */ }
                 return ref ? { attachment: ref } : undefined;
@@ -443,7 +443,7 @@ export async function bootstrapGateway(ctx, agents, config, logger, hooks) {
         try {
             const sc = String(target.scope ?? 'group') === 'c2c' ? 'c2c' : 'group';
             rememberSelf(sc, String(target.targetId ?? ''), { msgId: id, text, kind: kind ?? 'text' });
-            appendMsgHistory(sc, String(target.targetId ?? ''), { id, s: 'self', n: '机器人', t: Date.now(), k: kind ?? 'text', x: text ?? '', me: true });
+            appendMsgHistory(sc, String(target.targetId ?? ''), { id, s: 'self', n: '机器人', t: Date.now(), k: kind ?? 'text', x: text ?? '', me: true }, dataRootOf(config));
         }
         catch { /* 记不了不影响发送 */ }
     };

@@ -66,7 +66,7 @@ function classifyForHistory(msg) {
     }
     return { k, x, f };
 }
-export function attributionLedger(logger) {
+export function attributionLedger(config, logger) {
     return async (ctx, next) => {
         try {
             const msg = ctx.message;
@@ -102,7 +102,7 @@ export function attributionLedger(logger) {
                         for (const a of Array.isArray(el?.attachments) ? el.attachments : [])
                             push(a?.filename);
                     }
-                    const hit = findSenderByQuote(kind, peerId, q.text, probe);
+                    const hit = findSenderByQuote(kind, peerId, q.text, probe, dataRootOf(config));
                     if (hit) {
                         if (hit.senderName)
                             q.senderName = hit.senderName;
@@ -156,7 +156,7 @@ export function historyRecorder(config, logger) {
                     x: h.x,
                     ...(h.f.length ? { f: h.f } : {}),
                     ...(msg.me ? { me: true } : {}),
-                });
+                }, dataRootOf(config));
                 // ── 分段台账（2026-11-17，CodeRabbit Major 修正）──
                 //   ⚠️ 必须记在**防抖聚合之前**的逐条位置。原来放在 handleInbound 里，
                 //   而聚合会把「主人先说 + 群友后说」合并成一次入站，那时只记得到最后一条

@@ -73,43 +73,67 @@ const buffers = new Map<string, AggImage[]>();
 const sentPaths = new Map<string, string[]>();
 const SENT_KEEP = 64;
 
-/** 本插件**自己聚合出来**的附件 id（只认这些，别误伤别的插件/功能的图） */
-const OUR_ATTACH = new Set<string>();
-let ourAttachFile = '';
+/** 每个数据根一份「我们做的附件 id」台账（多实例互不覆盖；同一宿主进程里模块只加载一次） */
+interface AttachRegistry { file: string; ids: Set<string> }
+const registries = new Map<string, AttachRegistry>();
+let defaultRegistry: AttachRegistry = { file: '', ids: new Set<string>() };
 const OUR_ATTACH_KEEP = 2000;
+
+/** 取某个数据根的台账；没给数据根就用最后 init 的那份（单实例场景） */
+function registryOf(dataRoot?: string): AttachRegistry {
+  const key = String(dataRoot ?? '');
+  if (!key) return defaultRegistry;
+  const got = registries.get(key);
+  if (got) return got;
+  return defaultRegistry;
+}
 
 /** 装配期调用：把我们产出的附件 id 台账绑到数据根上（跨重启也认得） */
 export function initAggregateRegistry(dataRoot: string): void {
   try {
     if (!dataRoot) return;
-    ourAttachFile = join(dataRoot, '.qqbot', 'aggregate-ids.json');
-    if (!existsSync(ourAttachFile)) return;
-    const arr = JSON.parse(readFileSync(ourAttachFile, 'utf8'));
-    if (Array.isArray(arr)) for (const id of arr) if (typeof id === 'string' && id) OUR_ATTACH.add(id);
+    const reg: AttachRegistry = { file: join(dataRoot, '.qqbot', 'aggregate-ids.json'), ids: new Set<string>() };
+    registries.set(String(dataRoot), reg);
+    defaultRegistry = reg;
+    if (!existsSync(reg.file)) return;
+    const arr = JSON.parse(readFileSync(reg.file, 'utf8'));
+    if (Array.isArray(arr)) for (const id of arr) if (typeof id === 'string' && id) reg.ids.add(id);
   } catch { /* 台账坏了就当空 */ }
 }
 
-/** 登记一个"我们做的"图片附件 */
-export function noteOurAttachment(id: string): void {
+/** 登记一个「我们做的」图片附件（写回该实例自己的数据根） */
+export function noteOurAttachment(id: string, dataRoot?: string): void {
   try {
     const v = String(id ?? '');
     if (!v) return;
-    OUR_ATTACH.add(v);
-    if (OUR_ATTACH.size > OUR_ATTACH_KEEP) {
-      const drop = OUR_ATTACH.size - OUR_ATTACH_KEEP;
+    const reg = registryOf(dataRoot);
+    reg.ids.add(v);
+    if (reg.ids.size > OUR_ATTACH_KEEP) {
+      const drop = reg.ids.size - OUR_ATTACH_KEEP;
       let n = 0;
-      for (const k of OUR_ATTACH) { if (n >= drop) break; OUR_ATTACH.delete(k); n += 1; }
+      for (const k of reg.ids) { if (n >= drop) break; reg.ids.delete(k); n += 1; }
     }
-    if (ourAttachFile) {
-      try { writeFileSync(ourAttachFile, JSON.stringify([...OUR_ATTACH]), 'utf8'); } catch { /* ignore */ }
+    if (reg.file) {
+      try { writeFileSync(reg.file, JSON.stringify([...reg.ids]), 'utf8'); } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
 }
 
-/** 这个附件是不是"我们自己拼/发"的图 */
-export function isOurAttachment(id: unknown): boolean {
+/**
+ * 这个附件是不是「我们自己拼/发」的图。
+ * 给了 dataRoot 只看那个实例；没给就看全部实例（附件 id 是内容寻址的，跨实例同名必是同一张图）。
+ */
+export function isOurAttachment(id: unknown, dataRoot?: string): boolean {
   const v = String(id ?? '');
-  return !!v && OUR_ATTACH.has(v);
+  if (!v) return false;
+  const key = String(dataRoot ?? '');
+  if (key) {
+    const reg = registries.get(key) ?? defaultRegistry;
+    return reg.ids.has(v);
+  }
+  if (defaultRegistry.ids.has(v)) return true;
+  for (const reg of registries.values()) if (reg.ids.has(v)) return true;
+  return false;
 }
 
 /** 宿主注入：判断当前 agent 走的模型是否支持 image 输入 */

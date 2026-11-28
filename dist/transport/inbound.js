@@ -1108,7 +1108,7 @@ export async function handleInbound(rawMsg, manager, config, logger, state) {
 function assembleAgentBody(msg, state, scope, logger, downloaded, enableRef, msgRef, dataRoot, stickerDir, 
 /** 白名单第一位的 openid（主人）—— 撞名时附 id 用 */
 ownerOpenid) {
-    const userContentRaw = buildUserContent(msg, state, logger);
+    const userContentRaw = buildUserContent(msg, state, logger, dataRoot);
     // 2026-10-01 主人实测「别人 @ 别人怎么没转换成昵称，依然是 id」：
     //   正文里 @ 别人的 `<@openid>` 查**群成员台账**换成 `@昵称`（查不到退化成 @短id）；
     //   顺手省 token —— `<@07B470BDA5052489D2D0532C2CC2A2EB>`(35 字符) → `@难崩`(3 字符)。
@@ -1212,7 +1212,7 @@ ownerOpenid) {
 /**
  * Layer 1: 用户文本内容 + 语音 + 附件
  */
-function buildUserContent(msg, state, logger) {
+function buildUserContent(msg, state, logger, dataRoot) {
     const parts = [];
     // 2026-09-11 主人要求: 入站 @bot 长 openid 转短标记 @bot 省 token(精确按 mentions.is_you 替换)
     const text = replaceBotMention((msg.content ?? '').trim(), msg.mentions, state.mention?.wasMentioned);
@@ -1232,7 +1232,7 @@ function buildUserContent(msg, state, logger) {
                     t: Date.now(),
                     n: String(msg.senderName ?? ''),
                     x: text,
-                });
+                }, dataRoot);
                 if (fp) {
                     // ★ CodeRabbit：**逐个精确替换**已提取到的 URL 本体（边界与 extractUrls 一致），
                     //   不要用 [^\s]+ —— 那会把 URL 后面的中文分号/尺寸等元信息一起吃掉。
@@ -1365,7 +1365,7 @@ function cleanTextForScore(raw) {
  *
  * @param peerKey `group:<openid>` / `c2c:<openid>`
  */
-function lookupSenderByHistoryText(peerKey, text, imageMd5s) {
+function lookupSenderByHistoryText(peerKey, text, imageMd5s, dataRoot) {
     const sep = peerKey.indexOf(':');
     if (sep <= 0)
         return undefined;
@@ -1375,7 +1375,7 @@ function lookupSenderByHistoryText(peerKey, text, imageMd5s) {
         return undefined;
     // 具体匹配逻辑在 features/msg-history 的 findSenderByQuote 里 ——
     // 中间件（回填 ctx.state.quote）和这里共用同一份，避免两处行为不一致。
-    return findSenderByQuote(scope, peerId, text, imageMd5s);
+    return findSenderByQuote(scope, peerId, text, imageMd5s, dataRoot);
 }
 /**
  * 用本地台账补齐 QQ 没给全的被引用内容（2026-10-01 主人实测：引用**纯图片**看不到是哪张图）。
@@ -1434,7 +1434,7 @@ function enrichQuoteFromCache(q, dataRoot, peerKey) {
             if (v && !probeMd.includes(v))
                 probeMd.push(v);
         }
-        const h = lookupSenderByHistoryText(peerKey, out.text ?? rawText, probeMd);
+        const h = lookupSenderByHistoryText(peerKey, out.text ?? rawText, probeMd, dataRoot);
         if (h) {
             if (h.senderName)
                 out.senderName = h.senderName;

@@ -1,4 +1,15 @@
 /**
+ * DSH 主目录（宿主配置/存储的根）。
+ *
+ * 2026-11-28（fork）：宿主支持 `DSH_HOME` 环境变量把主目录搬离 `~/.dsh`，
+ * 但插件里有多处写死 `join(homedir(), '.dsh', ...)` —— 迁移后那些读取点
+ * 永远读不到文件，表现为「设置面板改了没用」「实例 cwd 读不到」。
+ * 统一从这里取，读配置的每一处都只认这个函数。
+ */
+export declare function resolveDshHome(): string;
+/** `{DSH_HOME}/<segments...>` —— 别自己拼 `join(homedir(), '.dsh', ...)` */
+export declare function dshHomePath(...segments: string[]): string;
+/**
  * 插件版本号（从 package.json 读取）。
  * 2026-10-12 起对外暴露：供**启动钩子**（features/ext-hooks.ts 的 `env.pluginVersion`）等扩展点读取
  * —— 扩展作者可以按版本做分支，而不是去猜包路径、自己读 package.json。

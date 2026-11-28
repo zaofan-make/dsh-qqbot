@@ -35,6 +35,7 @@ import { traceContextless } from '../features/contextless-store.js';
 import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
+import { DEFAULT_REASONING_EFFORT } from '../model/types.js';
 import { IdleEvictor } from './idle-evictor.js';
 import { markTurnAborted } from '../gateway/debounce.js';
 import { apply as mountChannelTools, readContextPending, clearContextPending, syncChannelScopedTools, ensureExtToolsGlobal, applyExtToolVisibility, instanceTagOfManager, setCtxEnv } from '../channel-tools.js';
@@ -506,7 +507,7 @@ export class SessionManager {
                 ...(seed ? { seedLength: seed.length } : {}),
                 ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
             },
-            ...(route ? { agentOptions: route } : {}),
+            ...(route ? { agentOptions: this.toAgentOptions(route) } : {}),
             ...(composed.setup ? { setup: composed.setup } : {}),
         });
         this.modelResolver.setSessionId(key, childId);
@@ -818,11 +819,15 @@ export class SessionManager {
                 const resumeRoute = this.modelResolver.getResumeRoute(key, sessionId);
                 const resumed = await this.agents.resume({
                     resumeSessionId: sessionId,
-                    ...(resumeRoute ? { agentOptions: resumeRoute } : {}),
+                    ...(resumeRoute ? { agentOptions: this.toAgentOptions(resumeRoute) } : {}),
                     ...(composed.setup ? { setup: composed.setup } : {}),
                 });
                 agent = resumed.agent;
                 handle = resumed;
+                // ★ 2026-11-27：resume 沿用会话档案里记录的 header（那时还没写 reasoningEffort），
+                //   agentOptions 只对**新建**会话生效 ⇒ 已存在的会话恢复出来仍是 thinking:disabled。
+                //   这里显式再下发一次强度（实测：22:07–22:08 那批旧会话就是因此一直没有思考）。
+                this.applyModelRoute(agent, resumeRoute ?? route, 'resume-effort');
                 this.logger.info(`resumed session: key=${key} preset=${agentPreset ?? 'none'} route=${resumeRoute ? `${resumeRoute.provider}/${resumeRoute.model}` : 'session-own'}`);
                 // 更新配置指纹(会话已存在且配置一致 → 指纹刷新为当前值)
                 try {
@@ -846,10 +851,12 @@ export class SessionManager {
                             cwd: absCwdOf(this.config.cwd) || process.cwd(),
                             ...(agentPreset ? { agentPreset } : {}),
                         },
-                        ...(route ? { agentOptions: route } : {}),
+                        ...(route ? { agentOptions: this.toAgentOptions(route) } : {}),
                         ...(composed.setup ? { setup: composed.setup } : {}),
                     });
                     agent = created.agent;
+                    // ★ 2026-11-27：agentOptions 之外再显式写一次强度（新宿主按 agent.model.select 走每轮下发）
+                    this.applyModelRoute(agent, route, 'create-effort');
                     handle = created;
                     this.logger.info(`created new session: key=${key} preset=${agentPreset ?? 'none'}`);
                     // 记录配置指纹(create 用当前 cwd/preset; 下次配置变更据此弃旧开新)
@@ -879,10 +886,11 @@ export class SessionManager {
                             cwd: absCwdOf(this.config.cwd) || process.cwd(),
                             ...(agentPreset ? { agentPreset } : {}),
                         },
-                        ...(route ? { agentOptions: route } : {}),
+                        ...(route ? { agentOptions: this.toAgentOptions(route) } : {}),
                         ...(composed.setup ? { setup: composed.setup } : {}),
                     });
                     agent = created2.agent;
+                    this.applyModelRoute(agent, route, 'create-effort');
                     handle = created2;
                     this.logger.info(`created new session(轮换后): key=${key} sessionId=${rotated} preset=${agentPreset ?? 'none'}`);
                     try {
@@ -1029,13 +1037,17 @@ export class SessionManager {
                 return false;
             this.lastHostModel.set(key, hostKey);
             const sameRoute = !!stored && stored.provider === cur.provider && stored.model === cur.model;
-            const sameEffort = (stored?.effort ?? '') === (hostEffort ?? '');
+            const effectiveEffort = hostEffort ?? stored?.effort ?? DEFAULT_REASONING_EFFORT;
+            const sameEffort = (stored?.effort ?? '') === effectiveEffort;
             if (sameRoute && sameEffort)
                 return false;
             const route = {
                 provider: cur.provider,
                 model: cur.model,
-                ...(hostEffort ? { effort: hostEffort } : {}),
+                // ★ 2026-11-27 修：宿主**没带**思考强度时，不能把已存的强度抹掉 ——
+                //   原来这里写成 ...(hostEffort ? { effort: hostEffort } : {})，于是 model-prefs.json 里
+                //   手工写好的 effort=medium 会被宿主的一次无档位选择清空，下一轮又是 thinking:disabled。
+                effort: effectiveEffort,
             };
             // 直接写偏好：**不能走 setModelOverride** —— 它现在"同模型同强度就 return"（防白 fork），
             //   而这里正是要把宿主的新值落盘（含 effort 变化），所以绕过去，只写存储。
@@ -1047,6 +1059,22 @@ export class SessionManager {
         catch {
             return false;
         }
+    }
+    /**
+     * 把内部模型路由转成宿主认识的 agentOptions。
+     *
+     * 宿主的 agentOptions 只有 provider/model/reasoningEffort 三个字段（见 dsh-api-session-controller 的
+     * agentOptions()）。原来这里把内部路由 `{ provider, model, effort }` 直接当 agentOptions 传，
+     * effort 被宿主丢掉 ⇒ 宿主按"没开思考"建会话，第一轮 body 就是 thinking:{type:'disabled'}。
+     * 本地 27B 在无思考档位时会把 reply_gate 当成"开口开关"连传 reply:false，整轮被 hook 取消，
+     * 用户看到的是满屏 tool call aborted 且一个字不回（2026-11-27 实测）。缺档时补默认档。
+     */
+    toAgentOptions(route) {
+        return {
+            provider: route.provider,
+            model: route.model,
+            reasoningEffort: route.effort ?? DEFAULT_REASONING_EFFORT,
+        };
     }
     applyModelRoute(agent, route, label) {
         if (!route)
@@ -1063,7 +1091,8 @@ export class SessionManager {
                 const cur = m.current();
                 // ★ 2026-11-08 修：这里原来只看 provider/model —— 同模型只改**思考强度**时直接 return，
                 //   强度根本没写进宿主 ⇒ 下一轮 adoptHostModel 又按宿主的旧强度把偏好改回去（主人实测：切 high 又变回 low）。
-                const sameEffort = (cur?.reasoningEffort ?? '') === (route.effort ?? '');
+                const effectiveEffort = route.effort ?? DEFAULT_REASONING_EFFORT;
+                const sameEffort = (cur?.reasoningEffort ?? '') === effectiveEffort;
                 if (cur?.provider === route.provider && cur?.model === route.model && sameEffort)
                     return;
                 // 保留宿主可能存在的其它字段（reasoningEffort 等），只换 provider/model
@@ -1072,7 +1101,7 @@ export class SessionManager {
                     ...(cur ?? {}),
                     provider: route.provider,
                     model: route.model,
-                    ...(route.effort ? { reasoningEffort: route.effort } : {}),
+                    reasoningEffort: effectiveEffort,
                 });
                 this.logger.info(`getOrCreate: ${label} 模型覆盖(agent.model.select) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`);
                 return;

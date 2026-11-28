@@ -1,3 +1,152 @@
+## 1.13.34 (2026-11-28)
+
+### 你会感觉到的变化
+
+**群里 @ 机器人不再「只丢一句 tool call aborted」**
+
+现象：群里 @ 机器人提问，它调 `reply_gate` 传 `reply:false`（自己的 `reason` 却写着
+「用户直接@我提问，需要回复」），闸门照单 cancel ⇒ 整轮静默，用户只看到
+`Error: tool call aborted`、没有任何输出。
+
+这是本地 27B 在无思考档位下的**布尔语义反转**：reason 说要回，reply 却传了 false。
+真正要静默的 reason 不会写「需要回复 / 要回复 / 该回 / 回复一下 / 回一下 / 回答 / 必须回 / 得回 / 需要回」。
+
+改动：
+
+- `replyGateTool.execute`：`reply:false` 且 `reason` 含矛盾词时**不 cancel**，
+  改为返回 `{ ok:true, stopped:false, note:'(自相矛盾：reason 说要回复却传 reply=false —— 直接写你要说的那句话，不要再调本工具，也不要静默)' }`；
+  正常静默（reason 不含这些词）仍走原 `agent.cancel` 路径，零额外开销。
+- `isGateSilence()` 同步收紧：矛盾 `reply:false` 不再被认成「有意静默」，
+  避免后续连带的 aborted 被误吞掉。
+- 工具描述补一条：**reply 语义只看布尔值**，reason 必须与 reply 一致，否则会被闸门拦下。
+- `gate-silence.test.ts`：新增矛盾分支的正/反两条用例。
+
+## 1.13.33 (2026-11-28)
+
+### 你会感觉到的变化
+
+**私聊不再「一句话不回」：闸门在私聊恒开**
+
+现象：私聊里发一句「复活吧」，机器人一个字的正文都没有，只丢回
+`Error: tool call aborted`；同一个模型在群里被 @ 时也是同样表现。
+
+原因是它调 `reply_gate` 传了 `reply:false`（自己的 `reason` 里却写着「对方私聊说复活吧，直接接梗回复」）。
+本工具的实现是「调 `agent.cancel({kind:'hook', reason:'reply_gate: 本轮静默'})` 硬终止回合」，
+所以在无思考档位下的本地 27B 一旦把闸门理解成「开口开关」，整轮就被取消掉了，用户侧只剩一个 tool call aborted。
+而私聊本来就是主人一对一找它说话，静默没有任何合理场景。
+
+改动：
+
+- 私聊（`sessionKey` 含 `:c2c:`）调用 `reply_gate` 传 `reply:false` 时**不再 cancel**，
+  改为返回 `{ ok:true, stopped:false, note:'(私聊必须开口：闸门在私聊恒开 —— 直接写你要说的那句话，不要静默)' }`，
+  回执文本直接把这句说明交给模型，让它继续开口。
+- 群聊行为不变：`reply:false` 照旧静默终止本回合。
+- 工具描述新增一条醒目规则：**私聊里、或被 @ 时，永远不要调用本工具**；被 @ 是明确在叫你。
+- 输出 schema 增加可选 `note`，渲染时优先显示它（而不是「已静默」）。
+
+### 技术细节
+
+- `channel-tools.ts` 的 `replyGateTool.execute`：先 `resolveCtxMemoEnv(exec)` 取 `sessionKey`（与备忘/压缩同一套会话坐标），
+  c2c 分支提前返回；`output.schema.properties` 增加 `note: { type: 'string' }`（非 required）。
+- 群聊判定失败（拿不到 sessionKey）时按群聊处理 —— 与旧行为一致，不会把群里的静默弄丢。
+
+## 1.13.32 (2026-11-28)
+
+### 你会感觉到的变化
+
+**机器人不再「满屏 tool call aborted 且一个字不回」，思考强度也不会再自己消失**
+
+现象一：群里 @ 机器人，它连着调 `reply_gate` 传 `reply:false`（理由写着「要回复」），整轮被
+「reply_gate: 本轮静默」取消，用户只看到 `Error: tool call aborted`、没有任何输出。
+
+现象二：`model-prefs.json` 里明明写了 `effort: medium`，跑起来请求体却是
+`thinking: {"type": "disabled"}`，日志里 `usage.reasoning` 全是 0。
+
+两个现象是同一个根因链：
+
+| 环节 | 原来 | 现在 |
+|---|---|---|
+| 宿主建会话 / 恢复会话时下发的 `agentOptions` | 直接把内部路由 `{ provider, model, effort }` 当 `agentOptions` 传，宿主只认 `provider/model/reasoningEffort`，`effort` 被丢掉 ⇒ 按「没开思考」建会话 | `toAgentOptions()` 显式映射成 `reasoningEffort`，缺档补 `medium` |
+| 已存在会话的 resume | `agentOptions` 只对**新建**会话生效，旧档案 header 里没有 `reasoningEffort` ⇒ 恢复出来永远 disabled | resume 后显式 `applyModelRoute(..., 'resume-effort')` 再下发一次；create 同理 |
+| `adoptHostModel` 反向同步 | 宿主当前选择**没带**强度时，按宿主值重写偏好 ⇒ 已存的 `effort` 被清空 | 宿主没带就沿用已存值（`hostEffort ?? stored?.effort ?? 'medium'`） |
+| `applyModelRoute` | 路由没带 `effort` 时 select 里就不写这一项 | 补默认档后再写，`sameEffort` 比较也用补后的值 |
+| `model-resolver` 路由出口 | override / 实例配置 / 全局默认三条路都可能不带 `effort` | `withEffort()` 统一补 `DEFAULT_REASONING_EFFORT`（`medium`） |
+
+本地 27B 在 `thinking: disabled` 下会把 `reply_gate` 当成「开口开关」而不是「闭嘴开关」，
+于是「想回复」被翻译成 `reply: false` —— 这是现象一为什么总在无思考的回合出现。
+
+### 技术细节
+
+- `model/types.ts`：新增 `DEFAULT_REASONING_EFFORT = 'medium'`。
+- `model/model-resolver.ts`：`getEffectiveRoute` / `getResumeRoute` 的每个出口都过 `withEffort(route)`。
+- `session/session-manager.ts`：新增 `toAgentOptions(route)`（唯一一处把内部路由翻译成宿主字段的地方），
+  替换 fork / resume / create / create-轮换 四处 `agentOptions`；
+  `applyModelRoute` 与 `adoptHostModel` 按上表改。
+- 宿主侧对应代码：`dsh-api-session-controller` 的 `agentOptions()` 只解析 `provider/model/reasoningEffort`；
+  anthropic 适配器在 `reasoningEffort` 缺失时下发 `thinking: { type: 'disabled' }`。
+
+## 1.13.31 (2026-11-28)
+
+### 你会感觉到的变化
+
+**同一个 DSH 里跑两个 QQ 机器人，不再互相把对方说的话当成「自己说过」**
+
+现象：小傻龙和大肥鱼两个实例同时在线时，机器人甲的群消息台账会写进乙的数据目录，
+于是乙去查「谁引用了我」「我上次说过什么」时，查到的是甲的消息，回复口吻也跟着串。
+
+原因是三处模块级单例（同一个宿主进程里模块只加载一次，后启动的实例覆盖先启动的）：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `features/msg-history.ts` 的台账根目录 | 一个 `historyRoot` 变量，最后 init 的赢 | 按 dataRoot 分别记根目录，读写都带本实例数据根 |
+| `features/image-aggregate.ts` 的附件 id 台账 | 一个文件路径 + 一个 Set，写进别人的文件，重启后自己那份丢 | 每个 dataRoot 一份文件 + 一份 Set |
+| `features/contextless-store.ts` | —— | 核查后确认已于 2026-09-27 改成多根合并 + 按 key 写回，本次不动 |
+
+两个实例的 `msg-history` 目录、`aggregate-ids.json` 从此各归各的。
+引用归属、群消息搜索、撤回目标、清图判断都按本实例台账走。
+
+### 技术细节
+
+- `msg-history`：新增 `roots: Map<dataRoot, 根目录>` + `defaultRoot` 兜底；
+  `dirOf / groupNameOf / refreshIndex / writeDownloadLinks` 改为显式收 `root`；
+  对外 API（`pruneOld / markSession / exportLinksForMessage / appendMsgHistory / findSenderByQuote /
+  readMsgHistory / latestMsgHistory / historyDebug / latestGroupId`）末尾追加可选 `dataRoot`，
+  不传时退回最后 init 的那份 —— 单实例场景行为完全不变。
+- `marked` 集合键加 root 前缀，避免两个实例对同一个群只写一次名字文件。
+- `attributionLedger(config, logger)`：工厂补收 config，`findSenderByQuote` 与本实例台账对齐，
+  `appendMsgHistory` 写本实例台账。
+- 群管理工具 11 处调用（`latestGroupId / latestMsgHistory / readMsgHistory / historyDebug`）
+  先 `resolveCtxDataRoot(exec)` 再传下去。
+- 入站链路：`buildUserContent(..., dataRoot)` → `exportLinksForMessage(...)`；
+  `lookupSenderByHistoryText(..., dataRoot)` → `findSenderByQuote(...)`。
+- `noteOurAttachment(id, dataRoot)` / `isOurAttachment(id, dataRoot?)`：给了数据根只看该实例，
+  没给则按全部实例并集（附件 id 内容寻址，同 id 必是同一张图）。
+## 1.13.30 (2026-11-28)
+
+### 你会感觉到的变化
+
+**1. 宿主把 DSH 主目录搬到别处（`DSH_HOME`）之后，插件不再「读不到自己的配置」**
+
+以前有几处路径是写死的 `~/.dsh/...`。宿主支持用环境变量 `DSH_HOME` 把主目录搬走，
+搬完之后这些读取点全都指向一个**已经不存在的旧目录**，表现是：
+
+| 现象 | 以前写死的位置 |
+|---|---|
+| 设置面板里「默认模型」填了不生效 | `~/.dsh/settings.yaml` |
+| 自动撤回 / 自动禁言规则读不到面板值，只剩旧闭包值 | `~/.dsh/qqbot-settings/<profile>/<ns>.json` |
+| 多开实例时 2 号、3 号机的 cwd 全指到主实例（工具、命令、扩展全串号） | 同上（读实例 cwd/dataRoot） |
+| 自动撤回配置工具报「找不到设置文件」 | 同上 |
+| 打开诊断日志开关后，`~/.dsh` 下找不到 `qqbot-dispatch-diag.log` / `md-media-diag.log` | 同上 |
+
+现在这些读取点统一走 `resolveDshHome()` / `dshHomePath()`：**先看 `DSH_HOME`，没有再回落 `~/.dsh`**。
+没设 `DSH_HOME` 的老机器行为完全不变。
+
+### 内部
+
+- `shared/utils.ts` 新增 `resolveDshHome()` / `dshHomePath()`，并复用到 `scanDshProfiles()`；
+- 逐个替换写死点：`model/settings-reader.ts`、`features/auto-recall.ts`、`index.ts`（实例 cwd 补正两处）、
+  `channel-tools.ts`（自动撤回配置工具）、`features/ext-tool-interaction.ts`、`features/md-media-rewrite.ts`。
+
 ## 1.13.29 (2026-11-26)
 
 ### 你会感觉到的变化

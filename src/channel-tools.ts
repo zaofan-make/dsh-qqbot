@@ -15,8 +15,8 @@ import { setMaterialTargetFactory } from './features/md-media-rewrite.js';
 import type { Context } from '@deepseek-ai/cordis';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
+import { dshHomePath } from './shared/utils.js';
 import { dataRootOf } from './gateway/data-root.js';
-import { homedir } from 'node:os';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
 import { getStickerStore } from './features/sticker-store.js';
@@ -1142,7 +1142,9 @@ export async function apply(
     description: '回复闸门（**只在你不回复时**才调用）: 每轮先自己判断"这一轮该不该说话"——判断要回，就**直接回复**，不要调用本工具; 判断这一轮不该说话(没@你、话题与你无关、没必要插嘴)，就调用它传 reply:false，本回合立即静默终止，你不会再输出任何内容(这条消息就像没发生过)。默认行为是"正常回复"，所以不调用它 = 照常说话。' +
       '\n✅ **收到 reply:false 后，你会看到一条 `tool call aborted` 之类的"报错" —— 那正是「静默成功」本身**（本工具就是靠中断输出实现的，设计如此），不是工具坏了、也不是调用失败。看到它请直接收手，什么都不用做、也不用重试。' +
       '\n⛔ **不要为了"想安静"去动别的开关**（例如把出站模式切成 silent/静默）：那会影响**后续所有回合**，而你要的只是"这一轮别说话"。要静默，只走本工具。' +
-      '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。',
+      '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。' +
+      '\n🚫 **私聊(c2c)里、或被 @ 时，永远不要调用本工具**：私聊是主人一对一找你说话，静默等于不回话；被 @ 是明确在叫你。这两种情况直接回，闸门只用于群里「旁观」的回合。' +
+      '\n⚠️ **reply 语义只看布尔值**：reply:false = 这一轮静默；reply:true = 继续回复。reason 必须与 reply 一致 —— 如果 reason 里写着"需要回复/要回复/该回"，就不要传 reply:false；自相矛盾的 reply:false 会被闸门拦下并要求你直接开口。',
     parameters: {
       reply: { type: 'boolean', required: true, description: 'false=静默终止本回合(不再输出任何内容); true=正常继续(一般用不到 —— 想说话就直接说, 不必调本工具)' },
       reason: { type: 'string', required: true, description: '为什么这一轮不说话, 如"未@且话题无关" / "只是别人在聊天" / "已经问过她了"' },
@@ -1153,10 +1155,11 @@ export async function apply(
         properties: {
           ok: { type: 'boolean', required: true },
           stopped: { type: 'boolean', required: true },
+          note: { type: 'string', description: '被私聊拦下时的回执说明（此时 stopped=false，本回合照常开口）' },
         },
       },
-      render: (_a, v: { ok: boolean; stopped: boolean }) => [
-        { type: 'text' as const, text: v.stopped
+      render: (_a, v: { ok: boolean; stopped: boolean; note?: string }) => [
+        { type: 'text' as const, text: v.note ? String(v.note) : v.stopped
           ? '(已静默: 本回合终止, 不再回复)'
           // ★ 2026-10-29（issue #28）：原来是「(继续回复)」—— 括号舞台提示体，天然被读成"接着演"，
           //   而闸门把回合劈成两段后，待回的那条消息已被挤到上下文中间，末尾只剩这句提示 ⇒
@@ -1166,6 +1169,25 @@ export async function apply(
     },
     async execute(args, exec) {
       if (args.reply === false) {
+        let sessionKey = '';
+        try { sessionKey = (await resolveCtxMemoEnv(exec))?.sessionKey ?? ''; } catch { /* ignore */ }
+        // ★ 2026-11-27（实测事故）：私聊里闸门恒开 —— 私聊是主人一对一找它说话，静默等于不回话。
+        //   本地 27B 在无思考档位下会把本工具当成"开口开关"，连传 reply:false（reason 里却写着"要回复"），
+        //   cancel 掉整个回合 ⇒ 用户只看到 tool call aborted、一个字都没收到（11-27 夜里连续复现）。
+        //   所以在真正取消之前先判会话类型：c2c 一律放行（stopped:false + 回执说清楚），不 cancel。
+        if (sessionKey.includes(':c2c:')) {
+          return { ok: true, stopped: false, note: '(私聊必须开口：闸门在私聊恒开 —— 直接写你要说的那句话，不要静默)' };
+        }
+        // ★ 2026-11-28（实测事故）：小傻龙群里 @ 提问，模型传 reply:false 且 reason="用户直接@我提问，需要回复"，
+        //   闸门照单 cancel ⇒ turn/end aborted(hook reply_gate: 本轮静默)，用户只看到 tool call aborted。
+        //   这是 27B 无思考档位下的布尔语义反转：reason 说要回，reply 却传了 false。真正要静默的 reason
+        //   不会写"需要回复/要回复/该回/回复一下/回一下/回答/必须回/得回/需要回"。命中矛盾时不 cancel，
+        //   返回明确回执让模型直接开口；正常静默（reason 不含这些词）仍走原 cancel 路径，零额外开销。
+        const reason = typeof args.reason === 'string' ? args.reason : '';
+        const CONTRADICTORY_REPLY_FALSE = /需要回复|要回复|该回|回复一下|回一下|回答|必须回|得回|需要回/u;
+        if (CONTRADICTORY_REPLY_FALSE.test(reason)) {
+          return { ok: true, stopped: false, note: '(自相矛盾：reason 说要回复却传 reply=false —— 直接写你要说的那句话，不要再调本工具，也不要静默)' };
+        }
         try {
           const agent = (exec as unknown as { agent?: unknown }).agent as
             | { cancel?: (kind: unknown, opts?: unknown) => unknown }
@@ -2101,7 +2123,8 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const r = await ga.client.getMuteState(gid);
       if (!r.ok) return { ok: false, msg: r.err.human };
@@ -2138,13 +2161,14 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       let msgId = String(args.msg_id ?? '').trim();
       let who = '';
       if (msgId === '') {
         const member = String(args.member ?? '').trim();
-        const rec = latestMsgHistory('group', gid, { senderId: member || undefined, withinMs: 120_000 });
+        const rec = latestMsgHistory('group', gid, { senderId: member || undefined, withinMs: 120_000 }, ctxRoot);
         if (!rec) {
           return {
             ok: false,
@@ -2187,15 +2211,16 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
       const list = readMsgHistory('group', gid, {
         keyword: args.keyword ? String(args.keyword) : undefined,
         kind: (args.kind ? String(args.kind) : undefined) as MsgKind | undefined,
         fromSelf: typeof args.from_self === 'boolean' ? args.from_self : undefined,
         limit: Number(args.limit) || 20,
-      });
-      if (list.length === 0) return { ok: true, msg: '台账里没有命中的消息（默认只查最近 2 小时）。' + historyDebug('group', gid) };
+      }, ctxRoot);
+      if (list.length === 0) return { ok: true, msg: '台账里没有命中的消息（默认只查最近 2 小时）。' + historyDebug('group', gid, ctxRoot) };
       const lines = list.map((m, i) => `${i + 1}. ${m.me ? '🤖' : '👤'}${m.n || m.s} [${m.k ?? 'text'}] ${m.x || '(无正文)'}｜id=${String(m.id).slice(0, 16)}…｜${new Date(m.t).toLocaleTimeString('zh-CN')}`);
       return {
         ok: true,
@@ -2235,7 +2260,7 @@ export async function apply(
     execute: async (args: { action?: string; words?: string; muteSeconds?: number; enable?: boolean }) => {
       try {
         const prof = process.env.DSH_PROFILE || 'web';
-        const base = join(homedir(), '.dsh', 'qqbot-settings', prof);
+        const base = dshHomePath('qqbot-settings', prof);
         let file = join(base, 'im-qqbot-2.json');
         if (!existsSync(file)) {
           const cands = existsSync(base) ? readdirSync(base).filter((f) => /^im-qqbot-.*\.json$/.test(f)) : [];
@@ -2313,7 +2338,8 @@ export async function apply(
       try {
         const ga = groupAdminOf(exec);
         if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-        const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+        const ctxRoot = await resolveCtxDataRoot(exec);
+        const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
         if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
         const ids = (Array.isArray(args.member_openids) ? args.member_openids : [])
           .map((x) => String(x).trim())
@@ -2461,7 +2487,8 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid' };
       const brief = (m: { me?: boolean; s: string; n: string; k?: MsgKind; x?: string }): string =>
         `${m.me ? '🤖' : '👤'}${m.n || m.s} [${m.k ?? 'text'}] ${(m.x ?? '').slice(0, 24)}`;
@@ -2473,10 +2500,10 @@ export async function apply(
           keyword: args.keyword ? String(args.keyword) : undefined,
           kind: (args.kind ? String(args.kind) : undefined) as MsgKind | undefined,
           limit: 20,
-        }).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
+        }, ctxRoot).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
         ids = picked.map((p) => p.msgId);
       } else {
-        const all = readMsgHistory('group', gid, { withinMs: 120_000, limit: 200 }).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
+        const all = readMsgHistory('group', gid, { withinMs: 120_000, limit: 200 }, ctxRoot).map((r) => ({ me: r.me, s: r.s, n: r.n, k: r.k, x: r.x, msgId: r.id }));
         picked = all.filter((p) => ids.includes(p.msgId));
       }
       ids = ids.slice(0, 20);
@@ -2544,7 +2571,8 @@ export async function apply(
     async execute(args, exec) {
       const ga = groupAdminOf(exec);
       if (!ga) return { ok: false, msg: '群管理未开启或非群会话' };
-      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId();
+      const ctxRoot = await resolveCtxDataRoot(exec);
+      const gid = String(args.gid ?? '').trim() || ga.gid || latestGroupId(ctxRoot);
       if (!gid) return { ok: false, msg: '当前不是群会话且未指定 gid, 无法确定目标群' };
       const secs = Math.max(1, Math.min(30 * 86400, Math.round(Number(args.seconds ?? 600))));
       const pad = (n: number): string => String(n).padStart(2, '0');

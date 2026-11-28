@@ -12,10 +12,13 @@ export interface AggImage {
 }
 /** 装配期调用：把我们产出的附件 id 台账绑到数据根上（跨重启也认得） */
 export declare function initAggregateRegistry(dataRoot: string): void;
-/** 登记一个"我们做的"图片附件 */
-export declare function noteOurAttachment(id: string): void;
-/** 这个附件是不是"我们自己拼/发"的图 */
-export declare function isOurAttachment(id: unknown): boolean;
+/** 登记一个「我们做的」图片附件（写回该实例自己的数据根） */
+export declare function noteOurAttachment(id: string, dataRoot?: string): void;
+/**
+ * 这个附件是不是「我们自己拼/发」的图。
+ * 给了 dataRoot 只看那个实例；没给就看全部实例（附件 id 是内容寻址的，跨实例同名必是同一张图）。
+ */
+export declare function isOurAttachment(id: unknown, dataRoot?: string): boolean;
 /** 宿主注入：判断当前 agent 走的模型是否支持 image 输入 */
 type ImageProbe = (agent: unknown) => Promise<boolean | undefined>;
 /** 宿主注入：把合成图存成附件 */

@@ -1191,7 +1191,7 @@ function assembleAgentBody(
   /** 白名单第一位的 openid（主人）—— 撞名时附 id 用 */
   ownerOpenid?: string,
 ): string | null {
-  const userContentRaw = buildUserContent(msg, state, logger);
+  const userContentRaw = buildUserContent(msg, state, logger, dataRoot);
   // 2026-10-01 主人实测「别人 @ 别人怎么没转换成昵称，依然是 id」：
   //   正文里 @ 别人的 `<@openid>` 查**群成员台账**换成 `@昵称`（查不到退化成 @短id）；
   //   顺手省 token —— `<@07B470BDA5052489D2D0532C2CC2A2EB>`(35 字符) → `@难崩`(3 字符)。
@@ -1297,7 +1297,7 @@ function assembleAgentBody(
 /**
  * Layer 1: 用户文本内容 + 语音 + 附件
  */
-function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger: Logger): string {
+function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger: Logger, dataRoot?: string): string {
   const parts: string[] = [];
 
   // 2026-09-11 主人要求: 入站 @bot 长 openid 转短标记 @bot 省 token(精确按 mentions.is_you 替换)
@@ -1322,7 +1322,7 @@ function buildUserContent(msg: ProcessedMessage, state: MiddlewareState, logger:
           t: Date.now(),
           n: String((msg as { senderName?: string }).senderName ?? ''),
           x: text,
-        });
+        }, dataRoot);
         if (fp) {
           // ★ CodeRabbit：**逐个精确替换**已提取到的 URL 本体（边界与 extractUrls 一致），
           //   不要用 [^\s]+ —— 那会把 URL 后面的中文分号/尺寸等元信息一起吃掉。
@@ -1453,6 +1453,7 @@ function lookupSenderByHistoryText(
   peerKey: string,
   text: string,
   imageMd5s?: string[],
+  dataRoot?: string,
 ): { senderName?: string; senderId?: string } | undefined {
   const sep = peerKey.indexOf(':');
   if (sep <= 0) return undefined;
@@ -1461,7 +1462,7 @@ function lookupSenderByHistoryText(
   if (!peerId || (scope !== 'group' && scope !== 'c2c')) return undefined;
   // 具体匹配逻辑在 features/msg-history 的 findSenderByQuote 里 ——
   // 中间件（回填 ctx.state.quote）和这里共用同一份，避免两处行为不一致。
-  return findSenderByQuote(scope as 'group' | 'c2c', peerId, text, imageMd5s);
+  return findSenderByQuote(scope as 'group' | 'c2c', peerId, text, imageMd5s, dataRoot);
 }
 
 /**
@@ -1515,7 +1516,7 @@ function enrichQuoteFromCache(q: ResolvedQuote | undefined, dataRoot: string, pe
       const v = md5OfFilename(att?.filename);
       if (v && !probeMd.includes(v)) probeMd.push(v);
     }
-    const h = lookupSenderByHistoryText(peerKey, out.text ?? rawText, probeMd);
+    const h = lookupSenderByHistoryText(peerKey, out.text ?? rawText, probeMd, dataRoot);
     if (h) {
       if (h.senderName) out.senderName = h.senderName;
       if (h.senderId) out.senderId = h.senderId;

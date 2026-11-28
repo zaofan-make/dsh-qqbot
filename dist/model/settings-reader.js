@@ -1,12 +1,12 @@
 /**
  * SettingsReader — settings.yaml 只读解析
  *
- * 从 ~/.dsh/settings.yaml 中读取模型配置信息。
+ * 从 {DSH_HOME|~/.dsh}/settings.yaml 中读取模型配置信息。
  * 只读，不修改 settings.yaml。
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { resolveDshHome } from '../shared/utils.js';
 import yaml from 'js-yaml';
 export class SettingsReader {
     /** settings.yaml 缓存 */
@@ -85,7 +85,7 @@ export class SettingsReader {
         if (!fresh && this.settingsCache !== undefined)
             return this.settingsCache;
         try {
-            const settingsPath = resolve(homedir(), '.dsh', 'settings.yaml');
+            const settingsPath = resolve(resolveDshHome(), 'settings.yaml');
             if (!existsSync(settingsPath)) {
                 this.settingsCache = null;
                 return null;
