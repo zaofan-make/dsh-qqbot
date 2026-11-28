@@ -2303,7 +2303,11 @@ export class SessionManager {
                 // ★ CodeRabbit：**智能模式指令独立成块**（`qqbot:ctx-smart`）。
                 //   原来它拼在群守则 body 里、共用 `rulesFp` 判重 ⇒ 群守则没变时（智能模式刚打开、
                 //   或重启后恢复的会话）`skipGroupRules` 会把整条 body 丢掉 ⇒ 话题判断/压缩要求永远缺失。
-                if (ctxSmartOn && ctxSmartText) {
+                // ★★ 2026-11-27（主人指出）：**「无上下文模式·智能判断」也是 QQ 会话专用的** ——
+                //   它讲的是"群聊消息量大、历史会随每轮送出、白烧钱"，判据也是"聊了 5 轮以上/对方换话题"
+                //   这种群聊场景。非 QQ 会话（在 DSH 宿主界面里对话）没有这个问题，
+                //   注进只会平白多一段 system-reminder。
+                if (isQqBoundSession && ctxSmartOn && ctxSmartText) {
                     const SMART_KIND = 'qqbot:ctx-smart';
                     const smartFp = CTX_SMART_REMINDER.slice(0, 40);
                     // ★ CodeRabbit：判重要看**剔旧之后**的 `_baseMsgs` —— `_stripOldCtxSmart` 已经把本批里的旧智能块删掉了，
@@ -2343,7 +2347,7 @@ export class SessionManager {
                 //   原来和群守则共用一条 body（去重只比群守则指纹）⇒ 群守则不变时，备忘改了也**永远不会重注**，
                 //   模型看到的始终是最老那份。现在按"上下文里最后一条备忘块是否已含当前备忘文本"判重：
                 //   变了就补注一条（旧版留在历史里，新块写明"以此为准"）。
-                if (selfMemoText) {
+                if (isQqBoundSession && selfMemoText) {
                     const MEMO_KIND = 'qqbot:self-memo';
                     const _memoInBatch = dec.messages.some((m) => {
                         const mm = m;
@@ -2440,7 +2444,7 @@ export class SessionManager {
                 //   重启/回收后从 Web 打开的 QQ 会话在它眼里是 undefined。
                 //   要是放在函数开头提前 return，小传注入 / peopleMemoInWeb / contextlessMode 全都不执行了。
                 const _ownedByMe = !!this.findByAgent(agent);
-                if (this.config.latexHint === true && _ownedByMe && !_hintInBatch && !_hintInSurface) {
+                if (isQqBoundSession && this.config.latexHint === true && _ownedByMe && !_hintInBatch && !_hintInSurface) {
                     extraAll.push({
                         role: 'user',
                         id: randomUUID(),
@@ -2511,7 +2515,19 @@ export class SessionManager {
                         this.logger?.info?.(`[会话类型] 注入 kind=${info.kind}${info.name ? ` name=「${info.name}」` : ' name=(未取到)'} key=${_kindKey}`);
                     }
                 }
-                const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
+                // ★★ 2026-11-27（主人在 `game` 工作区的会话里发现整段群守则被注入）：
+                //   `body` 里那三样 ——
+                //     · FIXED_CHANNEL_CONTEXT（@人语法 / 富媒体标记 / 引用写法）
+                //     · refCtx（引用消息指令）
+                //     · rules（群守则）
+                //   **全是 QQ 会话专有的**。注进非 QQ 工作区的会话里，模型根本用不上，
+                //   而且这一步要多烧约 1900 字（每个 step 都在）。
+                //   ⚠️ 不能在这里提前 `return decision` —— 后面的 ctxSmartText（无上下文·智能判断）
+                //   和「会话类型」注入在 web 会话里同样需要，提前 return 会把它们一起吞掉。
+                //   所以只把这一条 desired 从插入列表里去掉。判据复用上面小传那段已验证过的
+                //   `isQqBoundSession`（recMemo 命中，或 sessionKey 能被 modelResolver 反查到）。
+                const wantGroupRules = isQqBoundSession && !skipGroupRules;
+                const entered = [..._baseMsgs.slice(0, _at2), ...(wantGroupRules ? [desired] : []), ...extraAll, ..._baseMsgs.slice(_at2)];
                 return { ...dec, messages: entered };
             }
             catch {
