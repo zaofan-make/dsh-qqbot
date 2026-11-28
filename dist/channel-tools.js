@@ -4377,6 +4377,16 @@ export function applyExtToolVisibility(agentCtx, selfTag) {
             return;
         const prevTag = extSeenCtx.get(ctx) ?? '';
         const tag = selfTag !== undefined ? String(selfTag) : prevTag;
+        // ★ 2026-11-28（复审 Y31）：**先判空、再登记**。
+        //   反过来（先 `set` 再判空）会把 `extSeenCtx` 里这个 ctx 的 tag 抹成 `''` ——
+        //   `extSeenCtx` 是**模块级、全实例共享**的。多开实例同 cwd 时，B 对"本不该碰的 A 的 ctx"
+        //   调一次本函数（传空 tag）就会踩掉 A 的记录；之后 A 那边 `gain_qq_tools.enable(...)` 的
+        //   补注册（不传 selfTag、靠 prevTag 回落）与整表重放都会因拿不到 tag 直接 return
+        //   ⇒ 表现成「enable 了却调不到」，极难查。
+        if (!tag) {
+            traceToolReg('[ext-vis] 跳过（拿不到 selfTag）');
+            return;
+        }
         extSeenCtx.set(ctx, tag);
         // ★★★ 2026-10-31（主人实测后的最终结论）：**改成 per-agent 注册**。
         //   实测对照：同一次运行里
@@ -4386,10 +4396,6 @@ export function applyExtToolVisibility(agentCtx, selfTag) {
         //     该 agent 应有的 = 本实例自己的（__selfTag）+ 已领取的，逐个注册到它的 ctx；
         //   既不用 deny，也不用 root —— 非 QQ agent 不走这段，天然零泄漏。
         //   ⚠️ 拿不到 tag 就什么都不做（否则会把"自己实例那份"也漏掉）。
-        if (!tag) {
-            traceToolReg('[ext-vis] 跳过（拿不到 selfTag）');
-            return;
-        }
         const all = [...extToolIndex.values()];
         if (!all.length)
             return; // 还没扫到东西：先不动

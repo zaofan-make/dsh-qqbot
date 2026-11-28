@@ -1576,7 +1576,14 @@ export class SessionManager {
                 //   正解：注册到当前 ctx + **显式传 dataRoot**（qqChannel 解析有兜底，靠 dataRoot 就够了）；
                 //   record.agentCtx 那份也顺手注册一遍，覆盖"同一 agent 复用"的场景。
                 const ctxC = agC?.ctx;
-                if (ctxC && this.nsForCwd(cwdC)) {
+                // ★ 2026-11-28（复审 Y32）：**"别人的会话"连内置工具都不该挂**。
+                //   这里原来只按 cwd 判，而两个实例同 cwd 时一样成立 ⇒ 会给 A 的 agent 挂上
+                //   **B 的** dataRoot（见下面 `setCtxEnv`）。而 `resolveCtxDataRoot()` 只认 dataRoot、
+                //   不看 sessionKey（`channel-tools.ts` 里有注释说明"群管理只跟数据目录有关"）
+                //   ⇒ A 的会话里调群管理/审批类工具，拿到的是 **B 的数据根与凭据**。
+                //   若 B 恰好也在同一个群且是管理员，操作会"成功"，但用的是 B 的身份。
+                const sidC = String(agC?.session?.id ?? '');
+                if (ctxC && this.nsForCwd(cwdC) && !this.isForeignSession(sidC)) {
                     setCtxEnv(ctxC, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(recC?.sessionKey ?? '') });
                     // 当前回合作用域：这是本回合快照会读的那份，必须同步完成（await 不行，这里是同步派发）
                     void mountChannelTools(ctxC, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
