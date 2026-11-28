@@ -139,6 +139,25 @@ export declare class SessionManager {
     exportMarkdown(scope: ChatScope, peerId: string): string;
     private countMessages;
     private sessionKey;
+    /**
+     * 由 DSH 会话 id 反查**本实例**的 QQ sessionKey（严格校验 appId 归属）。
+     *
+     * ⚠️ 为什么不直接用 `modelResolver.findKeyBySessionIdOrDerived()` 的裸结果
+     *   （CodeRabbit 2026-11-28 · Major）：
+     *   `model-prefs.json` 是**全实例共享**的一份文件（`~/.dsh-qqbot/` 或 `$DSH_HOME` 下）。
+     *   多开实例时里面同时躺着**别的实例**的 key，而**同一个群里两个 bot 的 `scope:peerId`
+     *   完全一样、只有 appId 不同** ⇒ 光比对尾巴根本分不出是谁的。
+     *   偏偏这个 sk 会被拿去给 agent 挂/摘通道工具（`syncScopedToolsOnClaim`）——
+     *   那就是在**改别人 agent ctx 上的注册**（实例 B 的 groupAdmin 关着，就能把实例 A
+     *   已注册的 `qq_group_admin` 撤掉；B 的上下文工具开关也会盖掉 A 的状态）。
+     *   所以必须在拿到 key 之后按 appId 卡一道，而不是把「反查命中」当成「归属确认」。
+     *
+     * 换号 / 迁移（历史 key 是旧 appId 前缀）：这里**不接受** —— 退化成旧行为
+     *   （判不出是 QQ 会话），不会误伤。真要支持换号，得先做偏好存储的实例隔离 + 迁移。
+     *
+     * @returns sessionKey；`''` 表示"不是本实例的会话"或"查不到"
+     */
+    private sessionKeyOfSession;
     private deriveSessionId;
     private currentSessionId;
     private composePreset;

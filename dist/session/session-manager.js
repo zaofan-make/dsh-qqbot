@@ -636,6 +636,46 @@ export class SessionManager {
     sessionKey(scope, peerId) {
         return `qqbot:${this.config.appId}:${scope}:${peerId}`;
     }
+    /**
+     * 由 DSH 会话 id 反查**本实例**的 QQ sessionKey（严格校验 appId 归属）。
+     *
+     * ⚠️ 为什么不直接用 `modelResolver.findKeyBySessionIdOrDerived()` 的裸结果
+     *   （CodeRabbit 2026-11-28 · Major）：
+     *   `model-prefs.json` 是**全实例共享**的一份文件（`~/.dsh-qqbot/` 或 `$DSH_HOME` 下）。
+     *   多开实例时里面同时躺着**别的实例**的 key，而**同一个群里两个 bot 的 `scope:peerId`
+     *   完全一样、只有 appId 不同** ⇒ 光比对尾巴根本分不出是谁的。
+     *   偏偏这个 sk 会被拿去给 agent 挂/摘通道工具（`syncScopedToolsOnClaim`）——
+     *   那就是在**改别人 agent ctx 上的注册**（实例 B 的 groupAdmin 关着，就能把实例 A
+     *   已注册的 `qq_group_admin` 撤掉；B 的上下文工具开关也会盖掉 A 的状态）。
+     *   所以必须在拿到 key 之后按 appId 卡一道，而不是把「反查命中」当成「归属确认」。
+     *
+     * 换号 / 迁移（历史 key 是旧 appId 前缀）：这里**不接受** —— 退化成旧行为
+     *   （判不出是 QQ 会话），不会误伤。真要支持换号，得先做偏好存储的实例隔离 + 迁移。
+     *
+     * @returns sessionKey；`''` 表示"不是本实例的会话"或"查不到"
+     */
+    sessionKeyOfSession(sid) {
+        let sk = '';
+        try {
+            sk = String(this.modelResolver.findKeyBySessionIdOrDerived(sid) ?? '');
+        }
+        catch {
+            return '';
+        }
+        if (!sk)
+            return '';
+        const m = /^qqbot:([^:]*):(?:group|c2c):/.exec(sk);
+        if (!m)
+            return '';
+        const cur = String(this.config.appId ?? '');
+        // 没配 appId 的部署（本地自测）无从校验 ⇒ 放行，否则整个功能都废掉
+        if (!cur)
+            return sk;
+        if (String(m[1] ?? '') === cur)
+            return sk;
+        this.logger?.debug?.(`[session-key] 反查到别的实例的 key, 已忽略: ${sk} (本实例 appId=${cur})`);
+        return '';
+    }
     deriveSessionId(sessionKey) {
         // ★ 2026-11-28：公式与 `prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）共用一份
         //   （`shared/utils` 的 `deriveSessionIdFromKey`）—— 两边必须算得一模一样，
@@ -1299,7 +1339,7 @@ export class SessionManager {
             //   agents.resume，不写 this.sessions）在 findByAgent / findBySessionId 眼里都不存在
             //   ⇒ 这里曾直接跳过注册。持久化的 sessionId→sessionKey 映射（model-prefs）是唯一兜底。
             if (!sk && sid)
-                sk = String(this.modelResolver.findKeyBySessionIdOrDerived(sid) ?? '');
+                sk = this.sessionKeyOfSession(sid);
         }
         if (!sk) {
             traceContextless('[ctxtool-claim] skip: 拿不到 sessionKey rec=' + String(Boolean(rec)) + ' sid=' + String(a.session?.id ?? ''));
@@ -1590,10 +1630,7 @@ export class SessionManager {
                         //   1852 行的 trimHistoryForContextless 撞"同回合防重复"返回 false ⇒ pending 永远不执行。
                         //   所以必须**在这里**（所有裁剪分派之前）就用持久映射兜底 —— 否则补消费端也改不了执行顺序。
                         if (!sk0) {
-                            try {
-                                sk0 = String(this.modelResolver.findKeyBySessionIdOrDerived(sid0) ?? '');
-                            }
-                            catch { /* ignore */ }
+                            sk0 = this.sessionKeyOfSession(sid0);
                             if (sk0)
                                 traceContextless('[ctxsmart] sk0 持久映射兜底: ' + sk0);
                         }
@@ -1917,7 +1954,7 @@ export class SessionManager {
                         try {
                             const sidSmart = String(agent?.session?.id ?? '');
                             if (sidSmart)
-                                skSmart = this.modelResolver.findKeyBySessionIdOrDerived(sidSmart) || undefined;
+                                skSmart = this.sessionKeyOfSession(sidSmart) || undefined;
                         }
                         catch { /* ignore */ }
                     }
@@ -1935,7 +1972,7 @@ export class SessionManager {
                     if (!ctxSmartOn) {
                         try {
                             const sidNow = String(agent?.session?.id ?? '');
-                            const keyNow = sidNow ? String(this.modelResolver.findKeyBySessionIdOrDerived(sidNow) ?? '') : '';
+                            const keyNow = sidNow ? this.sessionKeyOfSession(sidNow) : '';
                             if (keyNow) {
                                 ctxSmartOn = isContextlessActive(keyNow, this.config.contextlessMode)
                                     && contextlessSmartOf(keyNow, this.config.contextlessSmart);
@@ -2009,7 +2046,7 @@ export class SessionManager {
                 const isQqBoundSession = !!recMemo || (() => {
                     try {
                         const sid0 = String(agent?.session?.id ?? '');
-                        return !!sid0 && !!this.modelResolver.findKeyBySessionIdOrDerived(sid0);
+                        return !!sid0 && !!this.sessionKeyOfSession(sid0);
                     }
                     catch {
                         return false;
@@ -2094,7 +2131,7 @@ export class SessionManager {
                             // 重启/回收后 findByAgent 查不到宿主恢复的会话 ⇒ 用 model-prefs 反查（同会话类型注入那套）
                             try {
                                 const sidNow = String(agent?.session?.id ?? '');
-                                skM = sidNow ? String(this.modelResolver.findKeyBySessionIdOrDerived(sidNow) ?? '') : '';
+                                skM = sidNow ? this.sessionKeyOfSession(sidNow) : '';
                             }
                             catch { /* ignore */ }
                         }
@@ -2476,7 +2513,7 @@ export class SessionManager {
                         return String(recMemo.sessionKey);
                     try {
                         const sidNow = String(agent?.session?.id ?? '');
-                        return sidNow ? String(this.modelResolver.findKeyBySessionIdOrDerived(sidNow) ?? '') : '';
+                        return sidNow ? this.sessionKeyOfSession(sidNow) : '';
                     }
                     catch {
                         return '';
