@@ -19,5 +19,17 @@ export interface ModelEntry {
     provider: string;
     id: string;
     name?: string;
+    /**
+     * 这个模型**实际支持**的思考档位名（如 `['off','low','high','max']`）。
+     *
+     * 来源：宿主 `llm.listModels(provider)` 返回的条目自带 `reasoningEfforts` 字段
+     * （一条 `level → wire 值` 的映射；`false` = 该模型不支持思考，`null` = 空）。
+     * **键就是档位名**，所以 `Object.keys()` 拿到的就是可选档。
+     *
+     * ⚠️ 2026-11-28：这个字段原来被 `listModels()` 丢掉了，于是「路由缺档时该补什么」
+     *   只能靠硬编码猜 —— 猜错就是 `does not support reasoning effort "medium"`（整轮失败）。
+     *   现在留着它，缺档时按**这个模型真实支持的**挑。
+     */
+    reasoningEfforts?: string[];
 }
 //# sourceMappingURL=types.d.ts.map

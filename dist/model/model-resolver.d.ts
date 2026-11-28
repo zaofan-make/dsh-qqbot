@@ -96,23 +96,23 @@ export declare class ModelResolver {
      */
     listProviders(): string[];
     /**
-     * 路由缺思考强度时 —— **原样返回，不补任何默认档**。
+     * 路由缺思考强度时，按**这个模型真实支持的档位**挑一个。
      *
-     * ⚠️⚠️ 2026-11-28 紧急回退（主人实测报错）：
-     *   `本轮运行失败  provider "opencode" model "deepseek-v4.1-flash" does not support reasoning effort "medium"`
+     * 数据来源：`listModels()` 时从宿主条目里读到的 `reasoningEfforts`（缓存进 `modelCaps`）。
+     *   - 有缓存 ⇒ 优先 `medium`，没有就 `high/low/max`，再不行取任一非 `off`；
+     *   - **没缓存 ⇒ 原样返回，不补**（第一次通常还没拉到模型目录）。
      *
-     * 上一版（外部贡献 #96）在这里硬编码补 `'medium'`，问题是：
-     *   ① **不同 provider/模型支持的档位不一样**，一个全局常量必然踩雷；
-     *   ② 它自己的 fallback 档位列表是 `['off','low','high','max']`（deepseek 适配器），
-     *      **里面根本没有 medium** —— 自相矛盾；
-     *   ③ 宿主根本没提供"某模型支持哪些档"的查询（`llm.reasoningEfforts()` 是全局的），
-     *      所以**没法安全地猜**。
-     *
-     * 现在的取舍：**宁可让宿主按自己的默认走（thinking 可能 disabled），
-     * 也不要塞一个它会直接报错的值** —— 前者是行为偏差，后者是整轮跑不起来。
-     * 需要思考档位的人在模型路由里显式写 `effort`（面板 / 命令都能设），那条路径不受影响。
+     * ⚠️⚠️ 2026-11-28 走过的弯路（别再硬编码）：
+     *   上一版直接补 `'medium'`，结果 `provider "opencode" model "deepseek-v4.1-flash"
+     *   does not support reasoning effort "medium"` ⇒ 整个回合「本轮运行失败」。
+     *   不同模型支持的档位本来就不一样，「一个全局常量」必然踩雷。
      */
     private withEffort;
+    /** `provider/model` → 该模型支持的档位名（由 `listModels()` 顺带填充）。 */
+    private modelCaps;
+    private capsWarming;
+    /** 预热模型能力表（首次调用触发一次异步拉取；失败静默，下次再试）。 */
+    private warmModelCaps;
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     private overrideKey;
     private readFromHost;
