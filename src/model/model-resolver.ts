@@ -17,7 +17,6 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ImQQBotConfig } from '../config.js';
 import type { Logger } from '../types.js';
 import type { ModelRoute, ModelEntry } from './types.js';
-import { DEFAULT_REASONING_EFFORT } from './types.js';
 import { PrefsStore } from './prefs-store.js';
 import { dataRootOf } from '../gateway/data-root.js';
 import { SettingsReader } from './settings-reader.js';
@@ -270,11 +269,24 @@ export class ModelResolver {
   // ── 私有方法 ──
 
   /**
-   * 路由缺思考强度时补默认档（原因见 types.ts 的 DEFAULT_REASONING_EFFORT）。
-   * 宿主只认 provider/model/reasoningEffort；缺档 ⇒ anthropic 适配器发 thinking:{type:'disabled'}。
+   * 路由缺思考强度时 —— **原样返回，不补任何默认档**。
+   *
+   * ⚠️⚠️ 2026-11-28 紧急回退（主人实测报错）：
+   *   `本轮运行失败  provider "opencode" model "deepseek-v4.1-flash" does not support reasoning effort "medium"`
+   *
+   * 上一版（外部贡献 #96）在这里硬编码补 `'medium'`，问题是：
+   *   ① **不同 provider/模型支持的档位不一样**，一个全局常量必然踩雷；
+   *   ② 它自己的 fallback 档位列表是 `['off','low','high','max']`（deepseek 适配器），
+   *      **里面根本没有 medium** —— 自相矛盾；
+   *   ③ 宿主根本没提供"某模型支持哪些档"的查询（`llm.reasoningEfforts()` 是全局的），
+   *      所以**没法安全地猜**。
+   *
+   * 现在的取舍：**宁可让宿主按自己的默认走（thinking 可能 disabled），
+   * 也不要塞一个它会直接报错的值** —— 前者是行为偏差，后者是整轮跑不起来。
+   * 需要思考档位的人在模型路由里显式写 `effort`（面板 / 命令都能设），那条路径不受影响。
    */
   private withEffort(route: ModelRoute): ModelRoute {
-    return route.effort ? route : { ...route, effort: DEFAULT_REASONING_EFFORT };
+    return route;
   }
 
   /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
