@@ -4388,6 +4388,8 @@ export function applyExtToolVisibility(agentCtx, selfTag) {
             return;
         }
         extSeenCtx.set(ctx, tag);
+        // ⚠️ `''` 的语义是**「不碰」**，不是「清空这个 ctx 的记录」—— 判空在登记之前，
+        //   所以传空 tag 不会把已有记录抹掉。要"撤销某个 ctx 的 tag"得另加 API（目前没有这需求）。
         // ★★★ 2026-10-31（主人实测后的最终结论）：**改成 per-agent 注册**。
         //   实测对照：同一次运行里
         //     · ensureExtToolsGlobal 注册到 apply(ctx)  → QQ 会话调不到（unknown tool）
