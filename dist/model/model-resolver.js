@@ -13,6 +13,7 @@
  *   > 宿主 agentDefaultModel 服务
  */
 import { join } from 'node:path';
+import { DEFAULT_REASONING_EFFORT } from './types.js';
 import { PrefsStore } from './prefs-store.js';
 import { dataRootOf } from '../gateway/data-root.js';
 import { SettingsReader } from './settings-reader.js';
@@ -48,7 +49,8 @@ export class ModelResolver {
      *    sessionId 缺省时兼容旧 peer 级读取(回退/单会话用)。
      */
     getEffectiveRoute(sessionKey, sessionId) {
-        return this.prefs.getOverride(this.overrideKey(sessionKey, sessionId)) ?? this.resolveDefault();
+        const route = this.prefs.getOverride(this.overrideKey(sessionKey, sessionId)) ?? this.resolveDefault();
+        return route ? this.withEffort(route) : undefined;
     }
     /**
      * 获取 resume 时覆盖 session 的模型路由
@@ -65,11 +67,12 @@ export class ModelResolver {
     getResumeRoute(sessionKey, sessionId) {
         const override = this.prefs.getOverride(this.overrideKey(sessionKey, sessionId));
         if (override)
-            return override;
+            return this.withEffort(override);
         if (this.config.provider && this.config.model) {
-            return { provider: this.config.provider, model: this.config.model };
+            return this.withEffort({ provider: this.config.provider, model: this.config.model });
         }
-        return this.resolveDefault();
+        const route = this.resolveDefault();
+        return route ? this.withEffort(route) : undefined;
     }
     /**
      * 设置会话级模型偏好并持久化到隔离文件
@@ -231,6 +234,13 @@ export class ModelResolver {
         return this.settings.readProviders();
     }
     // ── 私有方法 ──
+    /**
+     * 路由缺思考强度时补默认档（原因见 types.ts 的 DEFAULT_REASONING_EFFORT）。
+     * 宿主只认 provider/model/reasoningEffort；缺档 ⇒ anthropic 适配器发 thinking:{type:'disabled'}。
+     */
+    withEffort(route) {
+        return route.effort ? route : { ...route, effort: DEFAULT_REASONING_EFFORT };
+    }
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     overrideKey(sessionKey, sessionId) {
         return sessionId ? `${sessionKey}@${sessionId}` : sessionKey;

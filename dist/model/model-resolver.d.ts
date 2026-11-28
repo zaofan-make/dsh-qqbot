@@ -88,6 +88,11 @@ export declare class ModelResolver {
      * 列出可用 provider 名称
      */
     listProviders(): string[];
+    /**
+     * 路由缺思考强度时补默认档（原因见 types.ts 的 DEFAULT_REASONING_EFFORT）。
+     * 宿主只认 provider/model/reasoningEffort；缺档 ⇒ anthropic 适配器发 thinking:{type:'disabled'}。
+     */
+    private withEffort;
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     private overrideKey;
     private readFromHost;

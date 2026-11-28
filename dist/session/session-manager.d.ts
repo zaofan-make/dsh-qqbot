@@ -188,6 +188,16 @@ export declare class SessionManager {
      */
     private readonly lastHostModel;
     adoptHostModel(scope: ChatScope, peerId: string, agent: unknown): boolean;
+    /**
+     * 把内部模型路由转成宿主认识的 agentOptions。
+     *
+     * 宿主的 agentOptions 只有 provider/model/reasoningEffort 三个字段（见 dsh-api-session-controller 的
+     * agentOptions()）。原来这里把内部路由 `{ provider, model, effort }` 直接当 agentOptions 传，
+     * effort 被宿主丢掉 ⇒ 宿主按"没开思考"建会话，第一轮 body 就是 thinking:{type:'disabled'}。
+     * 本地 27B 在无思考档位时会把 reply_gate 当成"开口开关"连传 reply:false，整轮被 hook 取消，
+     * 用户看到的是满屏 tool call aborted 且一个字不回（2026-11-27 实测）。缺档时补默认档。
+     */
+    private toAgentOptions;
     private applyModelRoute;
     /**
      * 通道工具自愈 + 固化(2026-09-05 升级): 每次消息都全量幂等注册 channel-tools(静态 import,
