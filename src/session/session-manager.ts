@@ -55,7 +55,6 @@ import { dataRootOf, stickerDirOf } from '../gateway/data-root.js';
 import { SettingsReader } from '../model/settings-reader.js';
 import { ModelResolver } from '../model/model-resolver.js';
 import type { ModelRoute, ModelEntry } from '../model/types.js';
-import { DEFAULT_REASONING_EFFORT } from '../model/types.js';
 import { IdleEvictor } from './idle-evictor.js';
 import type {
   SessionEventLike,
@@ -1182,8 +1181,11 @@ export class SessionManager {
       this.lastHostModel.set(key, hostKey);
 
       const sameRoute = !!stored && stored.provider === cur.provider && stored.model === cur.model;
-        const effectiveEffort = hostEffort ?? stored?.effort ?? DEFAULT_REASONING_EFFORT;
-        const sameEffort = (stored?.effort ?? '') === effectiveEffort;
+      // ★ 2026-11-28（紧急修）：**不再硬补默认档**。宿主的模型未必支持某个固定档
+      //   （实测 `provider "opencode" model "deepseek-v4.1-flash" does not support reasoning effort "medium"`
+      //    会让整个回合"本轮运行失败"）。宿主没带、存里也没有 ⇒ 就不写 effort 字段，让宿主自己决定。
+      const effectiveEffort = hostEffort ?? stored?.effort;
+      const sameEffort = (stored?.effort ?? '') === (effectiveEffort ?? '');
       if (sameRoute && sameEffort) return false;
 
       const route: ModelRoute = {
@@ -1191,8 +1193,8 @@ export class SessionManager {
         model: cur.model,
         // ★ 2026-11-27 修：宿主**没带**思考强度时，不能把已存的强度抹掉 ——
         //   原来这里写成 ...(hostEffort ? { effort: hostEffort } : {})，于是 model-prefs.json 里
-        //   手工写好的 effort=medium 会被宿主的一次无档位选择清空，下一轮又是 thinking:disabled。
-        effort: effectiveEffort,
+        //   手工写好的 effort 会被宿主的一次无档位选择清空。这里用 effectiveEffort 保住已存值。
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       };
       // 直接写偏好：**不能走 setModelOverride** —— 它现在"同模型同强度就 return"（防白 fork），
       //   而这里正是要把宿主的新值落盘（含 effort 变化），所以绕过去，只写存储。
@@ -1216,11 +1218,12 @@ export class SessionManager {
    * 本地 27B 在无思考档位时会把 reply_gate 当成"开口开关"连传 reply:false，整轮被 hook 取消，
    * 用户看到的是满屏 tool call aborted 且一个字不回（2026-11-27 实测）。缺档时补默认档。
    */
-  private toAgentOptions(route: ModelRoute): { provider: string; model: string; reasoningEffort: string } {
+  private toAgentOptions(route: ModelRoute): { provider: string; model: string; reasoningEffort?: string } {
     return {
       provider: route.provider,
       model: route.model,
-      reasoningEffort: route.effort ?? DEFAULT_REASONING_EFFORT,
+      // ★ 2026-11-28：只在**确实设了**档位时才带上。硬补一个固定值会让不支持的模型整轮报错。
+      ...(route.effort ? { reasoningEffort: route.effort } : {}),
     };
   }
 
@@ -1246,8 +1249,9 @@ export class SessionManager {
         const cur = m.current();
         // ★ 2026-11-08 修：这里原来只看 provider/model —— 同模型只改**思考强度**时直接 return，
         //   强度根本没写进宿主 ⇒ 下一轮 adoptHostModel 又按宿主的旧强度把偏好改回去（主人实测：切 high 又变回 low）。
-        const effectiveEffort = route.effort ?? DEFAULT_REASONING_EFFORT;
-        const sameEffort = (cur?.reasoningEffort ?? '') === effectiveEffort;
+        // ★ 2026-11-28（紧急修）：缺档时**沿用宿主当前的**，不硬补 —— 补一个不支持的档 = 整轮跑不起来。
+        const effectiveEffort = route.effort ?? cur?.reasoningEffort;
+        const sameEffort = (cur?.reasoningEffort ?? '') === (effectiveEffort ?? '');
         if (cur?.provider === route.provider && cur?.model === route.model && sameEffort) return;
         // 保留宿主可能存在的其它字段（reasoningEffort 等），只换 provider/model
         // 2026-11-08：模型路由里带思考强度就一起写进去（宿主 ModelSelection 支持 reasoningEffort）
@@ -1255,7 +1259,7 @@ export class SessionManager {
           ...(cur ?? {}),
           provider: route.provider,
           model: route.model,
-          reasoningEffort: effectiveEffort,
+          ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
         });
         this.logger.info(
           `getOrCreate: ${label} 模型覆盖(agent.model.select) ${cur?.provider ?? '?'}/${cur?.model ?? '?'} -> ${route.provider}/${route.model}`,
