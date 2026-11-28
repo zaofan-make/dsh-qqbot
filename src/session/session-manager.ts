@@ -1540,10 +1540,15 @@ export class SessionManager {
         //   统一用 `nsForCwd(session.header.cwd)` 做 cwd 分流（与 syncScopedToolsOnClaim 同一口径）：
         //     · cwd 落在本实例 cwd 下 → 本实例的 QQ 会话 ⇒ 用本实例 tag 注册自己的工具
         //     · 否则（web 普通会话等）  → tag 留空 ⇒ applyExtToolVisibility 不注册（零泄漏）
-        const a0 = agent0 as { session?: { header?: { cwd?: string } } } | undefined;
+        const a0 = agent0 as { session?: { header?: { cwd?: string }; id?: string } } | undefined;
         const cwd0 = String(a0?.session?.header?.cwd ?? '');
+        // ★ 2026-11-28（复审 Y25）：**先判「是不是别的实例的会话」** —— `nsForCwd` 只看 cwd，
+        //   两个实例同 cwd 时它一样返回 true，于是下面会拿**本实例的 tag** 把扩展工具注册进
+        //   **别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
+        //   这里用 sessionId 反查 appId 归属；判不出来的（纯 web 会话）仍按 cwd 分流，行为不变。
+        const sidA0 = String(a0?.session?.id ?? '');
         let selfTag0 = '';
-        if (this.nsForCwd(cwd0)) {
+        if (this.nsForCwd(cwd0) && !this.isForeignSession(sidA0)) {
           try {
             const rec0 = this.findByAgent(agent0 as never) as { ch?: { manager?: unknown } } | undefined;
             const mgr0 = rec0?.ch?.manager;
