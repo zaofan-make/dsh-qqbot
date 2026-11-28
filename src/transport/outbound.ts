@@ -6,7 +6,7 @@
  */
 import type { SessionManager, SessionRecord } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
-import type { Logger, ReplyTarget } from '../types.js';
+import type { ChatScope, Logger, ReplyTarget } from '../types.js';
 import { resolve as resolvePath } from 'node:path';
 import { OutboundBuffer, sendRichOutbound, type QQBotSender } from './outbound-buffer.js';
 import { containsMedia, normalizeMediaMarkers, parseOutbound, collectRecallIndices, resolveSource } from './rich-media.js';
@@ -17,20 +17,14 @@ import { noteThinking } from '../features/thinking-log.js';
 import { noteTurnSignals, extractInnerText, applyTurnAttitude } from '../features/four-source.js';
 import { getLastSender } from '../features/attitude.js';
 import { formatToolResult, type ToolsRegistryLike, type ToolResultData } from './tool-presenter.js';
+import { isContradictoryReplyFalse } from '../shared/reply-gate-reason.js';
 
 /**
- * `reply_gate` 的参数里是不是"判定静默"？
- *
- * 2026-09-14 主人报的现象：她调 `reply_gate{reply:false}` 决定吃瓜，
- *   紧接着又想"顺手把群友的喜好记一笔"（`people_memo`），
- *   但那批工具已经被闸门的 `agent.cancel` 连带中止了 → 聊天里刷出一串
- *   `❌ 工具 people_memo 执行失败 / Error: tool call aborted`。
- *
- * 那些 abort **不是故障，是有意行为**（关闸就是要停），不该当报错展示。
- * 所以这里只看参数、不解析结果 —— 闸门一关就把整个回合的工具展示全部静音。
- */
-/**
  * 判定「这次 `reply_gate` 是不是真的把回合静默了」。
+ *
+ * 为什么要静音：闸门一关就是 `agent.cancel`，模型后面"顺手记一笔"之类的调用会被连带中止，
+ * 刷出一串 `❌ 工具 ... 执行失败 / Error: tool call aborted`。那些 abort **不是故障、
+ * 是有意行为**（关闸就是要停），不该当报错展示给用户看。
  *
  * @param scope 会话类型。**私聊必须传 'c2c'** —— 闸门在私聊恒放行（工具侧返回
  *   `stopped:false` 且**不会** `agent.cancel`），即"静默"根本没发生。
@@ -38,7 +32,7 @@ import { formatToolResult, type ToolsRegistryLike, type ToolResultData } from '.
  *   后续所有工具结果 / 回合结束通知全被静音，而模型其实正在开口
  *   （CodeRabbit 2026-11-28 · Major）。
  */
-export function isGateSilence(rawArgs: string, scope?: string): boolean {
+export function isGateSilence(rawArgs: string, scope?: ChatScope): boolean {
   try {
     const a = JSON.parse(String(rawArgs ?? '')) as { reply?: unknown; reason?: unknown };
     if (a?.reply !== false) return false;
@@ -52,7 +46,6 @@ export function isGateSilence(rawArgs: string, scope?: string): boolean {
     return false;
   }
 }
-import { isContradictoryReplyFalse } from '../shared/reply-gate-reason.js';
 import {
   parseEvent,
   extractTurnError,

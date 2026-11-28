@@ -20,18 +20,30 @@
 | `未@我，不需要回复` | 判成"矛盾" → 不静默 | ❌ 它本来就是不回 |
 | `已经有群友回答了` | 判成"矛盾" → 不静默 | ❌ 别人已经答了 |
 
-现在**先判否定 / 已答语境，再判正向意图**。判定收进 `shared/reply-gate-reason.ts`，
-工具侧（`channel-tools.ts`）和出站侧（`outbound.ts`）**共用一份** ——
-原来两边各写了一条一模一样的正则，改一处必漏另一处。
+现在改成**逐处就近判否定**：找出 reason 里每一处「正向意图词」（必须回 / 需要回 / 要回 / 该回 / 得回），
+只看它**紧邻的前 3 个字**有没有否定词（不 / 没 / 别 / 无 / 勿 / 甭）。只要有一处"没被否定"，就算自相矛盾。
+
+为什么不能"整串里有否定词就否决"：否定是**分句局部**语义，不是整句语义。
+`群友已经@我了，必须回复` 里确实有「已经」，但前半句说"已答"、后半句才是落点 ——
+整串否决会把这句判成"想静默"，闸门真的 cancel，等于把上面那个事故原样复活。
+
+判定收进 `shared/reply-gate-reason.ts`，工具侧（`channel-tools.ts`）和出站侧（`outbound.ts`）
+**共用一份** —— 原来两边各写了一条一模一样的正则，改一处必漏另一处。
 
 ### 技术细节（给维护者）
 
-- `isGateSilence(rawArgs, scope)` 新增 `scope` 参数；调用点传 `record.scope`
-- 新增 `src/shared/reply-gate-reason.ts`：`isContradictoryReplyFalse(reason)`，
-  其中 `NO_REPLY_INTENT_RE`（否定/已答）**必须先于** `WANTS_REPLY_RE` 判定
-  （「不需要回复」两个都命中）
-- `gate-silence.test.ts` 补 3 组用例：否定语境 / 已答语境 / 私聊不设静默
-  （**同一个 reason 在群里照旧静默**，确保没把群聊行为改坏）
+- `isGateSilence(rawArgs, scope?: ChatScope)` 新增 `scope` 参数；调用点传 `record.scope`
+- 新增 `src/shared/reply-gate-reason.ts`：`isContradictoryReplyFalse(reason)`
+  - 正向词表**刻意不含「回答」** —— 它太中性（`已有群友回答` 是正常静默）
+  - 用 `matchAll` 遍历**全部**命中，命中第一处不能收工（`已答过的不重复，但这条必须回` 的落点在后半句）
+- 工具侧的 c2c 判定改成**与出站同源**（优先取会话记录的 `scope`），
+  不再只嗅 `sessionKey` 里的 `:c2c:` —— 那个值可能是**空串**（`''.includes(':c2c:') === false`
+  ⇒ 私聊被当群聊 ⇒ 照旧 cancel，本 bug 原样复活）
+- 测试：
+  - `src/shared/reply-gate-reason.test.ts` 新增**两个方向**各 10 / 20 条反例
+    （矛盾侧含 `群友已经@我了，必须回复`，静默侧含 `已有群友回答`、`不应该回复`、`不太需要回复`）
+  - `gate-silence.test.ts` 补否定语境 / 已答语境 / 私聊不设静默三组，
+    并断言**同一个 reason 在群里照旧静默**（确保没把群聊改坏）
 
 ## 1.13.34 (2026-11-28)
 

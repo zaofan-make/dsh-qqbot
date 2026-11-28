@@ -6,22 +6,15 @@
  */
 import type { SessionManager } from '../session/index.js';
 import type { ImQQBotConfig } from '../config.js';
-import type { Logger } from '../types.js';
+import type { ChatScope, Logger } from '../types.js';
 import { type QQBotSender } from './outbound-buffer.js';
 import { type ToolsRegistryLike } from './tool-presenter.js';
 /**
- * `reply_gate` 的参数里是不是"判定静默"？
- *
- * 2026-09-14 主人报的现象：她调 `reply_gate{reply:false}` 决定吃瓜，
- *   紧接着又想"顺手把群友的喜好记一笔"（`people_memo`），
- *   但那批工具已经被闸门的 `agent.cancel` 连带中止了 → 聊天里刷出一串
- *   `❌ 工具 people_memo 执行失败 / Error: tool call aborted`。
- *
- * 那些 abort **不是故障，是有意行为**（关闸就是要停），不该当报错展示。
- * 所以这里只看参数、不解析结果 —— 闸门一关就把整个回合的工具展示全部静音。
- */
-/**
  * 判定「这次 `reply_gate` 是不是真的把回合静默了」。
+ *
+ * 为什么要静音：闸门一关就是 `agent.cancel`，模型后面"顺手记一笔"之类的调用会被连带中止，
+ * 刷出一串 `❌ 工具 ... 执行失败 / Error: tool call aborted`。那些 abort **不是故障、
+ * 是有意行为**（关闸就是要停），不该当报错展示给用户看。
  *
  * @param scope 会话类型。**私聊必须传 'c2c'** —— 闸门在私聊恒放行（工具侧返回
  *   `stopped:false` 且**不会** `agent.cancel`），即"静默"根本没发生。
@@ -29,7 +22,7 @@ import { type ToolsRegistryLike } from './tool-presenter.js';
  *   后续所有工具结果 / 回合结束通知全被静音，而模型其实正在开口
  *   （CodeRabbit 2026-11-28 · Major）。
  */
-export declare function isGateSilence(rawArgs: string, scope?: string): boolean;
+export declare function isGateSilence(rawArgs: string, scope?: ChatScope): boolean;
 import { type RawSessionEvent, type StreamDelta } from './events.js';
 /**
  * 正文被 QQ 判「内容违规」时，把这件事**立刻注入上下文**告诉 AI。

@@ -1145,7 +1145,7 @@ export async function apply(
       '\n⛔ **不要为了"想安静"去动别的开关**（例如把出站模式切成 silent/静默）：那会影响**后续所有回合**，而你要的只是"这一轮别说话"。要静默，只走本工具。' +
       '\n⚠️ 传 reply:false 后**不要再调用任何工具**(包括记笔记、记喜好、发表情包): 本回合已经关闭, 那些调用会被直接中止 —— 想记录的话, 留到下一次开口的回合里做。' +
       '\n🚫 **私聊(c2c)里、或被 @ 时，永远不要调用本工具**：私聊是主人一对一找你说话，静默等于不回话；被 @ 是明确在叫你。这两种情况直接回，闸门只用于群里「旁观」的回合。' +
-      '\n⚠️ **reply 语义只看布尔值**：reply:false = 这一轮静默；reply:true = 继续回复。reason 必须与 reply 一致 —— 如果 reason 里写着"需要回复/要回复/该回"，就不要传 reply:false；自相矛盾的 reply:false 会被闸门拦下并要求你直接开口。',
+      '\n⚠️ **reply 语义只看布尔值**：reply:false = 这一轮静默；reply:true = 继续回复。reason 必须与 reply 一致 —— 如果 reason 里明确写着"该回/必须回/需要回"，就不要传 reply:false；而「不需要回复」「已经有群友回答了」这类是**否定/已答语境**，传 reply:false 是**对的**，不会被拦。',
     parameters: {
       reply: { type: 'boolean', required: true, description: 'false=静默终止本回合(不再输出任何内容); true=正常继续(一般用不到 —— 想说话就直接说, 不必调本工具)' },
       reason: { type: 'string', required: true, description: '为什么这一轮不说话, 如"未@且话题无关" / "只是别人在聊天" / "已经问过她了"' },
@@ -1176,14 +1176,26 @@ export async function apply(
         //   本地 27B 在无思考档位下会把本工具当成"开口开关"，连传 reply:false（reason 里却写着"要回复"），
         //   cancel 掉整个回合 ⇒ 用户只看到 tool call aborted、一个字都没收到（11-27 夜里连续复现）。
         //   所以在真正取消之前先判会话类型：c2c 一律放行（stopped:false + 回执说清楚），不 cancel。
-        if (sessionKey.includes(':c2c:')) {
+        // ⚠️ c2c 判定要**与出站侧同源**（那边用 `record.scope`）：只嗅 sessionKey 字符串不够稳 ——
+        //   `resolveCtxMemoEnv` 拿不到时会回空串，而 `''.includes(':c2c:') === false`
+        //   ⇒ 私聊被当成群聊 ⇒ 照旧 cancel（本 bug 原样复活）。所以优先取记录里的 scope。
+        let scopeOfSession = '';
+        try {
+          const gotOf = findSessionRec(channelOf(exec as never), exec as never) as { rec?: { scope?: string } } | undefined;
+          scopeOfSession = String(gotOf?.rec?.scope ?? '');
+        } catch { /* ignore */ }
+        const isC2c = scopeOfSession === 'c2c' || (!!sessionKey && sessionKey.includes(':c2c:'));
+        if (isC2c) {
           return { ok: true, stopped: false, note: '(私聊必须开口：闸门在私聊恒开 —— 直接写你要说的那句话，不要静默)' };
         }
         // ★ 2026-11-28（实测事故）：小傻龙群里 @ 提问，模型传 reply:false 且 reason="用户直接@我提问，需要回复"，
         //   闸门照单 cancel ⇒ turn/end aborted(hook reply_gate: 本轮静默)，用户只看到 tool call aborted。
-        //   这是 27B 无思考档位下的布尔语义反转：reason 说要回，reply 却传了 false。真正要静默的 reason
-        //   不会写"需要回复/要回复/该回/回复一下/回一下/回答/必须回/得回/需要回"。命中矛盾时不 cancel，
-        //   返回明确回执让模型直接开口；正常静默（reason 不含这些词）仍走原 cancel 路径，零额外开销。
+        //   这是 27B 无思考档位下的布尔语义反转：reason 说要回，reply 却传了 false。
+        //   命中矛盾时不 cancel，返回明确回执让模型直接开口；正常静默仍走原 cancel 路径。
+        //   ⚠️ 判定**不能**按"整串里有没有某几个词"—— 否定是**分句局部**的：
+        //      「未@我，不需要回复」「已经有群友回答了」都是正常静默，
+        //      而「群友已经@我了，必须回复」是矛盾 —— 三者都含"已经/回答"类词，
+        //      只有**逐处就近判否定**才分得开（见 shared/reply-gate-reason.ts）。
         const reason = typeof args.reason === 'string' ? args.reason : '';
         // ⚠️ 判定收在 `shared/reply-gate-reason.ts` —— 与 outbound 的出站静默**共用一份**，
         //   别在这里再写一条正则（两处不同步就是"工具放行了、出站还在静默"这类怪象）。
