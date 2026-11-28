@@ -13,9 +13,10 @@ export declare const inject: string[];
 export declare function instanceTagOfManager(m: unknown): string;
 export declare function setContextlessSmartGlobal(v: boolean): void;
 /** 读登记（session-manager 的 pre-step 用） */
-export declare function readContextPending(dataRoot: string, sessionKey: string): {
+export declare function readContextPending(dataRoot: string, sessionKey: string, expectSessionId?: string): {
     mode?: string;
     keep?: number;
+    sessionId?: string;
 } | undefined;
 export declare function clearContextPending(dataRoot: string, sessionKey: string): void;
 export declare function setChannelBridge(b: QQChannel | undefined): void;

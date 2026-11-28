@@ -4,6 +4,7 @@
  * 纯函数与常量，供插件入口与其他模块复用。
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -204,6 +205,42 @@ export function resolveEnv(configValue: string, envKey: string): string {
     return configValue;
   }
   return process.env[envKey] ?? '';
+}
+
+/** 派生 id 的进程内缓存（key → id）。纯函数结果，清掉重算即可。 */
+const DERIVED_SESSION_ID_CACHE = new Map<string, string>();
+/** 缓存上限。key 不只来自 `sessionCfg`（那有 300 上限）——`currentSessionId` 等路径会传任意 peer 的 key。 */
+const DERIVED_SESSION_ID_CACHE_MAX = 4096;
+
+/**
+ * 由 QQ 的 `sessionKey` 推出**派生 sessionId**。
+ *
+ * `SessionManager` 建档时若没有显式映射（普通建档路径就是这样），用的就是这个确定性派生值：
+ * `sha256(sessionKey)` 的前 32 个 hex 按 UUID 分段。
+ *
+ * 为什么抽到公共层：`prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）要用**同一个公式**
+ * 把 `sessionCfg` 里的 key 还原成会话 id —— 两边算得不一样就永远反查不到。
+ * 纯函数，结果与进程无关（宿主侧 `SessionId(id)` 是恒等函数，不会规范化大小写或加前缀）。
+ *
+ * ⚠️ 实测佐证（2026-11-28）：本机有 2 个 QQ 会话没有 `sessionIds` 映射，
+ * 按本公式算出的 id 在 `~/.dsh/sessions/<工作区>/` 下**都能找到对应会话目录** ⇒ 公式无误。
+ *
+ * ⚠️ 反查的**漏判边界**（都是"退回旧行为"，不会把纯 web 会话误判成 QQ）：
+ * ① `prefs-store` 的四张表各有 `MAX_ENTRIES=300` 上限，单实例管超过 300 个 peer 时
+ *    `sessionCfg` 会淘汰最旧的 ⇒ 派生兜底对最老的会话无声失效；
+ * ② `cwd` 变更会 `clearSessionCfg(key)`，若紧接着建档 throw，该会话短时间内
+ *    既无映射也无指纹 ⇒ 同一窗口内漏判。
+ */
+export function deriveSessionIdFromKey(sessionKey: string): string {
+  const key = String(sessionKey ?? '');
+  const hit = DERIVED_SESSION_ID_CACHE.get(key);
+  if (hit) return hit;
+  const hash = createHash('sha256').update(key).digest('hex');
+  const out = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+  // 纯函数缓存，满了直接清空重算即可 —— 正确性零风险（否则公共 bot 上一堆一次性 c2c peer 会只增不减）。
+  if (DERIVED_SESSION_ID_CACHE.size >= DERIVED_SESSION_ID_CACHE_MAX) DERIVED_SESSION_ID_CACHE.clear();
+  DERIVED_SESSION_ID_CACHE.set(key, out);
+  return out;
 }
 
 /**

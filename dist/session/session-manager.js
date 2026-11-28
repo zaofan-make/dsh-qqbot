@@ -12,7 +12,8 @@
  * 支持 agent-presets 系统：通过 setup hook 在 create/resume 时
  * 挂载 preset（工具集、prompt sections 等），实现场景化配置。
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { deriveSessionIdFromKey } from '../shared/utils.js';
 import { rootOf } from '../shared/root-ctx.js';
 import { absCwdOf } from '../util/abs-path.js';
 import { describeExtCommandReload, describeExtInboundReload, describeExtOutboundReload, reloadExtCommands, reloadExtInbound, reloadExtOutbound } from '../features/ext-reload.js';
@@ -635,9 +636,113 @@ export class SessionManager {
     sessionKey(scope, peerId) {
         return `qqbot:${this.config.appId}:${scope}:${peerId}`;
     }
+    /**
+     * 由 DSH 会话 id 反查**本实例**的 QQ sessionKey（严格校验 appId 归属）。
+     *
+     * ⚠️ 为什么不直接用 `modelResolver.findKeyBySessionIdOrDerived()` 的裸结果
+     *   （CodeRabbit 2026-11-28 · Major）：
+     *   `model-prefs.json` 是**全实例共享**的一份文件（`~/.dsh-qqbot/` 或 `$DSH_HOME` 下）。
+     *   多开实例时里面同时躺着**别的实例**的 key，而**同一个群里两个 bot 的 `scope:peerId`
+     *   完全一样、只有 appId 不同** ⇒ 光比对尾巴根本分不出是谁的。
+     *   偏偏这个 sk 会被拿去给 agent 挂/摘通道工具（`syncScopedToolsOnClaim`）——
+     *   那就是在**改别人 agent ctx 上的注册**（实例 B 的 groupAdmin 关着，就能把实例 A
+     *   已注册的 `qq_group_admin` 撤掉；B 的上下文工具开关也会盖掉 A 的状态）。
+     *   所以必须在拿到 key 之后按 appId 卡一道，而不是把「反查命中」当成「归属确认」。
+     *
+     * 换号 / 迁移（历史 key 是旧 appId 前缀）：**优先挑当前 appId 的那条**（把 `cur` 传给反查，
+     *   见方法体注释）。只有当文件里**只剩旧 appId 的 key** 时才不接受 —— 那种情况退化成旧行为
+     *   （判不出是 QQ 会话），不会误伤到别人的 agent。
+     *   ⚠️ appId 只区分"不同 bot 号"：**同号多开**（同一凭据复制两个 profile 且共享 dataRoot）
+     *   仍需要靠 dataRoot 隔离，这一道校验帮不上忙。
+     *
+     * @returns sessionKey；`''` 表示"不是本实例的会话"或"查不到"
+     */
+    sessionKeyOfSession(sid) {
+        const cur = String(this.config.appId ?? '');
+        let sk = '';
+        // ★ **必须把 cur 传下去**（复审 R5）：同一个 sid 可能同时挂着「旧 appId 的 key」和
+        //   「当前 appId 的 key」—— 换号后 `getSessionId` 的认领迁移会为新的写一条、**旧的保留不删**。
+        //   反查若只取"第一个命中"，就永远拿到旧 appId 那条，再被下面这道校验拒掉
+        //   ⇒ 换过号的用户会**永久**认不出自己的 QQ 会话（不是窗口性的，旧 key 只能等 300 条淘汰）。
+        try {
+            sk = String(this.modelResolver.findKeyBySessionIdOrDerived(sid, cur) ?? '');
+        }
+        catch {
+            return '';
+        }
+        if (!sk)
+            return '';
+        const m = /^qqbot:([^:]*):(?:group|c2c):/.exec(sk);
+        if (!m)
+            return '';
+        // 没配 appId 的部署（本地自测）无从校验 ⇒ 放行，否则整个功能都废掉
+        if (!cur)
+            return sk;
+        if (String(m[1] ?? '') === cur)
+            return sk;
+        // 走到这里只剩两种可能：① 别的实例的 key（多开共用同一份 model-prefs.json）；
+        // ② 换号后本实例在文件里**只**剩旧 appId 的 key。两种都按"不是本实例"处理（fail-closed）。
+        this.logger?.debug?.(`[session-key] 忽略非本实例 appId 的 key: ${sk} (本实例=${cur})`);
+        return '';
+    }
+    /**
+     * 这个会话是不是**别的实例**的 QQ 会话（反查到了 key，但 appId 不属于本实例）。
+     *
+     * ⚠️ 必须和「反查不到」区分开（CodeRabbit 2026-11-28 · Major）：
+     *   - **反查不到** → 未绑定的纯 web 会话，走**全局** contextless 设置（原行为，保留）；
+     *   - **别的实例的** → **一律不处理**，否则会拿本实例的全局窗口去裁剪别人的历史（不可逆）。
+     *   两者合并成同一个空串就会出这个事故。
+     *
+     * 换号场景不会误判：`findKeyBySessionIdOrDerived(sid, cur)` 会**优先返回本实例 appId 的那条**，
+     * 只要存在就命中，走不到"判成别人的"这一步。
+     */
+    isForeignSession(sid) {
+        const cur = String(this.config.appId ?? '');
+        if (!cur)
+            return false; // 没配 appId → 无从判断，按原行为走
+        const want = String(sid ?? '').trim();
+        if (!want)
+            return false;
+        let sk = '';
+        try {
+            sk = String(this.modelResolver.findKeyBySessionIdOrDerived(want, cur) ?? '');
+        }
+        catch {
+            return false;
+        }
+        if (!sk)
+            return false; // 查不到 = 未绑定，不是"别人的"
+        const m = /^qqbot:([^:]*):(?:group|c2c):/.exec(sk);
+        if (!m)
+            return false;
+        return String(m[1] ?? '') !== cur;
+    }
+    /**
+     * 给某个 agent 算「本实例的扩展工具 tag」—— **外实例一律返回空串**。
+     *
+     * `applyExtToolVisibility` 收到空 tag 时**不注册**（零泄漏），所以这是最安全的统一出口：
+     * "归不归本实例的 cwd" 交给调用方判，"这个 agent 是不是别人的会话"由这里判。
+     *
+     * ⚠️ 为什么**每个入口都要过这一道**（CodeRabbit 2026-11-28 · Major）：
+     *   `nsForCwd()` 只看 cwd —— 两个实例同 cwd 时它一样返回 true ⇒ 会把**本实例的 tag**
+     *   注册进**别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
+     *   而 `applyExtToolVisibility` 内部是**先撤销再注册** ⇒ B 进来就把 A 的工具顶掉。
+     *   只在 `agent/inbox/claimed` 挡是不够的：`agent/created` 和 `pre-step` 同样会注册，
+     *   少堵一个就漏一个窗口。
+     */
+    extTagFor(agentLike, fallbackTag) {
+        if (!fallbackTag)
+            return '';
+        const sid = String(agentLike?.session?.id ?? '');
+        if (!sid)
+            return fallbackTag; // 拿不到会话 id（旧宿主）⇒ 保持原行为
+        return this.isForeignSession(sid) ? '' : fallbackTag;
+    }
     deriveSessionId(sessionKey) {
-        const hash = createHash('sha256').update(sessionKey).digest('hex');
-        return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+        // ★ 2026-11-28：公式与 `prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）共用一份
+        //   （`shared/utils` 的 `deriveSessionIdFromKey`）—— 两边必须算得一模一样，
+        //   否则普通建档的 QQ 会话永远反查不到。
+        return deriveSessionIdFromKey(sessionKey);
     }
     currentSessionId(sessionKey) {
         return this.modelResolver.getSessionId(sessionKey) ?? this.deriveSessionId(sessionKey);
@@ -1296,7 +1401,7 @@ export class SessionManager {
             //   agents.resume，不写 this.sessions）在 findByAgent / findBySessionId 眼里都不存在
             //   ⇒ 这里曾直接跳过注册。持久化的 sessionId→sessionKey 映射（model-prefs）是唯一兜底。
             if (!sk && sid)
-                sk = String(this.modelResolver.findKeyBySessionId(sid) ?? '');
+                sk = this.sessionKeyOfSession(sid);
         }
         if (!sk) {
             traceContextless('[ctxtool-claim] skip: 拿不到 sessionKey rec=' + String(Boolean(rec)) + ' sid=' + String(a.session?.id ?? ''));
@@ -1395,7 +1500,7 @@ export class SessionManager {
                 //   内置工具（含 .mjs 加载）统一交给 claimed + inbound —— 那两条能拿到正确 ctx。
                 if (!tagC)
                     return;
-                applyExtToolVisibility(ag.ctx, tagC);
+                applyExtToolVisibility(ag.ctx, this.extTagFor(ag, tagC));
                 // ★★ 2026-11-25：任何途径诞生的会话都该工具就绪 —— 这里也补一次 context_* 注册（幂等）。
                 try {
                     this.syncScopedToolsOnClaim(ag);
@@ -1423,6 +1528,10 @@ export class SessionManager {
                 //     · 否则（web 普通会话等）  → tag 留空 ⇒ applyExtToolVisibility 不注册（零泄漏）
                 const a0 = agent0;
                 const cwd0 = String(a0?.session?.header?.cwd ?? '');
+                // ★ 2026-11-28（复审 Y25）：**先判「是不是别的实例的会话」** —— `nsForCwd` 只看 cwd，
+                //   两个实例同 cwd 时它一样返回 true，于是下面会拿**本实例的 tag** 把扩展工具注册进
+                //   **别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
+                //   这里用 sessionId 反查 appId 归属；判不出来的（纯 web 会话）仍按 cwd 分流，行为不变。
                 let selfTag0 = '';
                 if (this.nsForCwd(cwd0)) {
                     try {
@@ -1434,7 +1543,8 @@ export class SessionManager {
                         selfTag0 = String(this.config.preset ?? '').trim();
                     }
                 }
-                applyExtToolVisibility(agent0?.ctx, selfTag0);
+                // 归属判定统一收在 extTagFor 里：外实例 ⇒ 空 tag ⇒ 不注册（也不撤销别人的）
+                applyExtToolVisibility(agent0?.ctx, this.extTagFor(agent0, selfTag0));
             }
             catch { /* ignore */ }
             try {
@@ -1466,7 +1576,14 @@ export class SessionManager {
                 //   正解：注册到当前 ctx + **显式传 dataRoot**（qqChannel 解析有兜底，靠 dataRoot 就够了）；
                 //   record.agentCtx 那份也顺手注册一遍，覆盖"同一 agent 复用"的场景。
                 const ctxC = agC?.ctx;
-                if (ctxC && this.nsForCwd(cwdC)) {
+                // ★ 2026-11-28（复审 Y32）：**"别人的会话"连内置工具都不该挂**。
+                //   这里原来只按 cwd 判，而两个实例同 cwd 时一样成立 ⇒ 会给 A 的 agent 挂上
+                //   **B 的** dataRoot（见下面 `setCtxEnv`）。而 `resolveCtxDataRoot()` 只认 dataRoot、
+                //   不看 sessionKey（`channel-tools.ts` 里有注释说明"群管理只跟数据目录有关"）
+                //   ⇒ A 的会话里调群管理/审批类工具，拿到的是 **B 的数据根与凭据**。
+                //   若 B 恰好也在同一个群且是管理员，操作会"成功"，但用的是 B 的身份。
+                const sidC = String(agC?.session?.id ?? '');
+                if (ctxC && this.nsForCwd(cwdC) && !this.isForeignSession(sidC)) {
                     setCtxEnv(ctxC, { dataRoot: this.resolveDataRootSmart(), sessionKey: String(recC?.sessionKey ?? '') });
                     // 当前回合作用域：这是本回合快照会读的那份，必须同步完成（await 不行，这里是同步派发）
                     void mountChannelTools(ctxC, { dataRoot: this.resolveDataRootSmart(), cwd: String(this.config.cwd ?? ''), config: this.config });
@@ -1508,7 +1625,7 @@ export class SessionManager {
                         selfTagP = String(this.config.preset ?? '').trim();
                     }
                 }
-                applyExtToolVisibility(agentP?.ctx, selfTagP);
+                applyExtToolVisibility(agentP?.ctx, this.extTagFor(agentP, selfTagP));
             }
             catch { /* ignore */ }
             // ★ 2026-10-28：原来这里对**每个会话**无条件 `restrictContextTools(ctx, false)` 兜底 deny
@@ -1587,12 +1704,20 @@ export class SessionManager {
                         //   1852 行的 trimHistoryForContextless 撞"同回合防重复"返回 false ⇒ pending 永远不执行。
                         //   所以必须**在这里**（所有裁剪分派之前）就用持久映射兜底 —— 否则补消费端也改不了执行顺序。
                         if (!sk0) {
-                            try {
-                                sk0 = String(this.modelResolver.findKeyBySessionId(sid0) ?? '');
-                            }
-                            catch { /* ignore */ }
+                            sk0 = this.sessionKeyOfSession(sid0);
                             if (sk0)
                                 traceContextless('[ctxsmart] sk0 持久映射兜底: ' + sk0);
+                            // ★★ 2026-11-28（CodeRabbit Major）：**「别的实例的会话」和「未绑定会话」绝不能合并成同一个空串**。
+                            //   反查确实查到了 key、只是 appId 不属于本实例 ⇒ 那是一个**别的实例正在用的 QQ 会话**，
+                            //   而本实例的 pre-step 照样会收到它（两个实例同 cwd 时）。
+                            //   此时若按"未绑定"处理：`ctxKey0` 会退化成 `'__global__'` → 用**本实例的全局设置**
+                            //   走进 `trimHistoryForContextless` ⇒ 拿本实例的窗口条数去裁**别人会话**的历史（不可逆）。
+                            //   改之前反查能拿到对方 key、恰好被对方的智能模式挡住；本 PR 收紧判据后才暴露。
+                            //   正确做法：整段跳过 —— 别人的会话，一个字都不碰。
+                            if (this.isForeignSession(sid0)) {
+                                traceContextless('[ctxsmart] 外实例会话, 跳过本实例 pre-step: sid=' + sid0);
+                                return decision;
+                            }
                         }
                         skForTool = sk0; // 存到外层，供"上下文工具挂/卸"那块兜底用
                     }
@@ -1642,8 +1767,10 @@ export class SessionManager {
                     try {
                         const skP = String(sk0 || this.findByAgent(agent)?.sessionKey || "");
                         const drP = this.resolveDataRootSmart();
+                        // ★ 2026-11-28：带上当前会话 id —— pending 按 sessionKey 存，而**历史会话**的 id
+                        //   仍能经派生反查映射回同一个 key ⇒ 不带 id 比对的话，打开历史会话会误消费当前会话的请求。
                         if (skP && drP)
-                            pendingAhead = readContextPending(drP, skP);
+                            pendingAhead = readContextPending(drP, skP, sid0);
                         if (pendingAhead)
                             traceContextless("[ctxorder] 本轮有 pending(" + String(pendingAhead.mode) + ") → 跳过分段压缩，交给下面消费");
                     }
@@ -1914,7 +2041,7 @@ export class SessionManager {
                         try {
                             const sidSmart = String(agent?.session?.id ?? '');
                             if (sidSmart)
-                                skSmart = this.modelResolver.findKeyBySessionId(sidSmart) || undefined;
+                                skSmart = this.sessionKeyOfSession(sidSmart) || undefined;
                         }
                         catch { /* ignore */ }
                     }
@@ -1932,7 +2059,7 @@ export class SessionManager {
                     if (!ctxSmartOn) {
                         try {
                             const sidNow = String(agent?.session?.id ?? '');
-                            const keyNow = sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+                            const keyNow = sidNow ? this.sessionKeyOfSession(sidNow) : '';
                             if (keyNow) {
                                 ctxSmartOn = isContextlessActive(keyNow, this.config.contextlessMode)
                                     && contextlessSmartOf(keyNow, this.config.contextlessSmart);
@@ -1942,7 +2069,7 @@ export class SessionManager {
                         catch { /* ignore */ }
                     }
                     if (ctxSmartOn && skSmart && dataRootSmart && (!Number.isFinite(currentStep) || currentStep <= 1)) {
-                        const req = readContextPending(dataRootSmart, skSmart);
+                        const req = readContextPending(dataRootSmart, skSmart, String(agent?.session?.id ?? ''));
                         if (req) {
                             const keep = req.mode === 'drop' ? 0 : (Number(req.keep) || 3);
                             const done = await trimHistoryForContextless(agent, keep, this.logger, (() => { try {
@@ -1992,10 +2119,21 @@ export class SessionManager {
                 //   小传是**QQ 群里的记忆**，不该漫到跟 QQ 无关的会话里去。
                 //   默认只在「QQ 绑定会话」（含在 web 界面打开的 QQ 会话）注入；
                 //   真要给纯 web 会话也注入，开设置项 `peopleMemoInWeb`（默认 false）。
+                // ★★ 2026-11-28（CodeRabbit 审核 #97）：**判据必须扛得住进程重启**。
+                //   原来只有两条，都不持久：
+                //     ① `recMemo`（`findByAgent`）只查 `this.sessions` —— **纯内存 Map，重启即空**；
+                //     ② `findKeyBySessionId` 只查 `sessionIds` 映射 —— 而**普通建档路径根本不写这条映射**
+                //        （全库只有 fork / forceNew / create 失败轮换三处写）。
+                //   **实测本机 model-prefs.json：8 个 QQ 会话（sessionCfg）只有 6 条映射**，缺的两个群
+                //   重启后在 web 里打开就会被判成"非 QQ" ⇒ 群守则 / 智能提示 / 备忘 / LaTeX 一并丢失
+                //   （它们在 1.13.30 之前对 QQ 会话是**无条件注入**的，所以这是回归）。
+                //   改用 `findKeyBySessionIdOrDerived()`：映射查不到时，再拿 `sessionCfg` 的每个 key
+                //   算派生 id 比一遍（`sessionCfg` 的写入点全在 QQ 的 getOrCreate 路径上，纯 web 进不去）。
+                //   两路合计覆盖 8/8；派生算出的两个 id 在 `~/.dsh/sessions/` 下都找到了真实会话目录。
                 const isQqBoundSession = !!recMemo || (() => {
                     try {
                         const sid0 = String(agent?.session?.id ?? '');
-                        return !!sid0 && !!this.modelResolver.findKeyBySessionId(sid0);
+                        return !!sid0 && !!this.sessionKeyOfSession(sid0);
                     }
                     catch {
                         return false;
@@ -2080,7 +2218,7 @@ export class SessionManager {
                             // 重启/回收后 findByAgent 查不到宿主恢复的会话 ⇒ 用 model-prefs 反查（同会话类型注入那套）
                             try {
                                 const sidNow = String(agent?.session?.id ?? '');
-                                skM = sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+                                skM = sidNow ? this.sessionKeyOfSession(sidNow) : '';
                             }
                             catch { /* ignore */ }
                         }
@@ -2172,18 +2310,10 @@ export class SessionManager {
                 //   ⚠️ turnOrigin 本身别删 —— outbound 的 webTurnSilent 还在用它。
                 // ★ 2026-11-11 主人纠正：**只给「QQ 绑定的会话」加标记** ——
                 //   纯 web 会话（agent preset 自己开的、不属于任何 QQ peer）跟插件没关系，绝不能改它的正文。
-                //   条件：有 QQ 会话记录（recMemo 存在，或 model-prefs 的 sessionIds 反查命中）。
-                // ② 活跃记录没有时，用 **model-prefs 的 sessionIds 反查**（纯内存 Map，不读盘）——
-                //    会话被回收/重启后在 web 里打开继续聊，也能认出"这本来就是个 QQ 会话"。
-                let isQqSessionByPrefs = false;
-                if (!recMemo) {
-                    try {
-                        const sidNow = String(agent?.session?.id ?? '');
-                        if (sidNow)
-                            isQqSessionByPrefs = !!this.modelResolver.findKeyBySessionId(sidNow);
-                    }
-                    catch { /* ignore */ }
-                }
+                // ★★ 2026-11-28：这里原来另算了一份 `isQqSessionByPrefs`（recMemo 为空时再反查一次），
+                //   代数上**恒等**于 `isQqBoundSession` —— 那个判据已经扛重启（见上面的
+                //   `findKeyBySessionIdOrDerived`），所以直接复用，避免同一语义两份逻辑
+                //   以后改一处忘另一处（铁律 11 的同一类问题，只是反向：能合就别留副本）。
                 // ★ 2026-11-26（主人方案）：**pre-step 兜底** —— 把本步新消息里的 QQ 图片 URL 换成本地路径。
                 //   为什么在这里：图片下载是后台 fire-and-forget（不阻塞入站），消息组装时可能还没下完；
                 //   而 `dec.messages` 是「本步从收件箱取出的新消息」，正是**上下文已就位、回合正要开始**的那一刻。
@@ -2239,7 +2369,7 @@ export class SessionManager {
                     }
                 }
                 catch { /* 替换失败不影响本步 */ }
-                if (recMemo || isQqSessionByPrefs) {
+                if (isQqBoundSession) {
                     const DIRECT_MARK = '【主人在 DSH 宿主界面直接发送】';
                     let marked = 0;
                     try {
@@ -2303,7 +2433,11 @@ export class SessionManager {
                 // ★ CodeRabbit：**智能模式指令独立成块**（`qqbot:ctx-smart`）。
                 //   原来它拼在群守则 body 里、共用 `rulesFp` 判重 ⇒ 群守则没变时（智能模式刚打开、
                 //   或重启后恢复的会话）`skipGroupRules` 会把整条 body 丢掉 ⇒ 话题判断/压缩要求永远缺失。
-                if (ctxSmartOn && ctxSmartText) {
+                // ★★ 2026-11-27（主人指出）：**「无上下文模式·智能判断」也是 QQ 会话专用的** ——
+                //   它讲的是"群聊消息量大、历史会随每轮送出、白烧钱"，判据也是"聊了 5 轮以上/对方换话题"
+                //   这种群聊场景。非 QQ 会话（在 DSH 宿主界面里对话）没有这个问题，
+                //   注进只会平白多一段 system-reminder。
+                if (isQqBoundSession && ctxSmartOn && ctxSmartText) {
                     const SMART_KIND = 'qqbot:ctx-smart';
                     const smartFp = CTX_SMART_REMINDER.slice(0, 40);
                     // ★ CodeRabbit：判重要看**剔旧之后**的 `_baseMsgs` —— `_stripOldCtxSmart` 已经把本批里的旧智能块删掉了，
@@ -2343,7 +2477,7 @@ export class SessionManager {
                 //   原来和群守则共用一条 body（去重只比群守则指纹）⇒ 群守则不变时，备忘改了也**永远不会重注**，
                 //   模型看到的始终是最老那份。现在按"上下文里最后一条备忘块是否已含当前备忘文本"判重：
                 //   变了就补注一条（旧版留在历史里，新块写明"以此为准"）。
-                if (selfMemoText) {
+                if (isQqBoundSession && selfMemoText) {
                     const MEMO_KIND = 'qqbot:self-memo';
                     const _memoInBatch = dec.messages.some((m) => {
                         const mm = m;
@@ -2439,8 +2573,11 @@ export class SessionManager {
                 //   findByAgent 只查 this.sessions，而 resumeHostAgent 不写这个表 ——
                 //   重启/回收后从 Web 打开的 QQ 会话在它眼里是 undefined。
                 //   要是放在函数开头提前 return，小传注入 / peopleMemoInWeb / contextlessMode 全都不执行了。
-                const _ownedByMe = !!this.findByAgent(agent);
-                if (this.config.latexHint === true && _ownedByMe && !_hintInBatch && !_hintInSurface) {
+                // ★ 2026-11-28（复审 Y5）：原来这里还要 `_ownedByMe = !!findByAgent(agent)`，
+                //   而它对**本 PR 要修的那个场景（重启后从 web 打开的 QQ 会话）恒为 false** ⇒
+                //   四道门里有一道永远不开，latex 提示照样注不进去。`isQqBoundSession` 已扛重启、
+                //   是它的上位判据 ⇒ 直接去掉 `_ownedByMe`（否则只修好三样、第四样漏掉）。
+                if (isQqBoundSession && this.config.latexHint === true && !_hintInBatch && !_hintInSurface) {
                     extraAll.push({
                         role: 'user',
                         id: randomUUID(),
@@ -2463,7 +2600,7 @@ export class SessionManager {
                         return String(recMemo.sessionKey);
                     try {
                         const sidNow = String(agent?.session?.id ?? '');
-                        return sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+                        return sidNow ? this.sessionKeyOfSession(sidNow) : '';
                     }
                     catch {
                         return '';
@@ -2511,7 +2648,26 @@ export class SessionManager {
                         this.logger?.info?.(`[会话类型] 注入 kind=${info.kind}${info.name ? ` name=「${info.name}」` : ' name=(未取到)'} key=${_kindKey}`);
                     }
                 }
-                const entered = [..._baseMsgs.slice(0, _at2), ...(skipGroupRules ? [] : [desired]), ...extraAll, ..._baseMsgs.slice(_at2)];
+                // ★★ 2026-11-27（主人在 `game` 工作区的会话里发现整段群守则被注入）：
+                //   `body` 里那三样 ——
+                //     · FIXED_CHANNEL_CONTEXT（@人语法 / 富媒体标记 / 引用写法）
+                //     · refCtx（引用消息指令）
+                //     · rules（群守则）
+                //   **全是 QQ 会话专有的**。注进非 QQ 工作区的会话里，模型根本用不上，
+                //   而且这一步要多烧约 1900 字（每个 step 都在）。
+                //   ⚠️ 不能在这里提前 `return decision` —— 后面还有「会话类型」注入等步骤要走完，
+                //   提前 return 会把它们一起吞掉。所以只把这一条 desired 从插入列表里去掉。
+                //   （2026-11-28 更正：原注释说「ctxSmartText 在 web 会话里同样需要」—— 它现在也
+                //     gate 成 QQ-only 了，那句理由已不成立；但那三样仍不能提前 return。）
+                //   判据用 `isQqBoundSession`（已扛重启的版本）。
+                const wantGroupRules = isQqBoundSession && !skipGroupRules;
+                if (!wantGroupRules) {
+                    // ★ 2026-11-28（审核建议）：**"跳过"必须留下可判定的记录** —— 否则「按预期没注入」
+                    //   和「坏了」在日志里长得一模一样，没法验收。热路径（每 step 一次）⇒ debug（铁律 4），
+                    //   开 `DSH_QQBOT_DEBUG=1` 可见。
+                    this.logger?.debug?.(`[inject-gate] 跳过群守则: qq=${isQqBoundSession} skip=${skipGroupRules} sid=${String(agent?.session?.id ?? '?').slice(0, 8)}`);
+                }
+                const entered = [..._baseMsgs.slice(0, _at2), ...(wantGroupRules ? [desired] : []), ...extraAll, ..._baseMsgs.slice(_at2)];
                 return { ...dec, messages: entered };
             }
             catch {

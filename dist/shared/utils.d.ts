@@ -73,6 +73,26 @@ export declare function resolveProfileName(): string;
  */
 export declare function resolveEnv(configValue: string, envKey: string): string;
 /**
+ * 由 QQ 的 `sessionKey` 推出**派生 sessionId**。
+ *
+ * `SessionManager` 建档时若没有显式映射（普通建档路径就是这样），用的就是这个确定性派生值：
+ * `sha256(sessionKey)` 的前 32 个 hex 按 UUID 分段。
+ *
+ * 为什么抽到公共层：`prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）要用**同一个公式**
+ * 把 `sessionCfg` 里的 key 还原成会话 id —— 两边算得不一样就永远反查不到。
+ * 纯函数，结果与进程无关（宿主侧 `SessionId(id)` 是恒等函数，不会规范化大小写或加前缀）。
+ *
+ * ⚠️ 实测佐证（2026-11-28）：本机有 2 个 QQ 会话没有 `sessionIds` 映射，
+ * 按本公式算出的 id 在 `~/.dsh/sessions/<工作区>/` 下**都能找到对应会话目录** ⇒ 公式无误。
+ *
+ * ⚠️ 反查的**漏判边界**（都是"退回旧行为"，不会把纯 web 会话误判成 QQ）：
+ * ① `prefs-store` 的四张表各有 `MAX_ENTRIES=300` 上限，单实例管超过 300 个 peer 时
+ *    `sessionCfg` 会淘汰最旧的 ⇒ 派生兜底对最老的会话无声失效；
+ * ② `cwd` 变更会 `clearSessionCfg(key)`，若紧接着建档 throw，该会话短时间内
+ *    既无映射也无指纹 ⇒ 同一窗口内漏判。
+ */
+export declare function deriveSessionIdFromKey(sessionKey: string): string;
+/**
  * 格式化相对时间
  */
 export declare function formatRelativeTime(ts?: number): string;

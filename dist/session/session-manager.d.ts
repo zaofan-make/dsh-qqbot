@@ -139,6 +139,54 @@ export declare class SessionManager {
     exportMarkdown(scope: ChatScope, peerId: string): string;
     private countMessages;
     private sessionKey;
+    /**
+     * 由 DSH 会话 id 反查**本实例**的 QQ sessionKey（严格校验 appId 归属）。
+     *
+     * ⚠️ 为什么不直接用 `modelResolver.findKeyBySessionIdOrDerived()` 的裸结果
+     *   （CodeRabbit 2026-11-28 · Major）：
+     *   `model-prefs.json` 是**全实例共享**的一份文件（`~/.dsh-qqbot/` 或 `$DSH_HOME` 下）。
+     *   多开实例时里面同时躺着**别的实例**的 key，而**同一个群里两个 bot 的 `scope:peerId`
+     *   完全一样、只有 appId 不同** ⇒ 光比对尾巴根本分不出是谁的。
+     *   偏偏这个 sk 会被拿去给 agent 挂/摘通道工具（`syncScopedToolsOnClaim`）——
+     *   那就是在**改别人 agent ctx 上的注册**（实例 B 的 groupAdmin 关着，就能把实例 A
+     *   已注册的 `qq_group_admin` 撤掉；B 的上下文工具开关也会盖掉 A 的状态）。
+     *   所以必须在拿到 key 之后按 appId 卡一道，而不是把「反查命中」当成「归属确认」。
+     *
+     * 换号 / 迁移（历史 key 是旧 appId 前缀）：**优先挑当前 appId 的那条**（把 `cur` 传给反查，
+     *   见方法体注释）。只有当文件里**只剩旧 appId 的 key** 时才不接受 —— 那种情况退化成旧行为
+     *   （判不出是 QQ 会话），不会误伤到别人的 agent。
+     *   ⚠️ appId 只区分"不同 bot 号"：**同号多开**（同一凭据复制两个 profile 且共享 dataRoot）
+     *   仍需要靠 dataRoot 隔离，这一道校验帮不上忙。
+     *
+     * @returns sessionKey；`''` 表示"不是本实例的会话"或"查不到"
+     */
+    private sessionKeyOfSession;
+    /**
+     * 这个会话是不是**别的实例**的 QQ 会话（反查到了 key，但 appId 不属于本实例）。
+     *
+     * ⚠️ 必须和「反查不到」区分开（CodeRabbit 2026-11-28 · Major）：
+     *   - **反查不到** → 未绑定的纯 web 会话，走**全局** contextless 设置（原行为，保留）；
+     *   - **别的实例的** → **一律不处理**，否则会拿本实例的全局窗口去裁剪别人的历史（不可逆）。
+     *   两者合并成同一个空串就会出这个事故。
+     *
+     * 换号场景不会误判：`findKeyBySessionIdOrDerived(sid, cur)` 会**优先返回本实例 appId 的那条**，
+     * 只要存在就命中，走不到"判成别人的"这一步。
+     */
+    private isForeignSession;
+    /**
+     * 给某个 agent 算「本实例的扩展工具 tag」—— **外实例一律返回空串**。
+     *
+     * `applyExtToolVisibility` 收到空 tag 时**不注册**（零泄漏），所以这是最安全的统一出口：
+     * "归不归本实例的 cwd" 交给调用方判，"这个 agent 是不是别人的会话"由这里判。
+     *
+     * ⚠️ 为什么**每个入口都要过这一道**（CodeRabbit 2026-11-28 · Major）：
+     *   `nsForCwd()` 只看 cwd —— 两个实例同 cwd 时它一样返回 true ⇒ 会把**本实例的 tag**
+     *   注册进**别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
+     *   而 `applyExtToolVisibility` 内部是**先撤销再注册** ⇒ B 进来就把 A 的工具顶掉。
+     *   只在 `agent/inbox/claimed` 挡是不够的：`agent/created` 和 `pre-step` 同样会注册，
+     *   少堵一个就漏一个窗口。
+     */
+    private extTagFor;
     private deriveSessionId;
     private currentSessionId;
     private composePreset;
