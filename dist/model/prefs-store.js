@@ -199,6 +199,11 @@ export class PrefsStore {
     /**
      * **反查（含派生兜底）**：由 DSH 会话 id 找出它属于哪个 QQ peer。
      *
+     * ⚠️ **返回值仍可能不匹配 `preferredAppId`**：没有匹配项时会**回落到第一个候选**，
+     *   命不命中都返回一个 key。所以**调用方必须自己按 appId 校验**（不能 `if (const sk = ...)` 就当它是本实例的）
+     *   —— `SessionManager.sessionKeyOfSession()` 就是干这道校验的。想让语义更"零思考"，
+     *   可以改成"传了 appId 且无匹配 → undefined"，行为等价（上层本来也会拒）。
+     *
      * 为什么需要它：`sessionIds` 只记「显式指定过」的会话（fork / forceNew / create 失败轮换
      * 才写），**普通建档路径不写** —— 那种会话的 id 是 `deriveSessionIdFromKey(key)` 算出来的。
      * 只查 `sessionIds` 就会漏掉它们，症状是「重启后在 web 里打开这个 QQ 会话，认不出它是
