@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { dshHomePath } from './shared/utils.js';
+import { isContradictoryReplyFalse } from './shared/reply-gate-reason.js';
 import { dataRootOf } from './gateway/data-root.js';
 import type { SessionManager } from './session/session-manager.js';
 import type { QQBotSender } from './transport/outbound-buffer.js';
@@ -1184,8 +1185,10 @@ export async function apply(
         //   不会写"需要回复/要回复/该回/回复一下/回一下/回答/必须回/得回/需要回"。命中矛盾时不 cancel，
         //   返回明确回执让模型直接开口；正常静默（reason 不含这些词）仍走原 cancel 路径，零额外开销。
         const reason = typeof args.reason === 'string' ? args.reason : '';
-        const CONTRADICTORY_REPLY_FALSE = /需要回复|要回复|该回|回复一下|回一下|回答|必须回|得回|需要回/u;
-        if (CONTRADICTORY_REPLY_FALSE.test(reason)) {
+        // ⚠️ 判定收在 `shared/reply-gate-reason.ts` —— 与 outbound 的出站静默**共用一份**，
+        //   别在这里再写一条正则（两处不同步就是"工具放行了、出站还在静默"这类怪象）。
+        //   否定 / 已答语境优先：「未@我，不需要回复」「已经有群友回答了」都**不算**矛盾。
+        if (isContradictoryReplyFalse(reason)) {
           return { ok: true, stopped: false, note: '(自相矛盾：reason 说要回复却传 reply=false —— 直接写你要说的那句话，不要再调本工具，也不要静默)' };
         }
         try {
