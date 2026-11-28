@@ -207,6 +207,11 @@ export function resolveEnv(configValue: string, envKey: string): string {
   return process.env[envKey] ?? '';
 }
 
+/** 派生 id 的进程内缓存（key → id）。纯函数结果，清掉重算即可。 */
+const DERIVED_SESSION_ID_CACHE = new Map<string, string>();
+/** 缓存上限。key 不只来自 `sessionCfg`（那有 300 上限）——`currentSessionId` 等路径会传任意 peer 的 key。 */
+const DERIVED_SESSION_ID_CACHE_MAX = 4096;
+
 /**
  * 由 QQ 的 `sessionKey` 推出**派生 sessionId**。
  *
@@ -226,10 +231,6 @@ export function resolveEnv(configValue: string, envKey: string): string {
  * ② `cwd` 变更会 `clearSessionCfg(key)`，若紧接着建档 throw，该会话短时间内
  *    既无映射也无指纹 ⇒ 同一窗口内漏判。
  */
-const DERIVED_SESSION_ID_CACHE = new Map<string, string>();
-/** 缓存上限。key 不只来自 `sessionCfg`（那有 300 上限）——`currentSessionId` 等路径会传任意 peer 的 key。 */
-const DERIVED_SESSION_ID_CACHE_MAX = 4096;
-
 export function deriveSessionIdFromKey(sessionKey: string): string {
   const key = String(sessionKey ?? '');
   const hit = DERIVED_SESSION_ID_CACHE.get(key);

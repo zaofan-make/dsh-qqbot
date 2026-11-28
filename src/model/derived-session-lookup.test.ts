@@ -92,4 +92,39 @@ describe('findKeyBySessionIdOrDerived（映射 + 派生两路反查）', () => {
     const store = makeStore({}, []);
     expect(store.findKeyBySessionIdOrDerived(deriveSessionIdFromKey(DERIVED_KEY))).toBeUndefined();
   });
+
+  /**
+   * 复审 R5 的回归保护：换过 appId 的用户，同一个 sid 在文件里会挂着**两个 key**
+   * （`getSessionId()` 的认领迁移为新的写一条、旧的**故意保留不删**），而旧 key 在插入顺序上更靠前。
+   * 只取"第一个命中"再按 appId 拒绝 ⇒ 永久认不出自己的 QQ 会话。
+   */
+  const OLD_APP = '1111111111';
+  const NEW_APP = '2222222222';
+  const SAME_PEER = 'group:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD';
+  const SID = '33333333-4444-5555-6666-777777777777';
+
+  it('同 sid 挂着新旧两个 appId 的 key：必须优先命中当前 appId 那条', () => {
+    // 旧 key 先插入、新 key 后插入 —— 与 fuzzy 认领迁移的实际写入顺序一致
+    const store = makeStore(
+      { [`qqbot:${OLD_APP}:${SAME_PEER}`]: SID, [`qqbot:${NEW_APP}:${SAME_PEER}`]: SID },
+      [],
+    );
+    // 换号之后：要拿到新 appId 的 key（否则上层校验会把它判成"别的实例"→ 永久判空）
+    expect(store.findKeyBySessionIdOrDerived(SID, NEW_APP)).toBe(`qqbot:${NEW_APP}:${SAME_PEER}`);
+    // 还是老号：照旧拿旧 key
+    expect(store.findKeyBySessionIdOrDerived(SID, OLD_APP)).toBe(`qqbot:${OLD_APP}:${SAME_PEER}`);
+    // 不指定 appId：保持原语义（返回第一个），由上层决定拒不拒
+    expect(store.findKeyBySessionIdOrDerived(SID)).toBe(`qqbot:${OLD_APP}:${SAME_PEER}`);
+    // 指定一个谁都不匹配的 appId：回落到第一个候选（跨实例保护交给上层）
+    expect(store.findKeyBySessionIdOrDerived(SID, '9999999999')).toBe(`qqbot:${OLD_APP}:${SAME_PEER}`);
+  });
+
+  it('派生分支也要认 preferredAppId', () => {
+    const KEY = `qqbot:${NEW_APP}:${SAME_PEER}`;
+    const derivedId = deriveSessionIdFromKey(KEY);
+    const store = makeStore({}, [KEY]);
+    expect(store.findKeyBySessionIdOrDerived(derivedId, NEW_APP)).toBe(KEY);
+    // 只有这一个候选 → 指定别的 appId 也回落到它，由上层按 appId 拒绝
+    expect(store.findKeyBySessionIdOrDerived(derivedId, OLD_APP)).toBe(KEY);
+  });
 });

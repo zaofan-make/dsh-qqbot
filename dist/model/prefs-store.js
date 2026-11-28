@@ -23,6 +23,19 @@ import { randomBytes } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { deriveSessionIdFromKey } from '../shared/utils.js';
+/**
+ * 从 `qqbot:<appId>:<scope>:<peerId>` 里取出 appId（取不到返回空串）。
+ *
+ * 用途：**同一个 sid 可能对应多个 key** —— 换过 appId 之后，`getSessionId()` 的认领迁移会
+ * 为新的 appId 写一条 key，而旧的故意保留不删。要按 appId 判断哪条属于当前实例。
+ *
+ * ⚠️ 别拿它当唯一归属判据：**同号多开**（同一 bot 凭据复制出两个 profile、共享 dataRoot）时
+ * appId 是一样的，那种情况只能靠 dataRoot 隔离。
+ */
+function appIdOfSessionKey(key) {
+    const m = /^qqbot:([^:]*):(?:group|c2c):/.exec(String(key ?? ''));
+    return m ? String(m[1] ?? '') : '';
+}
 export class PrefsStore {
     /** per-peer 模型偏好（内存态） */
     overrides = new Map();
@@ -196,22 +209,39 @@ export class PrefsStore {
      * ⇒ 拿它当「这是 QQ 会话」的证据，比扫会话历史干净（历史里的块会被压缩影子掉）。
      *
      * 实测（2026-11-28）：本机 8 个 QQ 会话 = 6 条 `sessionIds` 映射 + 2 条派生，两路合计 8/8 全覆盖。
+     *
+     * ⚠️ `preferredAppId`（2026-11-28 · 复审 R5，**别删**）：同一个 sid 在文件里**可能挂着多个 key** ——
+     * `getSessionId()` 的「认领迁移」在换号后会为**新 appId** 写一条，而**旧 key 故意保留不删**。
+     * 只取"第一个命中"就永远拿到旧 appId 那条 ⇒ 调用方按 appId 校验时**永久**判空
+     * （换过号的用户再也认不出自己的 QQ 会话）。所以这里收齐**所有候选**，
+     * 优先返回 appId 匹配的那条；没有匹配的才回落到第一个（由调用方决定拒不拒）。
      */
-    findKeyBySessionIdOrDerived(sessionId) {
-        const direct = this.findKeyBySessionId(sessionId);
-        if (direct)
-            return direct;
+    findKeyBySessionIdOrDerived(sessionId, preferredAppId) {
         const want = String(sessionId ?? '').trim();
         if (!want)
             return undefined;
+        const candidates = [];
         try {
+            // ① 显式映射（fork / 轮换过）—— 排在前面，更权威
+            for (const [key, sid] of this.sessionIds)
+                if (sid === want)
+                    candidates.push(key);
+            // ② 普通建档：拿 sessionCfg 的 key 反算派生 id
             for (const key of this.sessionCfg.keys()) {
-                if (deriveSessionIdFromKey(key) === want)
-                    return key;
+                if (deriveSessionIdFromKey(key) === want && !candidates.includes(key))
+                    candidates.push(key);
             }
         }
-        catch { /* ignore */ }
-        return undefined;
+        catch {
+            return undefined;
+        }
+        if (candidates.length === 0)
+            return undefined;
+        const appId = String(preferredAppId ?? '').trim();
+        if (!appId)
+            return candidates[0];
+        const preferred = candidates.find((k) => appIdOfSessionKey(k) === appId);
+        return preferred ?? candidates[0];
     }
     getSessionId(sessionKey) {
         const exact = this.sessionIds.get(sessionKey);

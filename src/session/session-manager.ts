@@ -714,22 +714,31 @@ export class SessionManager {
    *   已注册的 `qq_group_admin` 撤掉；B 的上下文工具开关也会盖掉 A 的状态）。
    *   所以必须在拿到 key 之后按 appId 卡一道，而不是把「反查命中」当成「归属确认」。
    *
-   * 换号 / 迁移（历史 key 是旧 appId 前缀）：这里**不接受** —— 退化成旧行为
-   *   （判不出是 QQ 会话），不会误伤。真要支持换号，得先做偏好存储的实例隔离 + 迁移。
+   * 换号 / 迁移（历史 key 是旧 appId 前缀）：**优先挑当前 appId 的那条**（把 `cur` 传给反查，
+   *   见方法体注释）。只有当文件里**只剩旧 appId 的 key** 时才不接受 —— 那种情况退化成旧行为
+   *   （判不出是 QQ 会话），不会误伤到别人的 agent。
+   *   ⚠️ appId 只区分"不同 bot 号"：**同号多开**（同一凭据复制两个 profile 且共享 dataRoot）
+   *   仍需要靠 dataRoot 隔离，这一道校验帮不上忙。
    *
    * @returns sessionKey；`''` 表示"不是本实例的会话"或"查不到"
    */
   private sessionKeyOfSession(sid: string): string {
+    const cur = String((this.config as { appId?: string }).appId ?? '');
     let sk = '';
-    try { sk = String(this.modelResolver.findKeyBySessionIdOrDerived(sid) ?? ''); } catch { return ''; }
+    // ★ **必须把 cur 传下去**（复审 R5）：同一个 sid 可能同时挂着「旧 appId 的 key」和
+    //   「当前 appId 的 key」—— 换号后 `getSessionId` 的认领迁移会为新的写一条、**旧的保留不删**。
+    //   反查若只取"第一个命中"，就永远拿到旧 appId 那条，再被下面这道校验拒掉
+    //   ⇒ 换过号的用户会**永久**认不出自己的 QQ 会话（不是窗口性的，旧 key 只能等 300 条淘汰）。
+    try { sk = String(this.modelResolver.findKeyBySessionIdOrDerived(sid, cur) ?? ''); } catch { return ''; }
     if (!sk) return '';
     const m = /^qqbot:([^:]*):(?:group|c2c):/.exec(sk);
     if (!m) return '';
-    const cur = String((this.config as { appId?: string }).appId ?? '');
     // 没配 appId 的部署（本地自测）无从校验 ⇒ 放行，否则整个功能都废掉
     if (!cur) return sk;
     if (String(m[1] ?? '') === cur) return sk;
-    this.logger?.debug?.(`[session-key] 反查到别的实例的 key, 已忽略: ${sk} (本实例 appId=${cur})`);
+    // 走到这里只剩两种可能：① 别的实例的 key（多开共用同一份 model-prefs.json）；
+    // ② 换号后本实例在文件里**只**剩旧 appId 的 key。两种都按"不是本实例"处理（fail-closed）。
+    this.logger?.debug?.(`[session-key] 忽略非本实例 appId 的 key: ${sk} (本实例=${cur})`);
     return '';
   }
 
