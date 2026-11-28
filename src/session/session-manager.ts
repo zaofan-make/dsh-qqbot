@@ -766,6 +766,26 @@ export class SessionManager {
     return String(m[1] ?? '') !== cur;
   }
 
+  /**
+   * 给某个 agent 算「本实例的扩展工具 tag」—— **外实例一律返回空串**。
+   *
+   * `applyExtToolVisibility` 收到空 tag 时**不注册**（零泄漏），所以这是最安全的统一出口：
+   * "归不归本实例的 cwd" 交给调用方判，"这个 agent 是不是别人的会话"由这里判。
+   *
+   * ⚠️ 为什么**每个入口都要过这一道**（CodeRabbit 2026-11-28 · Major）：
+   *   `nsForCwd()` 只看 cwd —— 两个实例同 cwd 时它一样返回 true ⇒ 会把**本实例的 tag**
+   *   注册进**别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
+   *   而 `applyExtToolVisibility` 内部是**先撤销再注册** ⇒ B 进来就把 A 的工具顶掉。
+   *   只在 `agent/inbox/claimed` 挡是不够的：`agent/created` 和 `pre-step` 同样会注册，
+   *   少堵一个就漏一个窗口。
+   */
+  private extTagFor(agentLike: unknown, fallbackTag: string): string {
+    if (!fallbackTag) return '';
+    const sid = String((agentLike as { session?: { id?: string } } | undefined)?.session?.id ?? '');
+    if (!sid) return fallbackTag;          // 拿不到会话 id（旧宿主）⇒ 保持原行为
+    return this.isForeignSession(sid) ? '' : fallbackTag;
+  }
+
   private deriveSessionId(sessionKey: string): string {
     // ★ 2026-11-28：公式与 `prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）共用一份
     //   （`shared/utils` 的 `deriveSessionIdFromKey`）—— 两边必须算得一模一样，
@@ -1521,7 +1541,7 @@ export class SessionManager {
         //   现在本钩子只负责**扩展工具**（纯内存操作，不碰磁盘扫描，安全）；
         //   内置工具（含 .mjs 加载）统一交给 claimed + inbound —— 那两条能拿到正确 ctx。
         if (!tagC) return;
-        applyExtToolVisibility(ag.ctx, tagC);
+        applyExtToolVisibility(ag.ctx, this.extTagFor(ag, tagC));
         // ★★ 2026-11-25：任何途径诞生的会话都该工具就绪 —— 这里也补一次 context_* 注册（幂等）。
         try { this.syncScopedToolsOnClaim(ag); } catch { /* ignore */ }
       } catch { /* 注册失败不影响建 agent */ }
@@ -1546,16 +1566,16 @@ export class SessionManager {
         //   两个实例同 cwd 时它一样返回 true，于是下面会拿**本实例的 tag** 把扩展工具注册进
         //   **别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
         //   这里用 sessionId 反查 appId 归属；判不出来的（纯 web 会话）仍按 cwd 分流，行为不变。
-        const sidA0 = String(a0?.session?.id ?? '');
         let selfTag0 = '';
-        if (this.nsForCwd(cwd0) && !this.isForeignSession(sidA0)) {
+        if (this.nsForCwd(cwd0)) {
           try {
             const rec0 = this.findByAgent(agent0 as never) as { ch?: { manager?: unknown } } | undefined;
             const mgr0 = rec0?.ch?.manager;
             selfTag0 = mgr0 ? instanceTagOfManager(mgr0) : String(this.config.preset ?? '').trim();
           } catch { selfTag0 = String(this.config.preset ?? '').trim(); }
         }
-        applyExtToolVisibility((agent0 as { ctx?: unknown } | undefined)?.ctx, selfTag0);
+        // 归属判定统一收在 extTagFor 里：外实例 ⇒ 空 tag ⇒ 不注册（也不撤销别人的）
+        applyExtToolVisibility((agent0 as { ctx?: unknown } | undefined)?.ctx, this.extTagFor(agent0, selfTag0));
       } catch { /* ignore */ }
       try { this.syncScopedToolsOnClaim(agent0); } catch { /* ignore */ }
       // ★★ 2026-11-06（主人："web 回合拿不到 outbound_mode 等内置工具，不利于自动化"）：
@@ -1620,7 +1640,7 @@ export class SessionManager {
             selfTagP = recP?.ch?.manager ? instanceTagOfManager(recP.ch.manager) : String(this.config.preset ?? '').trim();
           } catch { selfTagP = String(this.config.preset ?? '').trim(); }
         }
-        applyExtToolVisibility((agentP as { ctx?: unknown } | undefined)?.ctx, selfTagP);
+        applyExtToolVisibility((agentP as { ctx?: unknown } | undefined)?.ctx, this.extTagFor(agentP, selfTagP));
       } catch { /* ignore */ }
       // ★ 2026-10-28：原来这里对**每个会话**无条件 `restrictContextTools(ctx, false)` 兜底 deny
       //   （全局注册时代的补救）。现在那四个工具改成**按 QQ 会话注册**了 ——

@@ -173,6 +173,20 @@ export declare class SessionManager {
      * 只要存在就命中，走不到"判成别人的"这一步。
      */
     private isForeignSession;
+    /**
+     * 给某个 agent 算「本实例的扩展工具 tag」—— **外实例一律返回空串**。
+     *
+     * `applyExtToolVisibility` 收到空 tag 时**不注册**（零泄漏），所以这是最安全的统一出口：
+     * "归不归本实例的 cwd" 交给调用方判，"这个 agent 是不是别人的会话"由这里判。
+     *
+     * ⚠️ 为什么**每个入口都要过这一道**（CodeRabbit 2026-11-28 · Major）：
+     *   `nsForCwd()` 只看 cwd —— 两个实例同 cwd 时它一样返回 true ⇒ 会把**本实例的 tag**
+     *   注册进**别人 agent 的 ctx**（A 的会话里冒出 B 的工具，一执行就"通道未就绪"）。
+     *   而 `applyExtToolVisibility` 内部是**先撤销再注册** ⇒ B 进来就把 A 的工具顶掉。
+     *   只在 `agent/inbox/claimed` 挡是不够的：`agent/created` 和 `pre-step` 同样会注册，
+     *   少堵一个就漏一个窗口。
+     */
+    private extTagFor;
     private deriveSessionId;
     private currentSessionId;
     private composePreset;
