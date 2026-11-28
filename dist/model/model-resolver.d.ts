@@ -96,23 +96,27 @@ export declare class ModelResolver {
      */
     listProviders(): string[];
     /**
-     * 路由缺思考强度时，按**这个模型真实支持的档位**挑一个。
+     * 思考强度的**校验与挑选**（缺档补、已存档但模型不认的丢掉）。
      *
-     * 数据来源：`listModels()` 时从宿主条目里读到的 `reasoningEfforts`（缓存进 `modelCaps`）。
-     *   - 有缓存 ⇒ 优先 `medium`，没有就 `high/low/max`，再不行取任一非 `off`；
-     *   - **没缓存 ⇒ 原样返回，不补**（第一次通常还没拉到模型目录）。
+     * 数据源：宿主门面的 `llm.resolveModelInfo(provider, model)` → `info.reasoning.efforts[].id`。
+     * ⚠️ **不是** `listModels()` —— 门面的 `listModels` 会重建白名单对象（只留
+     * `provider/id/name/inputModalities/badge…`），`reasoningEfforts` 那类字段到不了我们手里。
+     * 这条坑踩过一整版（1.13.38 第一稿：改了等于没改）。
      *
-     * ⚠️⚠️ 2026-11-28 走过的弯路（别再硬编码）：
-     *   上一版直接补 `'medium'`，结果 `provider "opencode" model "deepseek-v4.1-flash"
-     *   does not support reasoning effort "medium"` ⇒ 整个回合「本轮运行失败」。
-     *   不同模型支持的档位本来就不一样，「一个全局常量」必然踩雷。
+     * 三种情况：
+     *   ① **还不知道**（缓存空）⇒ 触发一次异步拉取，**本回合不传 effort**（宁可没档位，也别报错）；
+     *   ② **知道**、路由没带档 ⇒ 按该模型支持的挑（medium → low → high → max → 任一非 off）；
+     *   ③ **知道**、路由带了档但该模型不支持 ⇒ **丢掉**（1.13.36 写进 model-prefs 的
+     *      `effort:'medium'` 就是靠这一条止血的；不校验的话那句
+     *      `does not support reasoning effort "medium"` 会永远跟着用户）。
      */
     private withEffort;
-    /** `provider/model` → 该模型支持的档位名（由 `listModels()` 顺带填充）。 */
+    /** `provider/model` → 该模型支持的档位 id（由 `resolveModelInfo` 填充）。 */
     private modelCaps;
-    private capsWarming;
-    /** 预热模型能力表（首次调用触发一次异步拉取；失败静默，下次再试）。 */
-    private warmModelCaps;
+    /** 正在拉的 key → Promise（去重，防同一模型并发多次请求）。 */
+    private capsInflight;
+    /** 拉一次某模型支持的思考档位。失败/拿不到 ⇒ 记空数组（= 一律不传档位）。 */
+    private loadEffortCaps;
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     private overrideKey;
     private readFromHost;

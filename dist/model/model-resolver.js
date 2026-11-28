@@ -196,26 +196,10 @@ export class ModelResolver {
                             if (!Array.isArray(ms))
                                 continue;
                             for (const m of ms) {
-                                const raw = m;
-                                const mid = raw?.id;
+                                const mid = m?.id;
                                 if (!mid)
                                     continue;
-                                // ★ 2026-11-28：**别把这个字段丢了** —— 宿主 `llm.listModels()` 返回的条目自带
-                                //   `reasoningEfforts`（一条 `档位名 → wire 值` 的映射；`false` = 不支持思考）。
-                                //   **键就是该模型支持的档位**，这是"缺档时该补什么"的唯一准确来源。
-                                //   原来只取 id/name 丢掉它，导致我们只能硬编码猜（猜错 = 整轮失败）。
-                                const effRaw = raw.reasoningEfforts;
-                                const levels = effRaw && typeof effRaw === 'object' && !Array.isArray(effRaw)
-                                    ? Object.keys(effRaw)
-                                    : [];
-                                if (levels.length)
-                                    this.modelCaps.set(`${pid}/${mid}`, levels);
-                                models.push({
-                                    provider: pid,
-                                    id: mid,
-                                    name: raw.name || undefined,
-                                    ...(levels.length ? { reasoningEfforts: levels } : {}),
-                                });
+                                models.push({ provider: pid, id: mid, name: m?.name || undefined });
                             }
                         }
                         catch (err) {
@@ -259,39 +243,80 @@ export class ModelResolver {
     }
     // ── 私有方法 ──
     /**
-     * 路由缺思考强度时，按**这个模型真实支持的档位**挑一个。
+     * 思考强度的**校验与挑选**（缺档补、已存档但模型不认的丢掉）。
      *
-     * 数据来源：`listModels()` 时从宿主条目里读到的 `reasoningEfforts`（缓存进 `modelCaps`）。
-     *   - 有缓存 ⇒ 优先 `medium`，没有就 `high/low/max`，再不行取任一非 `off`；
-     *   - **没缓存 ⇒ 原样返回，不补**（第一次通常还没拉到模型目录）。
+     * 数据源：宿主门面的 `llm.resolveModelInfo(provider, model)` → `info.reasoning.efforts[].id`。
+     * ⚠️ **不是** `listModels()` —— 门面的 `listModels` 会重建白名单对象（只留
+     * `provider/id/name/inputModalities/badge…`），`reasoningEfforts` 那类字段到不了我们手里。
+     * 这条坑踩过一整版（1.13.38 第一稿：改了等于没改）。
      *
-     * ⚠️⚠️ 2026-11-28 走过的弯路（别再硬编码）：
-     *   上一版直接补 `'medium'`，结果 `provider "opencode" model "deepseek-v4.1-flash"
-     *   does not support reasoning effort "medium"` ⇒ 整个回合「本轮运行失败」。
-     *   不同模型支持的档位本来就不一样，「一个全局常量」必然踩雷。
+     * 三种情况：
+     *   ① **还不知道**（缓存空）⇒ 触发一次异步拉取，**本回合不传 effort**（宁可没档位，也别报错）；
+     *   ② **知道**、路由没带档 ⇒ 按该模型支持的挑（medium → low → high → max → 任一非 off）；
+     *   ③ **知道**、路由带了档但该模型不支持 ⇒ **丢掉**（1.13.36 写进 model-prefs 的
+     *      `effort:'medium'` 就是靠这一条止血的；不校验的话那句
+     *      `does not support reasoning effort "medium"` 会永远跟着用户）。
      */
     withEffort(route) {
-        if (route.effort)
-            return route;
-        this.warmModelCaps();
-        const levels = this.modelCaps.get(`${route.provider}/${route.model}`);
-        if (!levels || levels.length === 0)
-            return route; // 不知道 ⇒ 不补（安全）
-        const picked = ['medium', 'high', 'low', 'max'].find((x) => levels.includes(x))
-            ?? levels.find((x) => x !== 'off' && x !== 'none');
-        return picked ? { ...route, effort: picked } : route;
+        const key = `${route.provider}/${route.model}`;
+        const caps = this.modelCaps.get(key);
+        if (caps === undefined) {
+            // ① 还不知道：拉一次（去重），本回合先不传
+            void this.loadEffortCaps(route.provider, route.model);
+            return route.effort ? { ...route, effort: undefined } : route;
+        }
+        if (caps.length === 0) {
+            // 该模型不支持思考（或拿不到能力信息）⇒ 任何档位都不传
+            return route.effort ? { ...route, effort: undefined } : route;
+        }
+        if (!route.effort) {
+            // ② 缺档：挑一个它支持的。**优先 medium，其次 low**（low 比 high 便宜，
+            //    用户的意图是"让它思考"，不是"让它最贵"）
+            const picked = ['medium', 'low', 'high', 'max'].find((x) => caps.includes(x))
+                ?? caps.find((x) => x !== 'off');
+            return picked ? { ...route, effort: picked } : route;
+        }
+        // ③ 已存档位：不支持就丢掉
+        return caps.includes(route.effort) ? route : { ...route, effort: undefined };
     }
-    /** `provider/model` → 该模型支持的档位名（由 `listModels()` 顺带填充）。 */
+    /** `provider/model` → 该模型支持的档位 id（由 `resolveModelInfo` 填充）。 */
     modelCaps = new Map();
-    capsWarming = false;
-    /** 预热模型能力表（首次调用触发一次异步拉取；失败静默，下次再试）。 */
-    warmModelCaps() {
-        if (this.modelCaps.size > 0 || this.capsWarming)
-            return;
-        this.capsWarming = true;
-        void this.listModels()
-            .catch(() => undefined)
-            .finally(() => { this.capsWarming = false; });
+    /** 正在拉的 key → Promise（去重，防同一模型并发多次请求）。 */
+    capsInflight = new Map();
+    /** 拉一次某模型支持的思考档位。失败/拿不到 ⇒ 记空数组（= 一律不传档位）。 */
+    loadEffortCaps(provider, model) {
+        const key = `${provider}/${model}`;
+        if (this.modelCaps.has(key))
+            return Promise.resolve();
+        const inflight = this.capsInflight.get(key);
+        if (inflight)
+            return inflight;
+        const task = (async () => {
+            try {
+                const llm = this.getService('llm');
+                if (!llm || typeof llm.resolveModelInfo !== 'function') {
+                    this.modelCaps.set(key, []);
+                    return;
+                }
+                const info = await llm.resolveModelInfo(provider, model);
+                const efforts = info
+                    ?.reasoning?.efforts;
+                const ids = Array.isArray(efforts)
+                    ? efforts.map((e) => String(e?.id ?? '')).filter(Boolean)
+                    : [];
+                this.modelCaps.set(key, ids);
+                this.logger?.debug?.(`[effort] ${key} 支持的档位: ${JSON.stringify(ids)}`);
+            }
+            catch {
+                // 拿不到就记空 —— 比"猜一个可能错的"安全得多
+                this.modelCaps.set(key, []);
+            }
+            finally {
+                this.capsInflight.delete(key);
+            }
+        })();
+        this.capsInflight.set(key, task);
+        return task;
     }
     /** 2026-09-11: 模型偏好绑定会话 —— key = sessionKey@sessionId; 无 sessionId 时回退 peer 级(旧数据/单会话) */
     overrideKey(sessionKey, sessionId) {

@@ -39,16 +39,10 @@ export interface ModelEntry {
   provider: string;
   id: string;
   name?: string;
-  /**
-   * 这个模型**实际支持**的思考档位名（如 `['off','low','high','max']`）。
-   *
-   * 来源：宿主 `llm.listModels(provider)` 返回的条目自带 `reasoningEfforts` 字段
-   * （一条 `level → wire 值` 的映射；`false` = 该模型不支持思考，`null` = 空）。
-   * **键就是档位名**，所以 `Object.keys()` 拿到的就是可选档。
-   *
-   * ⚠️ 2026-11-28：这个字段原来被 `listModels()` 丢掉了，于是「路由缺档时该补什么」
-   *   只能靠硬编码猜 —— 猜错就是 `does not support reasoning effort "medium"`（整轮失败）。
-   *   现在留着它，缺档时按**这个模型真实支持的**挑。
-   */
-  reasoningEfforts?: string[];
+  // ⚠️ **不要**指望从 `llm.listModels()` 的返回里拿「这个模型支持哪些思考档位」——
+  //   门面的 `listModels` 会用**白名单对象重建**每个条目（只留 provider/id/name/
+  //   inputModalities/badge…），适配器多给的字段一律到不了调用方。
+  //   （1.13.38 第一稿就栽在这上面：以为有 `reasoningEfforts`，改完等于没改。）
+  //   要档位就调 `llm.resolveModelInfo(provider, model)` → `reasoning.efforts[].id`，
+  //   见 `ModelResolver.withEffort` / `loadEffortCaps`。
 }
