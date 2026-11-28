@@ -26,6 +26,24 @@
 **选档顺序也改了**：缺档时 `medium` 之后是 **`low`** 而不是 `high` ——
 用户的意图是"让它思考"，不是"让它最贵"。
 
+**写路径同样要清洗**（这一条是前三稿都漏掉的）：`/bot-model provider/model medium` 这类
+**用户显式指定**的档位，原来直接落进 `setOverride` / `applyModelRoute` / `forkCurrentSession`，
+绕过了所有校验 ⇒ 一句不支持的档位就能把宿主喂坏。现在 `setModelOverride` 入口统一过
+`sanitizeRouteAsync`（先 `await` 一次能力缓存再判定），拿到的必然是宿主自己声明支持的档位；
+命令回执也按实际结果说话（不再无条件回「思考强度: xxx / 已生效」）。
+
+### ⚠️ 这版**没**解决的两件事（别当成修完了）
+
+1. **宿主已经攥在手里的旧档位清不掉。** `applyModelRoute` 里 `route.effort ?? cur?.reasoningEffort`
+   会把宿主当前的档位捞回来，再叠上 `select` 的"相同即 no-op"，三层复合。
+   这版做的是**关掉所有新写入坏档位的入口**（读、写两条路都清洗），不是"把宿主里那个坏值擦掉"。
+   本机实测 `~/.dsh/sessions` 下 1999 个会话文件 `reasoningEffort` 命中 0 次、
+   `model-prefs.json` 不存在 ⇒ 目前没有存量实例，所以先不动；等档位功能真被用起来之后要单独还。
+2. **`/bot-model` 的思考强度卡片仍然列全量档位**（`['off','low','high','max']`）——
+   宿主门面没有 `llm.reasoningEfforts()` 这个方法（`dsh-llm` 里 0 命中），所以卡片查不到
+   "这个模型支持哪些"。选到不支持的档**不会崩**（会被丢掉），但会出现"选了没生效"；
+   改成按 `resolveModelInfo` 列真实档位留到下个版本。
+
 ## 1.13.37 (2026-11-28)
 
 ### 紧急修复：不再自动给模型补「思考档位」
