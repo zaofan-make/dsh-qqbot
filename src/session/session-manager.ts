@@ -12,7 +12,8 @@
  * 支持 agent-presets 系统：通过 setup hook 在 create/resume 时
  * 挂载 preset（工具集、prompt sections 等），实现场景化配置。
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { deriveSessionIdFromKey } from '../shared/utils.js';
 import { rootOf } from '../shared/root-ctx.js';
 import { absCwdOf } from '../util/abs-path.js';
 import { describeExtCommandReload, describeExtInboundReload, describeExtOutboundReload, reloadExtCommands, reloadExtInbound, reloadExtOutbound } from '../features/ext-reload.js';
@@ -701,8 +702,10 @@ export class SessionManager {
   }
 
   private deriveSessionId(sessionKey: string): string {
-    const hash = createHash('sha256').update(sessionKey).digest('hex');
-    return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+    // ★ 2026-11-28：公式与 `prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）共用一份
+    //   （`shared/utils` 的 `deriveSessionIdFromKey`）—— 两边必须算得一模一样，
+    //   否则普通建档的 QQ 会话永远反查不到。
+    return deriveSessionIdFromKey(sessionKey);
   }
 
   private currentSessionId(sessionKey: string): string {
@@ -1358,7 +1361,7 @@ export class SessionManager {
       // ★ CodeRabbit 2026-11-25（Major）：宿主**恢复**出来的 QQ 会话（resumeHostAgent 走
       //   agents.resume，不写 this.sessions）在 findByAgent / findBySessionId 眼里都不存在
       //   ⇒ 这里曾直接跳过注册。持久化的 sessionId→sessionKey 映射（model-prefs）是唯一兜底。
-      if (!sk && sid) sk = String(this.modelResolver.findKeyBySessionId(sid) ?? '');
+      if (!sk && sid) sk = String(this.modelResolver.findKeyBySessionIdOrDerived(sid) ?? '');
     }
     if (!sk) { traceContextless('[ctxtool-claim] skip: 拿不到 sessionKey rec=' + String(Boolean(rec)) + ' sid=' + String(a.session?.id ?? '')); return; }   // 未知 = 不动
     const smart = isContextlessActive(sk, this.config.contextlessMode)
@@ -1621,7 +1624,7 @@ export class SessionManager {
             //   1852 行的 trimHistoryForContextless 撞"同回合防重复"返回 false ⇒ pending 永远不执行。
             //   所以必须**在这里**（所有裁剪分派之前）就用持久映射兜底 —— 否则补消费端也改不了执行顺序。
             if (!sk0) {
-              try { sk0 = String(this.modelResolver.findKeyBySessionId(sid0) ?? ''); } catch { /* ignore */ }
+              try { sk0 = String(this.modelResolver.findKeyBySessionIdOrDerived(sid0) ?? ''); } catch { /* ignore */ }
               if (sk0) traceContextless('[ctxsmart] sk0 持久映射兜底: ' + sk0);
             }
             skForTool = sk0;   // 存到外层，供"上下文工具挂/卸"那块兜底用
@@ -1897,7 +1900,7 @@ export class SessionManager {
           if (!skSmart) {
             try {
               const sidSmart = String((agent?.session as { id?: string } | undefined)?.id ?? '');
-              if (sidSmart) skSmart = this.modelResolver.findKeyBySessionId(sidSmart) || undefined;
+              if (sidSmart) skSmart = this.modelResolver.findKeyBySessionIdOrDerived(sidSmart) || undefined;
             } catch { /* ignore */ }
           }
           try {
@@ -1913,7 +1916,7 @@ export class SessionManager {
           if (!ctxSmartOn) {
             try {
               const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
-              const keyNow = sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+              const keyNow = sidNow ? String(this.modelResolver.findKeyBySessionIdOrDerived(sidNow) ?? '') : '';
               if (keyNow) {
                 ctxSmartOn = isContextlessActive(keyNow, this.config.contextlessMode)
                   && contextlessSmartOf(keyNow, this.config.contextlessSmart);
@@ -1969,10 +1972,21 @@ export class SessionManager {
         //   小传是**QQ 群里的记忆**，不该漫到跟 QQ 无关的会话里去。
         //   默认只在「QQ 绑定会话」（含在 web 界面打开的 QQ 会话）注入；
         //   真要给纯 web 会话也注入，开设置项 `peopleMemoInWeb`（默认 false）。
+        // ★★ 2026-11-28（CodeRabbit 审核 #97）：**判据必须扛得住进程重启**。
+        //   原来只有两条，都不持久：
+        //     ① `recMemo`（`findByAgent`）只查 `this.sessions` —— **纯内存 Map，重启即空**；
+        //     ② `findKeyBySessionId` 只查 `sessionIds` 映射 —— 而**普通建档路径根本不写这条映射**
+        //        （全库只有 fork / forceNew / create 失败轮换三处写）。
+        //   **实测本机 model-prefs.json：8 个 QQ 会话（sessionCfg）只有 6 条映射**，缺的两个群
+        //   重启后在 web 里打开就会被判成"非 QQ" ⇒ 群守则 / 智能提示 / 备忘 / LaTeX 一并丢失
+        //   （它们在 1.13.30 之前对 QQ 会话是**无条件注入**的，所以这是回归）。
+        //   改用 `findKeyBySessionIdOrDerived()`：映射查不到时，再拿 `sessionCfg` 的每个 key
+        //   算派生 id 比一遍（`sessionCfg` 的写入点全在 QQ 的 getOrCreate 路径上，纯 web 进不去）。
+        //   两路合计覆盖 8/8；派生算出的两个 id 在 `~/.dsh/sessions/` 下都找到了真实会话目录。
         const isQqBoundSession = !!recMemo || (() => {
           try {
             const sid0 = String((agent?.session as { id?: string } | undefined)?.id ?? '');
-            return !!sid0 && !!this.modelResolver.findKeyBySessionId(sid0);
+            return !!sid0 && !!this.modelResolver.findKeyBySessionIdOrDerived(sid0);
           } catch { return false; }
         })();
         const allowWebMemo = (this.config as { peopleMemoInWeb?: boolean }).peopleMemoInWeb === true;
@@ -2046,7 +2060,7 @@ export class SessionManager {
               // 重启/回收后 findByAgent 查不到宿主恢复的会话 ⇒ 用 model-prefs 反查（同会话类型注入那套）
               try {
                 const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
-                skM = sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+                skM = sidNow ? String(this.modelResolver.findKeyBySessionIdOrDerived(sidNow) ?? '') : '';
               } catch { /* ignore */ }
             }
             if (skM) {
@@ -2133,16 +2147,10 @@ export class SessionManager {
         //   ⚠️ turnOrigin 本身别删 —— outbound 的 webTurnSilent 还在用它。
         // ★ 2026-11-11 主人纠正：**只给「QQ 绑定的会话」加标记** ——
         //   纯 web 会话（agent preset 自己开的、不属于任何 QQ peer）跟插件没关系，绝不能改它的正文。
-        //   条件：有 QQ 会话记录（recMemo 存在，或 model-prefs 的 sessionIds 反查命中）。
-        // ② 活跃记录没有时，用 **model-prefs 的 sessionIds 反查**（纯内存 Map，不读盘）——
-        //    会话被回收/重启后在 web 里打开继续聊，也能认出"这本来就是个 QQ 会话"。
-        let isQqSessionByPrefs = false;
-        if (!recMemo) {
-          try {
-            const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
-            if (sidNow) isQqSessionByPrefs = !!this.modelResolver.findKeyBySessionId(sidNow);
-          } catch { /* ignore */ }
-        }
+        // ★★ 2026-11-28：这里原来另算了一份 `isQqSessionByPrefs`（recMemo 为空时再反查一次），
+        //   代数上**恒等**于 `isQqBoundSession` —— 那个判据已经扛重启（见上面的
+        //   `findKeyBySessionIdOrDerived`），所以直接复用，避免同一语义两份逻辑
+        //   以后改一处忘另一处（铁律 11 的同一类问题，只是反向：能合就别留副本）。
         // ★ 2026-11-26（主人方案）：**pre-step 兜底** —— 把本步新消息里的 QQ 图片 URL 换成本地路径。
         //   为什么在这里：图片下载是后台 fire-and-forget（不阻塞入站），消息组装时可能还没下完；
         //   而 `dec.messages` 是「本步从收件箱取出的新消息」，正是**上下文已就位、回合正要开始**的那一刻。
@@ -2195,7 +2203,7 @@ export class SessionManager {
           }
         } catch { /* 替换失败不影响本步 */ }
 
-        if (recMemo || isQqSessionByPrefs) {
+        if (isQqBoundSession) {
           const DIRECT_MARK = '【主人在 DSH 宿主界面直接发送】';
           let marked = 0;
           try {
@@ -2400,8 +2408,11 @@ export class SessionManager {
         //   findByAgent 只查 this.sessions，而 resumeHostAgent 不写这个表 ——
         //   重启/回收后从 Web 打开的 QQ 会话在它眼里是 undefined。
         //   要是放在函数开头提前 return，小传注入 / peopleMemoInWeb / contextlessMode 全都不执行了。
-        const _ownedByMe = !!this.findByAgent(agent as never);
-        if (isQqBoundSession && this.config.latexHint === true && _ownedByMe && !_hintInBatch && !_hintInSurface) {
+        // ★ 2026-11-28（复审 Y5）：原来这里还要 `_ownedByMe = !!findByAgent(agent)`，
+        //   而它对**本 PR 要修的那个场景（重启后从 web 打开的 QQ 会话）恒为 false** ⇒
+        //   四道门里有一道永远不开，latex 提示照样注不进去。`isQqBoundSession` 已扛重启、
+        //   是它的上位判据 ⇒ 直接去掉 `_ownedByMe`（否则只修好三样、第四样漏掉）。
+        if (isQqBoundSession && this.config.latexHint === true && !_hintInBatch && !_hintInSurface) {
           extraAll.push({
             role: 'user',
             id: randomUUID(),
@@ -2423,7 +2434,7 @@ export class SessionManager {
           if (recMemo?.sessionKey) return String(recMemo.sessionKey);
           try {
             const sidNow = String((agent?.session as { id?: string } | undefined)?.id ?? '');
-            return sidNow ? String(this.modelResolver.findKeyBySessionId(sidNow) ?? '') : '';
+            return sidNow ? String(this.modelResolver.findKeyBySessionIdOrDerived(sidNow) ?? '') : '';
           } catch { return ''; }
         })();
         const _kindParts = (() => {
@@ -2482,11 +2493,18 @@ export class SessionManager {
         //     · rules（群守则）
         //   **全是 QQ 会话专有的**。注进非 QQ 工作区的会话里，模型根本用不上，
         //   而且这一步要多烧约 1900 字（每个 step 都在）。
-        //   ⚠️ 不能在这里提前 `return decision` —— 后面的 ctxSmartText（无上下文·智能判断）
-        //   和「会话类型」注入在 web 会话里同样需要，提前 return 会把它们一起吞掉。
-        //   所以只把这一条 desired 从插入列表里去掉。判据复用上面小传那段已验证过的
-        //   `isQqBoundSession`（recMemo 命中，或 sessionKey 能被 modelResolver 反查到）。
+        //   ⚠️ 不能在这里提前 `return decision` —— 后面还有「会话类型」注入等步骤要走完，
+        //   提前 return 会把它们一起吞掉。所以只把这一条 desired 从插入列表里去掉。
+        //   （2026-11-28 更正：原注释说「ctxSmartText 在 web 会话里同样需要」—— 它现在也
+        //     gate 成 QQ-only 了，那句理由已不成立；但那三样仍不能提前 return。）
+        //   判据用 `isQqBoundSession`（已扛重启的版本）。
         const wantGroupRules = isQqBoundSession && !skipGroupRules;
+        if (!wantGroupRules) {
+          // ★ 2026-11-28（审核建议）：**"跳过"必须留下可判定的记录** —— 否则「按预期没注入」
+          //   和「坏了」在日志里长得一模一样，没法验收。热路径（每 step 一次）⇒ debug（铁律 4），
+          //   开 `DSH_QQBOT_DEBUG=1` 可见。
+          this.logger?.debug?.(`[inject-gate] 跳过群守则: qq=${isQqBoundSession} skip=${skipGroupRules} sid=${String((agent?.session as { id?: string } | undefined)?.id ?? '?').slice(0, 8)}`);
+        }
         const entered = [..._baseMsgs.slice(0, _at2), ...(wantGroupRules ? [desired] : []), ...extraAll, ..._baseMsgs.slice(_at2)];
         return { ...dec, messages: entered };
       } catch {

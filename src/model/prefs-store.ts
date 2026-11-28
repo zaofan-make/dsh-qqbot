@@ -23,6 +23,7 @@ import { randomBytes } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { ModelRoute } from './types.js';
+import { deriveSessionIdFromKey } from '../shared/utils.js';
 
 /** 日志回调（可选） */
 type DebugFn = (msg: string) => void;
@@ -200,6 +201,33 @@ export class PrefsStore {
     if (!want) return undefined;
     try {
       for (const [key, sid] of this.sessionIds) if (sid === want) return key;
+    } catch { /* ignore */ }
+    return undefined;
+  }
+
+  /**
+   * **反查（含派生兜底）**：由 DSH 会话 id 找出它属于哪个 QQ peer。
+   *
+   * 为什么需要它：`sessionIds` 只记「显式指定过」的会话（fork / forceNew / create 失败轮换
+   * 才写），**普通建档路径不写** —— 那种会话的 id 是 `deriveSessionIdFromKey(key)` 算出来的。
+   * 只查 `sessionIds` 就会漏掉它们，症状是「重启后在 web 里打开这个 QQ 会话，认不出它是
+   * QQ 会话」⇒ 群守则等 QQ 专属提示全丢。
+   *
+   * 补的这一路走 `sessionCfg`：它的写入点**全在** QQ 的 `getOrCreate` 路径上
+   * （`session-manager.ts` 里 6 处 `setSessionCfg`），纯 web 会话根本不经过
+   * ⇒ 拿它当「这是 QQ 会话」的证据，比扫会话历史干净（历史里的块会被压缩影子掉）。
+   *
+   * 实测（2026-11-28）：本机 8 个 QQ 会话 = 6 条 `sessionIds` 映射 + 2 条派生，两路合计 8/8 全覆盖。
+   */
+  findKeyBySessionIdOrDerived(sessionId: string): string | undefined {
+    const direct = this.findKeyBySessionId(sessionId);
+    if (direct) return direct;
+    const want = String(sessionId ?? '').trim();
+    if (!want) return undefined;
+    try {
+      for (const key of this.sessionCfg.keys()) {
+        if (deriveSessionIdFromKey(key) === want) return key;
+      }
     } catch { /* ignore */ }
     return undefined;
   }

@@ -100,6 +100,13 @@ export class ModelResolver {
     findKeyBySessionId(sessionId) {
         return this.prefs.findKeyBySessionId(sessionId);
     }
+    /**
+     * 反查（含派生兜底）。普通建档的会话**没有** `sessionIds` 映射，只能靠派生 id 认出来 ——
+     * 详见 `PrefsStore.findKeyBySessionIdOrDerived` 的注释。
+     */
+    findKeyBySessionIdOrDerived(sessionId) {
+        return this.prefs.findKeyBySessionIdOrDerived(sessionId);
+    }
     getSessionId(sessionKey) {
         return this.prefs.getSessionId(sessionKey);
     }

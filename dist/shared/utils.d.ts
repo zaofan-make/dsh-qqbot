@@ -72,6 +72,7 @@ export declare function resolveProfileName(): string;
  * 解析环境变量占位配置
  */
 export declare function resolveEnv(configValue: string, envKey: string): string;
+export declare function deriveSessionIdFromKey(sessionKey: string): string;
 /**
  * 格式化相对时间
  */
