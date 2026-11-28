@@ -1,3 +1,26 @@
+## 1.13.34 (2026-11-28)
+
+### 你会感觉到的变化
+
+**群里 @ 机器人不再「只丢一句 tool call aborted」**
+
+现象：群里 @ 机器人提问，它调 `reply_gate` 传 `reply:false`（自己的 `reason` 却写着
+「用户直接@我提问，需要回复」），闸门照单 cancel ⇒ 整轮静默，用户只看到
+`Error: tool call aborted`、没有任何输出。
+
+这是本地 27B 在无思考档位下的**布尔语义反转**：reason 说要回，reply 却传了 false。
+真正要静默的 reason 不会写「需要回复 / 要回复 / 该回 / 回复一下 / 回一下 / 回答 / 必须回 / 得回 / 需要回」。
+
+改动：
+
+- `replyGateTool.execute`：`reply:false` 且 `reason` 含矛盾词时**不 cancel**，
+  改为返回 `{ ok:true, stopped:false, note:'(自相矛盾：reason 说要回复却传 reply=false —— 直接写你要说的那句话，不要再调本工具，也不要静默)' }`；
+  正常静默（reason 不含这些词）仍走原 `agent.cancel` 路径，零额外开销。
+- `isGateSilence()` 同步收紧：矛盾 `reply:false` 不再被认成「有意静默」，
+  避免后续连带的 aborted 被误吞掉。
+- 工具描述补一条：**reply 语义只看布尔值**，reason 必须与 reply 一致，否则会被闸门拦下。
+- `gate-silence.test.ts`：新增矛盾分支的正/反两条用例。
+
 ## 1.13.33 (2026-11-28)
 
 ### 你会感觉到的变化

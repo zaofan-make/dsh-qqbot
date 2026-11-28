@@ -20,6 +20,16 @@ describe('isGateSilence — 认得出"闸门判定静默"', () => {
     expect(isGateSilence(JSON.stringify({ reason: '被@需回复', reply: true }))).toBe(false);
   });
 
+  // ★ 2026-11-28（1.13.34）：reason 与 reply 自相矛盾时不认静默 —— 不误吞 aborted
+  it('reason 写着"要回复"却传 reply:false → 不是静默（矛盾，不当静默吞掉）', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '用户直接@我提问，需要回复', reply: false }))).toBe(false);
+    expect(isGateSilence(JSON.stringify({ reason: '被@了，该回', reply: false }))).toBe(false);
+  });
+
+  it('真正静默的 reason 不含矛盾词 → 仍是静默', () => {
+    expect(isGateSilence(JSON.stringify({ reason: '群友继续聊重口题材，未@我，静默', reply: false }))).toBe(true);
+  });
+
   it('字段缺失 / 坏 JSON / 空 → 一律当"不是静默"（宁可多展示，不可误吞）', () => {
     expect(isGateSilence(JSON.stringify({ reason: '只写了理由' }))).toBe(false);
     expect(isGateSilence('not json')).toBe(false);
