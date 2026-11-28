@@ -382,8 +382,23 @@ let ctxSmartGlobal = false;
 export function setContextlessSmartGlobal(v) { ctxSmartGlobal = v === true; }
 function getContextlessSmartGlobal() { return ctxSmartGlobal; }
 /** 无上下文·智能判断：取当前会话的 dataRoot + sessionKey */
+/**
+ * 从工具执行上下文里取**当前会话 id**（取不到返回空串）。
+ *
+ * 用途：`context_compact` / `context_drop` 只「登记」请求，真正执行在下一回合的 pre-step。
+ * 登记时把目标会话 id 一起写进 pending 文件 —— 否则**历史会话**（`/bot-new` 之后，
+ * 它的 id 仍能经派生反查映射回同一个 sessionKey）会把这条请求当成自己的，裁掉自己的历史。
+ */
+function execSessionId(exec) {
+    try {
+        const a = exec?.agent;
+        return String(a?.session?.id ?? '').trim();
+    }
+    catch {
+        return '';
+    }
+}
 async function resolveCtxMemoEnv(exec) {
-    // ★ 优先用注册时记住的会话坐标（工具里的 exec.agent 与 pre-step 的 agent 是两个不同对象，反查常失败）
     //   ⚠️ 必须要求 sessionKey 非空：备忘/压缩都按会话分文件存，空 key 会让所有会话串到同一份。
     const cached = ctxEnvOf(exec);
     if (cached && cached.sessionKey)
@@ -432,9 +447,23 @@ function writeContextPending(dataRoot, sessionKey, o) {
     catch { /* ignore */ }
 }
 /** 读登记（session-manager 的 pre-step 用） */
-export function readContextPending(dataRoot, sessionKey) {
+export function readContextPending(dataRoot, sessionKey, expectSessionId) {
     try {
-        return JSON.parse(readFileSync(ctxPendingPath(dataRoot, sessionKey), 'utf8'));
+        const o = JSON.parse(readFileSync(ctxPendingPath(dataRoot, sessionKey), 'utf8'));
+        if (!o)
+            return undefined;
+        // ★★ 2026-11-28（CodeRabbit：按会话键登记的历史派生会话会误消费）
+        //   pending 文件是按 **sessionKey** 命名的，而 `/bot-new` 之后**历史会话**的 id 仍能经
+        //   派生反查映射回同一个 key（`derive(key)` 是确定性的）。于是"打开历史会话"会让它
+        //   读走**当前会话**登记的压缩请求，把历史会话自己的历史裁掉，而当前会话的请求被吞掉。
+        //   这条裁剪不可逆，只有 note 里的要点留得下。
+        //   兜法：登记时记下目标会话 id，读取时对不上就当作没有（**不删**，留给真正的主人）。
+        //   旧格式（没有 sessionId）不拦，保持向后兼容。
+        const want = String(expectSessionId ?? '').trim();
+        const got = String(o.sessionId ?? '').trim();
+        if (want && got && got !== want)
+            return undefined;
+        return o;
     }
     catch {
         return undefined;
@@ -3881,7 +3910,7 @@ var contextCompactTool = defineTool({
         const a = (args ?? {});
         if (a.note)
             appendContextMemo(r.dataRoot, r.sessionKey, String(a.note));
-        writeContextPending(r.dataRoot, r.sessionKey, { mode: 'compact', keep: Number(a.keep) || 3, at: Date.now() });
+        writeContextPending(r.dataRoot, r.sessionKey, { mode: 'compact', keep: Number(a.keep) || 3, at: Date.now(), sessionId: execSessionId(exec) || undefined });
         return { ok: true, msg: '已登记压缩：下一个回合开始时执行'
                 + (a.note ? '（要点已存进你的备忘）' : '（本次没写要点；若压缩后有需要记住的，请带上 note）') };
     },
@@ -3909,7 +3938,7 @@ var contextDropTool = defineTool({
         const a = (args ?? {});
         if (a.note)
             appendContextMemo(r.dataRoot, r.sessionKey, String(a.note));
-        writeContextPending(r.dataRoot, r.sessionKey, { mode: 'drop', keep: 0, at: Date.now() });
+        writeContextPending(r.dataRoot, r.sessionKey, { mode: 'drop', keep: 0, at: Date.now(), sessionId: execSessionId(exec) || undefined });
         return { ok: true, msg: '已登记丢弃：下一个回合开始时执行'
                 + (a.note ? '（要点已存进你的备忘）' : '（本次没写要点；丢弃后这些历史就找不回来了，建议带 note）') };
     },

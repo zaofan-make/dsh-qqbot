@@ -742,6 +742,30 @@ export class SessionManager {
     return '';
   }
 
+  /**
+   * 这个会话是不是**别的实例**的 QQ 会话（反查到了 key，但 appId 不属于本实例）。
+   *
+   * ⚠️ 必须和「反查不到」区分开（CodeRabbit 2026-11-28 · Major）：
+   *   - **反查不到** → 未绑定的纯 web 会话，走**全局** contextless 设置（原行为，保留）；
+   *   - **别的实例的** → **一律不处理**，否则会拿本实例的全局窗口去裁剪别人的历史（不可逆）。
+   *   两者合并成同一个空串就会出这个事故。
+   *
+   * 换号场景不会误判：`findKeyBySessionIdOrDerived(sid, cur)` 会**优先返回本实例 appId 的那条**，
+   * 只要存在就命中，走不到"判成别人的"这一步。
+   */
+  private isForeignSession(sid: string): boolean {
+    const cur = String((this.config as { appId?: string }).appId ?? '');
+    if (!cur) return false;                 // 没配 appId → 无从判断，按原行为走
+    const want = String(sid ?? '').trim();
+    if (!want) return false;
+    let sk = '';
+    try { sk = String(this.modelResolver.findKeyBySessionIdOrDerived(want, cur) ?? ''); } catch { return false; }
+    if (!sk) return false;                  // 查不到 = 未绑定，不是"别人的"
+    const m = /^qqbot:([^:]*):(?:group|c2c):/.exec(sk);
+    if (!m) return false;
+    return String(m[1] ?? '') !== cur;
+  }
+
   private deriveSessionId(sessionKey: string): string {
     // ★ 2026-11-28：公式与 `prefs-store` 的**反查**（`findKeyBySessionIdOrDerived`）共用一份
     //   （`shared/utils` 的 `deriveSessionIdFromKey`）—— 两边必须算得一模一样，
@@ -1667,6 +1691,17 @@ export class SessionManager {
             if (!sk0) {
               sk0 = this.sessionKeyOfSession(sid0);
               if (sk0) traceContextless('[ctxsmart] sk0 持久映射兜底: ' + sk0);
+              // ★★ 2026-11-28（CodeRabbit Major）：**「别的实例的会话」和「未绑定会话」绝不能合并成同一个空串**。
+              //   反查确实查到了 key、只是 appId 不属于本实例 ⇒ 那是一个**别的实例正在用的 QQ 会话**，
+              //   而本实例的 pre-step 照样会收到它（两个实例同 cwd 时）。
+              //   此时若按"未绑定"处理：`ctxKey0` 会退化成 `'__global__'` → 用**本实例的全局设置**
+              //   走进 `trimHistoryForContextless` ⇒ 拿本实例的窗口条数去裁**别人会话**的历史（不可逆）。
+              //   改之前反查能拿到对方 key、恰好被对方的智能模式挡住；本 PR 收紧判据后才暴露。
+              //   正确做法：整段跳过 —— 别人的会话，一个字都不碰。
+              if (this.isForeignSession(sid0)) {
+                traceContextless('[ctxsmart] 外实例会话, 跳过本实例 pre-step: sid=' + sid0);
+                return decision;
+              }
             }
             skForTool = sk0;   // 存到外层，供"上下文工具挂/卸"那块兜底用
           }
@@ -1707,7 +1742,9 @@ export class SessionManager {
           try {
             const skP = String(sk0 || (this.findByAgent(agent as never) as { sessionKey?: string } | undefined)?.sessionKey || "");
             const drP = this.resolveDataRootSmart();
-            if (skP && drP) pendingAhead = readContextPending(drP, skP);
+            // ★ 2026-11-28：带上当前会话 id —— pending 按 sessionKey 存，而**历史会话**的 id
+            //   仍能经派生反查映射回同一个 key ⇒ 不带 id 比对的话，打开历史会话会误消费当前会话的请求。
+            if (skP && drP) pendingAhead = readContextPending(drP, skP, sid0);
             if (pendingAhead) traceContextless("[ctxorder] 本轮有 pending(" + String(pendingAhead.mode) + ") → 跳过分段压缩，交给下面消费");
           } catch { /* ignore */ }
           // ★ 2026-11-25（CodeRabbit Major）：跳过分段压缩的条件必须和"本轮**真的能消费** pending"一致。
@@ -1966,7 +2003,7 @@ export class SessionManager {
             } catch { /* ignore */ }
           }
           if (ctxSmartOn && skSmart && dataRootSmart && (!Number.isFinite(currentStep) || currentStep <= 1)) {
-            const req = readContextPending(dataRootSmart, skSmart);
+            const req = readContextPending(dataRootSmart, skSmart, String((agent?.session as { id?: string } | undefined)?.id ?? ''));
             if (req) {
               const keep = req.mode === 'drop' ? 0 : (Number(req.keep) || 3);
               const done = await trimHistoryForContextless(

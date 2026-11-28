@@ -161,6 +161,18 @@ export declare class SessionManager {
      * @returns sessionKey；`''` 表示"不是本实例的会话"或"查不到"
      */
     private sessionKeyOfSession;
+    /**
+     * 这个会话是不是**别的实例**的 QQ 会话（反查到了 key，但 appId 不属于本实例）。
+     *
+     * ⚠️ 必须和「反查不到」区分开（CodeRabbit 2026-11-28 · Major）：
+     *   - **反查不到** → 未绑定的纯 web 会话，走**全局** contextless 设置（原行为，保留）；
+     *   - **别的实例的** → **一律不处理**，否则会拿本实例的全局窗口去裁剪别人的历史（不可逆）。
+     *   两者合并成同一个空串就会出这个事故。
+     *
+     * 换号场景不会误判：`findKeyBySessionIdOrDerived(sid, cur)` 会**优先返回本实例 appId 的那条**，
+     * 只要存在就命中，走不到"判成别人的"这一步。
+     */
+    private isForeignSession;
     private deriveSessionId;
     private currentSessionId;
     private composePreset;
